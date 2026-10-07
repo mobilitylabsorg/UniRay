@@ -127,6 +127,10 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: android-actions/setup-android@v3
+        with:
+          # The default list includes `tools`, which the SDK repository no
+          # longer has. The platform and build tools come with the Gradle build.
+          packages: platform-tools
       - name: NDK
         run: |
           sdkmanager --install "ndk;27.2.12479018"
