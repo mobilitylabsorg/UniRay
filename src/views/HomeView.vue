@@ -5,6 +5,7 @@ import { useI18n } from "vue-i18n";
 import AppIcon from "../components/AppIcon.vue";
 import { api, type Mode } from "../lib/api";
 import { formatBytes, formatDuration, formatSpeed } from "../lib/format";
+import { flagOf, withFlag } from "../lib/flag";
 import { useAppStore } from "../stores/app";
 
 const store = useAppStore();
@@ -31,6 +32,8 @@ const server = computed(() => {
 const error = computed(() => (store.connection?.error ? store.describe(store.connection.error) : null));
 
 const checking = ref(false);
+/** The connected server, flagged with the exit country when it has no flag. */
+const exitName = computed(() => (server.value ? withFlag(server.value.name, check.value?.country) : flagOf(check.value?.country)));
 const check = computed(() => store.connection?.check ?? null);
 const checkedAgo = computed(() => {
   if (!check.value) return "";
@@ -121,19 +124,18 @@ const MODES: { value: Mode; label: string }[] = [
 
       <div v-if="connected" class="card px-4 py-3">
         <template v-if="check">
-          <div class="flex items-baseline gap-2">
-            <span class="flex items-center gap-1.5 font-medium" :class="check.ok ? 'text-good' : 'text-danger'">
-              <AppIcon :name="check.ok ? 'check' : 'alert'" :size="16" class="self-center" />
-              {{ check.ok ? t("home.checkOk") : t("home.checkFailed") }}
-            </span>
-            <span v-if="check.ok && check.latencyMs !== null" class="font-mono text-sm tabular-nums" :class="check.ok ? 'text-good' : ''">
-              {{ t("home.latency", { ms: check.latencyMs }) }}
-            </span>
-            <span class="ml-auto shrink-0 text-xs text-muted">{{ checkedAgo }}</span>
+          <div class="flex items-center gap-1.5 font-medium" :class="check.ok ? 'text-good' : 'text-danger'">
+            <AppIcon :name="check.ok ? 'check' : 'alert'" :size="16" class="shrink-0" />
+            <span>{{ check.ok ? t("home.checkOk") : t("home.checkFailed") }}</span>
+            <template v-if="check.ok && check.latencyMs !== null">
+              <span aria-hidden="true">·</span>
+              <span class="tabular-nums">{{ t("home.latency", { ms: check.latencyMs }) }}</span>
+            </template>
+            <span class="ml-auto shrink-0 text-xs font-normal text-muted">{{ checkedAgo }}</span>
           </div>
-          <div class="selectable mt-0.5 truncate font-mono text-xs text-muted">
-            <template v-if="check.ok">{{ [check.country, check.ip].filter(Boolean).join(" · ") }}</template>
-            <template v-else>{{ check.error }}</template>
+          <div class="mt-1 truncate text-sm text-muted">
+            <template v-if="check.ok">{{ exitName }}</template>
+            <span v-else class="selectable">{{ check.error }}</span>
           </div>
         </template>
         <div v-else class="text-sm text-muted">{{ t("home.checking") }}</div>
