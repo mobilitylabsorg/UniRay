@@ -37,6 +37,12 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles n
 
 Установщик появится в `target/x86_64-pc-windows-msvc/release/bundle/nsis/`. Для портативной версии достаточно содержимого `target/x86_64-pc-windows-msvc/release/`: `uniray.exe`, `uniray-xray.exe`, `uniray-helper.exe`, `wintun.dll` и папка `resources`. Нужна Windows 10 или новее.
 
+### CI
+
+`.github/workflows/build.yml` собирает AppImage для Linux, установщик и портативный zip для Windows и APK для Android (arm64) на каждый push в `main`, на pull request и вручную. Готовые файлы лежат в артефактах запуска; при push тега `v*` они же публикуются как релиз GitHub.
+
+Без секретов APK подписывается одноразовым отладочным ключом, и каждая сборка ставится только начисто. Чтобы обновления ставились поверх, добавьте в секреты репозитория `ANDROID_KEYSTORE` (keystore в base64), `ANDROID_KEYSTORE_PASSWORD` и `ANDROID_KEY_ALIAS`.
+
 ### Тесты
 
 ```sh
