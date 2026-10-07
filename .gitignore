@@ -32,3 +32,5 @@ dist-ssr
 /src-tauri/resources/*.dll
 /build/
 /src-tauri/resources/LICENSE-Wintun
+
+uniray-release.jks
