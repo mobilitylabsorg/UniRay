@@ -231,6 +231,33 @@ pub async fn list_apps() -> CmdResult<Vec<()>> {
     Ok(Vec::new())
 }
 
+/// What elevated access the device offers, so the UI can show it and gate the
+/// stealth option on root. Android only; elsewhere there is nothing to report.
+#[cfg(mobile)]
+#[tauri::command]
+pub async fn privilege_state(app: AppHandle) -> CmdResult<serde_json::Value> {
+    core::privilege_state(&app).await
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn privilege_state() -> CmdResult<serde_json::Value> {
+    Ok(serde_json::json!({ "level": "none", "shizukuAvailable": false, "shizukuGranted": false }))
+}
+
+/// Asks Shizuku for permission (interactive) and returns the new state.
+#[cfg(mobile)]
+#[tauri::command]
+pub async fn request_shizuku(app: AppHandle) -> CmdResult<serde_json::Value> {
+    core::request_shizuku(&app).await
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn request_shizuku() -> CmdResult<serde_json::Value> {
+    Ok(serde_json::json!({ "level": "none", "shizukuAvailable": false, "shizukuGranted": false }))
+}
+
 /// Checks that traffic gets through the tunnel, and where it comes out.
 #[tauri::command]
 pub async fn check_connection(app: AppHandle) -> CmdResult<crate::monitor::CheckResult> {

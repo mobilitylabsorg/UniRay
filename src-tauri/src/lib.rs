@@ -102,6 +102,8 @@ pub fn run() {
             commands::check_connection,
             commands::list_apps,
             commands::system_colors,
+            commands::privilege_state,
+            commands::request_shizuku,
             commands::get_logs,
             commands::clear_logs,
             commands::quit,

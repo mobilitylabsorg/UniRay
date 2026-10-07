@@ -72,8 +72,19 @@ export interface Settings {
   logLevel: string;
   interfaceName: string;
   perApp: { mode: PerAppMode; packages: string[] };
+  stealth: boolean;
+  stealthRootTun: boolean;
   selectedServer: string | null;
   locale: string | null;
+}
+
+/** Elevated access the device offers; only `root`/`shizukuRoot` can do stealth. */
+export type PrivilegeLevel = "none" | "shizukuShell" | "shizukuRoot" | "root";
+
+export interface PrivilegeState {
+  level: PrivilegeLevel;
+  shizukuAvailable: boolean;
+  shizukuGranted: boolean;
 }
 
 export interface CmdError {
@@ -167,6 +178,8 @@ export const api = {
   checkConnection: () => invoke<CheckResult>("check_connection"),
   listApps: () => invoke<InstalledApp[]>("list_apps"),
   systemColors: () => invoke<SystemColors | null>("system_colors"),
+  privilegeState: () => invoke<PrivilegeState>("privilege_state"),
+  requestShizuku: () => invoke<PrivilegeState>("request_shizuku"),
   getLogs: () => invoke<LogLine[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),
   quit: () => invoke<void>("quit"),

@@ -183,6 +183,15 @@ pub struct Settings {
     /// actual interface `tunN` and apps cannot change that.
     pub interface_name: String,
     pub per_app: PerApp,
+    /// Run the tunnel without a VpnService, as a privileged root process, so
+    /// that on-device VPN scanners find no VpnService/`tun0`/`TRANSPORT_VPN`.
+    /// Needs root (Magisk or a root-mode Shizuku); ignored, with a fall back to
+    /// the VPN service, when the device has none. Android only.
+    pub stealth: bool,
+    /// In stealth, capture with a root-owned TUN interface instead of
+    /// tproxy+iptables. The fallback for kernels/ROMs without TPROXY; the
+    /// interface is then visible, under a neutral name.
+    pub stealth_root_tun: bool,
     pub selected_server: Option<String>,
     /// UI language, `None` follows the system.
     pub locale: Option<String>,
@@ -210,6 +219,8 @@ impl Default for Settings {
             log_level: "warning".into(),
             interface_name: crate::config::DEFAULT_INTERFACE_NAME.into(),
             per_app: PerApp::default(),
+            stealth: false,
+            stealth_root_tun: false,
             selected_server: None,
             locale: None,
         }

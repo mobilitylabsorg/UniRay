@@ -6,3 +6,6 @@
 -keep class dev.uniray.app.StartArgs { *; }
 -keep class dev.uniray.app.DelayArgs { *; }
 -keep class dev.uniray.app.NotificationArgs { *; }
+-keep class dev.uniray.app.StealthArgs { *; }
+# Shizuku's process API (newProcess) is @hide and reached by reflection.
+-keep class rikka.shizuku.Shizuku { *; }

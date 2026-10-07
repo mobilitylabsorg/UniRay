@@ -12,7 +12,10 @@ mod mobile;
 #[cfg(desktop)]
 pub use desktop::{measure_delays, Running};
 #[cfg(mobile)]
-pub use mobile::{init_device, list_apps, measure_delays, plugin, system_colors, update_notification, InstalledApp, Running};
+pub use mobile::{
+    init_device, list_apps, measure_delays, plugin, privilege_state, request_shizuku, system_colors,
+    update_notification, InstalledApp, Running,
+};
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::atomic::Ordering;

@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { reactive, ref, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 import AppIcon from "../components/AppIcon.vue";
 import PerAppDialog from "../components/PerAppDialog.vue";
 import ToggleSwitch from "../components/ToggleSwitch.vue";
 import { LOCALES } from "../i18n";
-import { api, type Mode, type PerAppMode, type Settings } from "../lib/api";
+import { api, type Mode, type PerAppMode, type PrivilegeState, type Settings } from "../lib/api";
 import { useAppStore } from "../stores/app";
 
 const store = useAppStore();
@@ -101,6 +101,32 @@ async function copyHwid() {
   await writeText(store.snapshot!.device.hwid);
   store.toast(t("common.copied"));
 }
+
+// Stealth (Android, needs root). The privilege level is detected without
+// prompting; enabling stealth later is what triggers the superuser grant.
+const privilege = ref<PrivilegeState | null>(null);
+const PRIVILEGE_LABELS: Record<string, string> = {
+  none: "settings.privNone",
+  shizukuShell: "settings.privShizukuShell",
+  shizukuRoot: "settings.privShizukuRoot",
+  root: "settings.privRoot",
+};
+const privilegeLabel = computed(() => PRIVILEGE_LABELS[privilege.value?.level ?? "none"]);
+const canStealth = computed(
+  () => privilege.value?.level === "root" || privilege.value?.level === "shizukuRoot",
+);
+
+async function refreshPrivilege() {
+  if (store.isDesktop) return;
+  privilege.value = await api.privilegeState().catch(() => null);
+}
+
+async function authorizeShizuku() {
+  const next = await store.run(() => api.requestShizuku());
+  if (next) privilege.value = next;
+}
+
+onMounted(refreshPrivilege);
 </script>
 
 <template>
@@ -250,6 +276,49 @@ async function copyHwid() {
           </span>
           <AppIcon name="chevron" class="text-muted" />
         </button>
+      </div>
+
+      <div class="section-title">{{ t("settings.stealth") }}</div>
+      <div class="card mb-6 divide-y divide-line">
+        <div class="flex items-center gap-3 px-4 py-3">
+          <div class="min-w-0 flex-1">
+            <div class="font-medium">{{ t("settings.privilege") }}</div>
+            <div class="text-xs text-muted">{{ t(privilegeLabel) }}</div>
+          </div>
+          <button
+            v-if="privilege?.shizukuAvailable && !privilege?.shizukuGranted"
+            class="btn btn-quiet"
+            @click="authorizeShizuku"
+          >
+            {{ t("settings.privAuthorizeShizuku") }}
+          </button>
+          <button v-else class="icon-btn" :aria-label="t('common.refresh')" :title="t('common.refresh')" @click="refreshPrivilege">
+            <AppIcon name="refresh" :size="18" />
+          </button>
+        </div>
+        <div class="flex items-center gap-3 px-4 py-3">
+          <div class="flex-1">
+            <div class="font-medium">{{ t("settings.stealthEnable") }}</div>
+            <div class="text-xs text-muted">{{ canStealth ? t("settings.stealthHint") : t("settings.stealthNeedsRoot") }}</div>
+          </div>
+          <ToggleSwitch
+            :model-value="store.settings.stealth"
+            :disabled="!canStealth"
+            :label="t('settings.stealthEnable')"
+            @update:model-value="(stealth: boolean) => save({ stealth })"
+          />
+        </div>
+        <div v-if="store.settings.stealth && canStealth" class="flex items-center gap-3 px-4 py-3">
+          <div class="flex-1">
+            <div class="font-medium">{{ t("settings.stealthRootTun") }}</div>
+            <div class="text-xs text-muted">{{ t("settings.stealthRootTunHint") }}</div>
+          </div>
+          <ToggleSwitch
+            :model-value="store.settings.stealthRootTun"
+            :label="t('settings.stealthRootTun')"
+            @update:model-value="(stealthRootTun: boolean) => save({ stealthRootTun })"
+          />
+        </div>
       </div>
     </template>
 

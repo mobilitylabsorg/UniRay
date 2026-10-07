@@ -33,6 +33,9 @@ const PROBE_BATCH: usize = 5;
 /// the proxy server - Xray's built-in DNS does that over DoH - so this only
 /// needs to be reachable. A public one, never the operator's.
 const FALLBACK_DNS: &str = "8.8.8.8";
+/// The loopback port the stealth tproxy inbound listens on; the iptables
+/// TPROXY target points here. Matches the port in the generated config.
+const STEALTH_TPROXY_PORT: u16 = 12345;
 const WATCH_INTERVAL: Duration = Duration::from_secs(1);
 
 struct Vpn(PluginHandle<Wry>);
@@ -66,6 +69,8 @@ async fn call<T: serde::de::DeserializeOwned>(app: &AppHandle, command: &str, ar
                 match rejection.code.as_deref() {
                     Some("vpnDenied") => CmdError::new("vpnDenied", message),
                     Some("busy") => CmdError::new("delayWhileConnected", message),
+                    // Lets the caller fall back from stealth to the VPN service.
+                    Some("noRoot") => CmdError::new("noRoot", message),
                     _ => CmdError::core(message),
                 }
             }
@@ -187,52 +192,46 @@ impl Running {
             let name = settings.interface_name.trim();
             if name.is_empty() { config::DEFAULT_INTERFACE_NAME.to_owned() } else { name.to_owned() }
         };
-        let runtime = Runtime {
-            tun: Some(Tun::External { name: name.clone() }),
-            mixed_port: None,
-            metrics_port: None,
-            metrics_socket: Some(files.metrics.to_string_lossy().into_owned()),
-            log: LogSink::Files {
-                error: files.error_log.to_string_lossy().into_owned(),
-                access: files.access_log.to_string_lossy().into_owned(),
-            },
+        let metrics = files.metrics.to_string_lossy().into_owned();
+        let log = LogSink::Files {
+            error: files.error_log.to_string_lossy().into_owned(),
+            access: files.access_log.to_string_lossy().into_owned(),
         };
         if let Some(network) = network_info(app).await {
             logs::push(app, &format!("[Info] network: {}", network.kind));
         }
-        let built = config::build(server, settings, &runtime)?;
-
-        // Xray's built-in DNS resolves the servers over the configured DoH,
-        // straight out the physical interface, so a resolver on the path
-        // cannot substitute them. Go's own resolver still needs a plain IP; a
-        // public one when the direct DNS is a DoH URL (the usual case).
-        let dns = if settings.direct_dns.parse::<IpAddr>().is_ok() { settings.direct_dns.as_str() } else { FALLBACK_DNS };
-        let args = StartArgs {
-            config: built.config.to_string(),
-            per_app_mode: settings.per_app.mode,
-            packages: settings.per_app.packages.clone(),
-            dns: format!("{dns}:53"),
-            mtu: config::TUN_MTU,
-            session_name: name,
-            server_name: server.name.clone(),
-            metrics_socket: files.metrics.to_string_lossy().into_owned(),
-            proxy_tags: built.proxy_tags.clone(),
-        };
 
         let log_mark = logs::mark();
-        let tailer = logs::tail(app.clone(), vec![files.error_log, files.access_log]);
-        if let Err(err) = call::<Value>(app, "start", args).await {
-            // Give the tailer a moment to pick up what the core logged.
-            tokio::time::sleep(Duration::from_millis(600)).await;
-            tailer.abort();
-            return Err(err);
-        }
+        let tailer = logs::tail(app.clone(), vec![files.error_log.clone(), files.access_log.clone()]);
+
+        // Stealth (no VpnService) when the user asked and root is there;
+        // otherwise, and when root turns out to be missing, the VPN service.
+        let outcome = if settings.stealth {
+            match start_stealth(app, server, settings, &name, &metrics, &log).await {
+                Err(err) if err.code == "noRoot" => {
+                    logs::push(app, "[Info] stealth needs root, unavailable here; using the VPN service");
+                    start_vpn_service(app, server, settings, &name, &metrics, &log).await
+                }
+                other => other,
+            }
+        } else {
+            start_vpn_service(app, server, settings, &name, &metrics, &log).await
+        };
+        let proxy_tags = match outcome {
+            Ok(tags) => tags,
+            Err(err) => {
+                // Give the tailer a moment to pick up what the core logged.
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                tailer.abort();
+                return Err(err);
+            }
+        };
 
         let session = Session {
             server_id: server.id.clone(),
             since: logs::now_secs(),
             metrics_socket: files.metrics.clone(),
-            proxy_tags: built.proxy_tags.clone(),
+            proxy_tags: proxy_tags.clone(),
         };
         if let Ok(bytes) = serde_json::to_vec(&session) {
             let _ = write_private(&files.session, &bytes);
@@ -240,7 +239,7 @@ impl Running {
 
         Ok(Self {
             log_mark,
-            stats: stats::spawn(app.clone(), stats::MetricsSource::Socket(files.metrics), built.proxy_tags),
+            stats: stats::spawn(app.clone(), stats::MetricsSource::Socket(files.metrics), proxy_tags),
             watcher: spawn_watcher(app.clone(), generation),
             tailer,
         })
@@ -254,6 +253,91 @@ impl Running {
         self.tailer.abort();
         let _ = std::fs::remove_file(run_files(app).session);
     }
+}
+
+/// Brings the tunnel up through the OS VPN service, the default path.
+async fn start_vpn_service(
+    app: &AppHandle,
+    server: &Server,
+    settings: &Settings,
+    name: &str,
+    metrics: &str,
+    log: &LogSink,
+) -> CmdResult<Vec<String>> {
+    let runtime = Runtime {
+        tun: Some(Tun::External { name: name.to_owned() }),
+        mixed_port: None,
+        metrics_port: None,
+        metrics_socket: Some(metrics.to_owned()),
+        log: log.clone(),
+    };
+    let built = config::build(server, settings, &runtime)?;
+    // Xray's built-in DNS resolves the servers over the configured DoH, straight
+    // out the physical interface, so a resolver on the path cannot substitute
+    // them. Go's own resolver still needs a plain IP; a public one when the
+    // direct DNS is a DoH URL (the usual case).
+    let dns = if settings.direct_dns.parse::<IpAddr>().is_ok() { settings.direct_dns.as_str() } else { FALLBACK_DNS };
+    let args = StartArgs {
+        config: built.config.to_string(),
+        per_app_mode: settings.per_app.mode,
+        packages: settings.per_app.packages.clone(),
+        dns: format!("{dns}:53"),
+        mtu: config::TUN_MTU,
+        session_name: name.to_owned(),
+        server_name: server.name.clone(),
+        metrics_socket: metrics.to_owned(),
+        proxy_tags: built.proxy_tags.clone(),
+    };
+    call::<Value>(app, "start", args).await?;
+    Ok(built.proxy_tags)
+}
+
+/// Brings the tunnel up without a VpnService, as a separate root process. The
+/// plugin rejects with `noRoot` when the device has no root to run it with.
+async fn start_stealth(
+    app: &AppHandle,
+    server: &Server,
+    settings: &Settings,
+    name: &str,
+    metrics: &str,
+    log: &LogSink,
+) -> CmdResult<Vec<String>> {
+    // tproxy is the primary path (no interface); the root TUN is the fallback
+    // for kernels without TPROXY, where Xray makes its own interface as root.
+    let tun = if settings.stealth_root_tun {
+        Tun::Managed { name: name.to_owned() }
+    } else {
+        Tun::Transparent { port: STEALTH_TPROXY_PORT }
+    };
+    let runtime = Runtime {
+        tun: Some(tun),
+        mixed_port: None,
+        metrics_port: None,
+        metrics_socket: Some(metrics.to_owned()),
+        log: log.clone(),
+    };
+    let built = config::build(server, settings, &runtime)?;
+    let args = json!({
+        "config": built.config.to_string(),
+        "mode": if settings.stealth_root_tun { "roottun" } else { "tproxy" },
+        "port": STEALTH_TPROXY_PORT,
+        "ipv6": settings.ipv6,
+        "serverName": server.name,
+        "metricsSocket": metrics,
+        "proxyTags": built.proxy_tags,
+    });
+    call::<Value>(app, "startStealth", args).await?;
+    Ok(built.proxy_tags)
+}
+
+/// What elevated access the device offers, for the settings UI.
+pub async fn privilege_state(app: &AppHandle) -> CmdResult<Value> {
+    call::<Value>(app, "privilegeState", json!({})).await
+}
+
+/// Asks Shizuku for permission (interactive) and returns the new state.
+pub async fn request_shizuku(app: &AppHandle) -> CmdResult<Value> {
+    call::<Value>(app, "requestShizuku", json!({})).await
 }
 
 /// Notices when the service stops on its own: the user revoked the VPN,
