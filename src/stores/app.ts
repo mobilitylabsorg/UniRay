@@ -39,6 +39,8 @@ export const useAppStore = defineStore("app", () => {
   const connection = computed(() => snapshot.value?.connection ?? null);
   const status = computed(() => connection.value?.status ?? "disconnected");
   const isDesktop = computed(() => !["android", "ios"].includes(snapshot.value?.platform ?? ""));
+  /** TUN needs the elevated helper: pkexec on Linux, UAC on Windows. */
+  const tunSupported = computed(() => ["linux", "windows"].includes(snapshot.value?.platform ?? ""));
 
   /** The server a connection would use: the selected one, else the first. */
   const selectedServer = computed<Server | null>(() => {
@@ -125,6 +127,7 @@ export const useAppStore = defineStore("app", () => {
     connection,
     status,
     isDesktop,
+    tunSupported,
     selectedServer,
     traffic,
     logs,

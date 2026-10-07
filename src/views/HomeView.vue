@@ -143,7 +143,7 @@ const MODES: { value: Mode; label: string }[] = [
         </button>
       </div>
 
-      <template v-if="store.isDesktop && store.settings">
+      <template v-if="store.tunSupported && store.settings">
         <div class="card flex p-1" role="radiogroup" :aria-label="t('home.mode')">
           <button
             v-for="mode in MODES"

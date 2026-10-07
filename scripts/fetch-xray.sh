@@ -3,7 +3,7 @@
 # where Tauri expects the sidecar:
 #
 #   src-tauri/binaries/uniray-xray-<target triple>[.exe]
-#   src-tauri/resources/{geoip.dat,geosite.dat}   (and wintun.dll on Windows)
+#   src-tauri/resources/{geoip.dat,geosite.dat}   (and wintun.dll + LICENSE-Wintun on Windows)
 #
 # Usage: scripts/fetch-xray.sh [target triple]    (default: the host triple)
 #
@@ -52,8 +52,10 @@ unzip -q "$work/xray.zip" -d "$work/xray"
 mkdir -p "$root/src-tauri/binaries" "$root/src-tauri/resources"
 install -m 755 "$work/xray/xray$exe" "$root/src-tauri/binaries/uniray-xray-$target$exe"
 install -m 644 "$work/xray/geoip.dat" "$work/xray/geosite.dat" "$root/src-tauri/resources/"
+# Windows TUN: Xray loads wintun.dll from its own directory (the Windows
+# bundle config puts it there), and its license travels with it.
 if [[ -f "$work/xray/wintun.dll" ]]; then
-  install -m 644 "$work/xray/wintun.dll" "$root/src-tauri/resources/"
+  install -m 644 "$work/xray/wintun.dll" "$work/xray/LICENSE-Wintun" "$root/src-tauri/resources/"
 fi
 
 echo "fetch-xray: installed Xray $XRAY_VERSION for $target"

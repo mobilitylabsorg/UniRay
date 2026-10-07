@@ -109,7 +109,7 @@ async function copyHwid() {
 
     <div class="section-title">{{ t("settings.connection") }}</div>
     <div class="card mb-6 divide-y divide-line">
-      <div v-if="store.isDesktop" class="px-4 py-3" role="radiogroup" :aria-label="t('settings.mode')">
+      <div v-if="store.tunSupported" class="px-4 py-3" role="radiogroup" :aria-label="t('settings.mode')">
         <div class="mb-2 font-medium">{{ t("settings.mode") }}</div>
         <button
           v-for="mode in MODES"

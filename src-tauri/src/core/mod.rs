@@ -4,6 +4,8 @@
 
 #[cfg(desktop)]
 mod desktop;
+#[cfg(desktop)]
+mod elevated;
 #[cfg(mobile)]
 mod mobile;
 

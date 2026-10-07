@@ -51,6 +51,8 @@ pub struct Running {
     pub log_mark: u64,
     stop: Option<oneshot::Sender<()>>,
     supervisor: JoinHandle<()>,
+    /// Follows the core's log file when the core is not our child (Windows TUN).
+    tailer: Option<JoinHandle<()>>,
     stats: JoinHandle<()>,
     system_proxy: bool,
     mixed_port: u16,
@@ -64,6 +66,10 @@ impl Running {
     pub async fn start(app: &AppHandle, server: &Server, settings: &Settings, generation: u64) -> CmdResult<Self> {
         let state = app.state::<App>();
         let tun = settings.mode == Mode::Tun;
+        // TUN needs the elevated helper: pkexec on Linux, UAC on Windows.
+        if tun && !cfg!(any(target_os = "linux", windows)) {
+            return Err(CmdError::new("unsupported", "TUN mode is not available on this platform yet"));
+        }
         let mixed_port = settings.mixed_port;
         if !port_is_free(mixed_port) {
             return Err(CmdError::new("portBusy", format!("port {mixed_port} is already in use")));
@@ -81,25 +87,16 @@ impl Running {
         let config_bytes = serde_json::to_vec(&built.config).map_err(|err| CmdError::core(err.to_string()))?;
         write_private(&config_path, &config_bytes).map_err(CmdError::io)?;
 
-        let command = if tun {
-            let mut command = Command::new("pkexec");
-            command
-                .arg(&state.paths.helper)
-                .arg(&state.paths.xray)
-                .arg(&config_path)
-                .arg(&state.paths.assets)
-                .stdin(Stdio::piped());
-            command
-        } else {
-            xray_command(&state.paths.xray, &config_path, &state.paths.assets)
-        };
         let log_mark = logs::mark();
-        let (stop, supervisor, mut exited) = spawn_supervised(app, command, Some(generation))?;
+        let (stop, supervisor, mut exited, tailer) = launch(app, tun, &config_path, generation).await?;
 
         let timeout = if tun { READY_TIMEOUT_TUN } else { READY_TIMEOUT };
         if let Err(err) = wait_ready(&[metrics_port, mixed_port], &mut exited, timeout).await {
             let _ = stop.send(());
             let _ = supervisor.await;
+            if let Some(tailer) = tailer {
+                tailer.abort();
+            }
             let reason = logs::last_problem(&state.logs.lock().unwrap(), log_mark);
             return Err(CmdError::core(reason.unwrap_or(err)));
         }
@@ -122,6 +119,7 @@ impl Running {
             log_mark,
             stop: Some(stop),
             supervisor,
+            tailer,
             stats: stats::spawn(app.clone(), metrics_port, built.proxy_tags),
             system_proxy,
             mixed_port,
@@ -139,8 +137,108 @@ impl Running {
             let _ = stop.send(());
         }
         let _ = self.supervisor.await;
+        if let Some(tailer) = self.tailer.take() {
+            // Let it pick up the core's last words first.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            tailer.abort();
+        }
         let _ = std::fs::remove_file(app.state::<App>().paths.run_dir.join("config.json"));
     }
+}
+
+type Launched = (oneshot::Sender<()>, JoinHandle<()>, watch::Receiver<bool>, Option<JoinHandle<()>>);
+
+/// Starts the core: directly in proxy mode, through the elevated helper in
+/// TUN mode (pkexec on Linux, UAC on Windows).
+async fn launch(app: &AppHandle, tun: bool, config_path: &std::path::Path, generation: u64) -> CmdResult<Launched> {
+    let state = app.state::<App>();
+    #[cfg(windows)]
+    if tun {
+        return spawn_elevated(app, config_path, generation).await;
+    }
+    let command = if tun {
+        let mut command = Command::new("pkexec");
+        command
+            .arg(&state.paths.helper)
+            .arg(&state.paths.xray)
+            .arg(config_path)
+            .arg(&state.paths.assets)
+            .stdin(Stdio::piped());
+        command
+    } else {
+        xray_command(&state.paths.xray, config_path, &state.paths.assets)
+    };
+    let (stop, supervisor, exited) = spawn_supervised(app, command, Some(generation))?;
+    Ok((stop, supervisor, exited, None))
+}
+
+/// Windows TUN: the helper runs as administrator after a UAC prompt. It
+/// cannot share pipes with us, so it logs to a file we follow, and stops when
+/// the stop file appears or this process is gone.
+#[cfg(windows)]
+async fn spawn_elevated(app: &AppHandle, config_path: &std::path::Path, generation: u64) -> CmdResult<Launched> {
+    use std::ffi::{OsStr, OsString};
+    use std::sync::Arc;
+
+    use super::elevated::{LaunchError, Process};
+
+    let state = app.state::<App>();
+    let run_dir = state.paths.run_dir.clone();
+    let stop_file = run_dir.join("helper.stop");
+    let log_file = run_dir.join("core.log");
+    let _ = std::fs::remove_file(&stop_file);
+    write_private(&log_file, b"").map_err(CmdError::io)?;
+
+    let helper = state.paths.helper.clone();
+    let args: Vec<OsString> = vec![
+        state.paths.xray.clone().into_os_string(),
+        config_path.as_os_str().to_owned(),
+        state.paths.assets.clone().into_os_string(),
+        std::process::id().to_string().into(),
+        stop_file.clone().into_os_string(),
+        log_file.clone().into_os_string(),
+    ];
+    let launched = tauri::async_runtime::spawn_blocking(move || {
+        let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
+        Process::launch(&helper, &args)
+    })
+    .await
+    .map_err(|err| CmdError::core(err.to_string()))?;
+    let process = Arc::new(launched.map_err(|err| match err {
+        LaunchError::Cancelled => CmdError::new("elevationCancelled", "administrator rights were not granted"),
+        LaunchError::Failed(message) => CmdError::core(format!("cannot start the helper: {message}")),
+    })?);
+
+    let tailer = logs::tail(app.clone(), vec![log_file]);
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    let (exited_tx, exited_rx) = watch::channel(false);
+    let app = app.clone();
+    let supervisor = tauri::async_runtime::spawn(async move {
+        let waiter = {
+            let process = process.clone();
+            tauri::async_runtime::spawn_blocking(move || process.wait(None))
+        };
+        tokio::select! {
+            _ = waiter => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move { super::on_core_exit(&app, generation).await });
+            }
+            // Resolves on an explicit stop and when the trigger is dropped.
+            _ = stop_rx => {
+                let _ = std::fs::write(&stop_file, b"stop");
+                let timeout = HELPER_STOP_TIMEOUT.as_millis() as u32;
+                let waiting = process.clone();
+                let ended = tauri::async_runtime::spawn_blocking(move || waiting.wait(Some(timeout)))
+                    .await
+                    .unwrap_or(false);
+                if !ended {
+                    process.terminate();
+                }
+            }
+        }
+        let _ = exited_tx.send(true);
+    });
+    Ok((stop_tx, supervisor, exited_rx, Some(tailer)))
 }
 
 fn xray_command(xray: &std::path::Path, config: &std::path::Path, assets: &std::path::Path) -> Command {
@@ -151,8 +249,12 @@ fn xray_command(xray: &std::path::Path, config: &std::path::Path, assets: &std::
         .arg(config)
         .env("XRAY_LOCATION_ASSET", assets)
         .stdin(Stdio::null());
+    // No console window for the core on Windows.
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     // If the app is killed or crashes, take Xray down with it: an orphaned
-    // core would keep the proxy port busy for the next start.
+    // core would keep the proxy port busy for the next start. (On Windows a
+    // job object does the same, see `bind_to_app`.)
     #[cfg(target_os = "linux")]
     // SAFETY: prctl is async-signal-safe and touches no shared state.
     unsafe {
@@ -162,6 +264,39 @@ fn xray_command(xray: &std::path::Path, config: &std::path::Path, assets: &std::
         });
     }
     command
+}
+
+/// Puts the child into a job object that kills its processes when the app's
+/// handle to it closes, which Windows does when the app exits for any reason.
+#[cfg(windows)]
+fn bind_to_app(child: &Child) {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    static JOB: OnceLock<usize> = OnceLock::new();
+    // SAFETY: plain Win32 calls on handles this process owns; the job handle
+    // is deliberately kept open for the life of the process.
+    let job = *JOB.get_or_init(|| unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        job as usize
+    });
+    if let Some(handle) = child.raw_handle() {
+        // SAFETY: the handle belongs to our live child.
+        unsafe {
+            AssignProcessToJobObject(job as _, handle as _);
+        }
+    }
 }
 
 /// Spawns the core, forwards its output to the log and supervises it.
@@ -181,6 +316,8 @@ fn spawn_supervised(
     let mut child = command
         .spawn()
         .map_err(|err| CmdError::core(format!("cannot start {program}: {err}")))?;
+    #[cfg(windows)]
+    bind_to_app(&child);
 
     forward_output(app, child.stdout.take());
     forward_output(app, child.stderr.take());
