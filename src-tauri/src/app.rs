@@ -133,4 +133,6 @@ pub fn snapshot(app: &AppHandle) -> Snapshot {
 /// Tells the frontend that the state changed.
 pub fn emit_state(app: &AppHandle) {
     let _ = app.emit(STATE_EVENT, snapshot(app));
+    #[cfg(desktop)]
+    crate::tray::refresh(app);
 }

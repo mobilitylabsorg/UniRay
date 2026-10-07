@@ -5,6 +5,8 @@
 //! stops Xray when the pipe to its stdin closes.
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+#[cfg(not(windows))]
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -158,12 +160,13 @@ async fn launch(app: &AppHandle, tun: bool, config_path: &std::path::Path, gener
         return spawn_elevated(app, config_path, generation).await;
     }
     let command = if tun {
+        let (helper, xray, assets) = root_readable(app)?;
         let mut command = Command::new("pkexec");
         command
-            .arg(&state.paths.helper)
-            .arg(&state.paths.xray)
+            .arg(helper)
+            .arg(xray)
             .arg(config_path)
-            .arg(&state.paths.assets)
+            .arg(assets)
             .stdin(Stdio::piped());
         command
     } else {
@@ -171,6 +174,47 @@ async fn launch(app: &AppHandle, tun: bool, config_path: &std::path::Path, gener
     };
     let (stop, supervisor, exited) = spawn_supervised(app, command, Some(generation))?;
     Ok((stop, supervisor, exited, None))
+}
+
+/// The helper, the core and the asset directory, from where root can read
+/// them. An AppImage runs from a FUSE mount that only the user who started it
+/// may read - root included - so pkexec could not even open the helper there
+/// ("Permission denied"). From an AppImage they are copied out to the app's
+/// data directory first; an installed package needs nothing of the kind.
+#[cfg(not(windows))]
+fn root_readable(app: &AppHandle) -> CmdResult<(PathBuf, PathBuf, PathBuf)> {
+    let paths = &app.state::<App>().paths;
+    if std::env::var_os("APPIMAGE").is_none() {
+        return Ok((paths.helper.clone(), paths.xray.clone(), paths.assets.clone()));
+    }
+    stage_for_root(&paths.run_dir.join("elevated"), &paths.helper, &paths.xray, &paths.assets).map_err(CmdError::io)
+}
+
+/// Copies the helper, the core and the files of the asset directory into
+/// `dir`, which only the user can write to.
+#[cfg(not(windows))]
+fn stage_for_root(dir: &Path, helper: &Path, xray: &Path, assets: &Path) -> std::io::Result<(PathBuf, PathBuf, PathBuf)> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let staged_assets = dir.join("assets");
+    std::fs::create_dir_all(&staged_assets)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    let copy = |from: &Path, to: PathBuf, mode: u32| -> std::io::Result<PathBuf> {
+        // Replaced, not overwritten in place: a running copy cannot be written.
+        let _ = std::fs::remove_file(&to);
+        std::fs::copy(from, &to)?;
+        std::fs::set_permissions(&to, std::fs::Permissions::from_mode(mode))?;
+        Ok(to)
+    };
+    let helper = copy(helper, dir.join("uniray-helper"), 0o755)?;
+    let xray = copy(xray, dir.join("uniray-xray"), 0o755)?;
+    for entry in std::fs::read_dir(assets)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            copy(&entry.path(), staged_assets.join(entry.file_name()), 0o644)?;
+        }
+    }
+    Ok((helper, xray, staged_assets))
 }
 
 /// Windows TUN: the helper runs as administrator after a UAC prompt. It
@@ -469,4 +513,38 @@ async fn probe_delay(port: u16) -> i64 {
         .ok()
         .flatten()
         .unwrap_or(-1)
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::stage_for_root;
+
+    #[test]
+    fn staging_copies_what_root_runs() {
+        let root = std::env::temp_dir().join(format!("uniray-stage-{}", std::process::id()));
+        let source = root.join("mount");
+        std::fs::create_dir_all(source.join("resources")).unwrap();
+        std::fs::write(source.join("uniray-helper"), b"helper").unwrap();
+        std::fs::write(source.join("uniray-xray"), b"xray").unwrap();
+        std::fs::write(source.join("resources/geoip.dat"), b"ip").unwrap();
+        std::fs::write(source.join("resources/geosite.dat"), b"site").unwrap();
+
+        let dir = root.join("run/elevated");
+        let stage = || {
+            stage_for_root(&dir, &source.join("uniray-helper"), &source.join("uniray-xray"), &source.join("resources"))
+                .unwrap()
+        };
+        let (helper, xray, assets) = stage();
+        assert_eq!(std::fs::read(&helper).unwrap(), b"helper");
+        assert_eq!(std::fs::read(&xray).unwrap(), b"xray");
+        assert_eq!(std::fs::read(assets.join("geosite.dat")).unwrap(), b"site");
+        assert_eq!(std::fs::metadata(&helper).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        // Again over the previous copies, as on the next connect.
+        stage();
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

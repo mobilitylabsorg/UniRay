@@ -36,3 +36,5 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 sysproxy = "0.3"
 machine-uid = "0.5"
+# The system language, for the tray menu (the window asks the webview).
+sys-locale = "0.3"
