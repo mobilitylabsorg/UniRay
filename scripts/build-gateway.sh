@@ -7,7 +7,10 @@
 # Output: build/uniray-gateway-<arch>.tar, a docker archive that RouterOS
 # imports with `/container add file=uniray-gateway-<arch>.tar ...`.
 #
-# Needs docker (with buildx) and cross (https://github.com/cross-rs/cross).
+# Needs docker (with buildx), cargo-zigbuild (`cargo install cargo-zigbuild`),
+# Zig (`pip install ziglang` or a system package) and the Rust targets
+# (`rustup target add armv7-unknown-linux-musleabihf aarch64-unknown-linux-musl`).
+# Zig cross-compiles the C in the dependencies (ring) without a container.
 set -euo pipefail
 
 XRAY_VERSION="v26.9.30"
@@ -27,7 +30,7 @@ for platform in "${platforms[@]}"; do
   esac
   echo "build-gateway: $platform"
 
-  cross build --release -p uniray-gateway --target "$target"
+  cargo zigbuild --release -p uniray-gateway --target "$target"
 
   cache="$root/build/cache"
   zip="$cache/Xray-$asset-$XRAY_VERSION.zip"

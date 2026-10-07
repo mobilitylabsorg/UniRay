@@ -13,7 +13,7 @@ scripts/build-gateway.sh                 # linux/arm/v7 → build/uniray-gateway
 scripts/build-gateway.sh linux/arm64     # другие варианты: linux/arm64, linux/amd64
 ```
 
-Нужны Docker с buildx и [cross](https://github.com/cross-rs/cross).
+Нужны Docker с buildx, [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) (`cargo install cargo-zigbuild`), Zig (`pip install ziglang` или пакет из дистрибутива) и цели Rust: `rustup target add armv7-unknown-linux-musleabihf aarch64-unknown-linux-musl`.
 
 Готовые образы для armv7 и arm64 собирает CI (`.github/workflows/build.yml`): они лежат в артефакте `uniray-gateway` каждого запуска и в релизах.
 

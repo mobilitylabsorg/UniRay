@@ -25,9 +25,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A new push to a pull request replaces its running build; builds of main and
+# of tags always finish.
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -273,10 +275,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-musleabihf,aarch64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
+      # Zig cross-compiles the C in the dependencies (ring) for musl; cargo-zigbuild
+      # finds it as `python3 -m ziglang`.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ziglang==0.16.0
       - uses: taiki-e/install-action@v2
         with:
-          tool: cross
+          tool: cargo-zigbuild
       - uses: docker/setup-buildx-action@v3
 
       # Images RouterOS imports as files: build/uniray-gateway-<arch>.tar.
