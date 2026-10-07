@@ -1,0 +1,13 @@
+[package]
+name = "uniray-gateway"
+description = "Headless UniRay for routers: Xray as a LAN gateway with a small web UI"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+uniray-core = { path = "../uniray-core" }
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+tiny_http = "0.12"
+libc = "0.2"

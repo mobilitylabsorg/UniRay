@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>UniRay Gateway</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --surface: #fff; --raised: #eceef2; --line: #dfe2e8;
+    --ink: #14171c; --muted: #667085; --accent: #0f8f6f; --accent-ink: #fff;
+    --accent-soft: #dff3ec; --danger: #c93a3a; --danger-soft: #fbe7e7; --warn: #b46a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1013; --surface: #171a1f; --raised: #20242b; --line: #2a2f38;
+      --ink: #eceef2; --muted: #8f98a8; --accent: #2bc79c; --accent-ink: #06231b;
+      --accent-soft: #12332a; --danger: #f07070; --danger-soft: #3a1c1c; --warn: #e5a23c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 16px; display: flex; align-items: center; gap: 10px; }
+  h2 { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 24px 4px 8px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; }
+  .status { padding: 16px; display: grid; gap: 4px; }
+  .status-line { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 17px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  .running .dot { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+  .failed .dot { background: var(--danger); }
+  .starting .dot { background: var(--warn); }
+  .muted { color: var(--muted); font-size: 13px; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+  .error { background: var(--danger-soft); color: var(--danger); border-radius: 10px; padding: 8px 10px; font-size: 13px; margin-top: 8px; word-break: break-word; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  button { font: inherit; font-size: 14px; font-weight: 500; border: 0; border-radius: 10px; padding: 9px 14px; cursor: pointer; background: var(--raised); color: var(--ink); }
+  button:hover { filter: brightness(.96); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); color: var(--accent-ink); }
+  .sub { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .sub-name { font-weight: 600; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li + li { border-top: 1px solid var(--line); }
+  .server { width: 100%; display: flex; align-items: center; gap: 12px; padding: 11px 16px; background: none; border-radius: 0; text-align: left; }
+  .server:hover { background: var(--raised); filter: none; }
+  .radio { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line); flex: none; }
+  .server[aria-checked="true"] .radio { border: 5px solid var(--accent); }
+  .server-text { flex: 1; min-width: 0; }
+  .server-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .delay { font-size: 12px; flex: none; }
+  .good { color: var(--accent); } .slow { color: var(--warn); } .bad { color: var(--danger); }
+  pre { margin: 0; padding: 12px; max-height: 320px; overflow: auto; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+  details summary { cursor: pointer; padding: 12px 16px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1><span aria-hidden="true">🍕</span> UniRay Gateway</h1>
+
+  <section class="card status" id="status" aria-live="polite">
+    <div class="status-line"><span class="dot"></span><span id="status-text"></span></div>
+    <div class="muted" id="status-server"></div>
+    <div class="muted mono" id="status-traffic"></div>
+    <div class="error" id="status-error" hidden></div>
+    <div class="actions">
+      <button id="update"></button>
+      <button id="ping"></button>
+      <button id="restart"></button>
+    </div>
+  </section>
+
+  <div id="groups"></div>
+
+  <h2 id="logs-title"></h2>
+  <details class="card" id="logs">
+    <summary id="logs-summary"></summary>
+    <pre id="logs-text" class="mono"></pre>
+  </details>
+
+  <p class="muted mono" id="footer"></p>
+</main>
+<script>
+"use strict";
+const ru = navigator.language.toLowerCase().startsWith("ru");
+const T = ru ? {
+  stopped: "Остановлено", starting: "Запуск…", running: "Подключено", failed: "Ошибка",
+  update: "Обновить подписку", updating: "Обновление…", ping: "Пинг", pinging: "Пинг…", restart: "Перезапустить",
+  server: "Сервер", none: "Сервер не выбран", manual: "Добавленные вручную", noServers: "Серверов нет: задайте SUB или SRV в переменных контейнера",
+  traffic: (d, u) => `↓ ${d}   ↑ ${u}`, used: (u, t) => t ? `${u} из ${t}` : `${u}, без лимита`,
+  until: d => `до ${d}`, updated: d => `обновлено ${d}`, timeout: "нет ответа", logs: "Журнал", showLogs: "Показать журнал",
+  uptime: "работает", proxy: p => `прокси :${p}`, gateway: "шлюз TUN",
+} : {
+  stopped: "Stopped", starting: "Starting…", running: "Connected", failed: "Error",
+  update: "Update subscription", updating: "Updating…", ping: "Ping", pinging: "Pinging…", restart: "Restart",
+  server: "Server", none: "No server selected", manual: "Added manually", noServers: "No servers: set SUB or SRV in the container environment",
+  traffic: (d, u) => `↓ ${d}   ↑ ${u}`, used: (u, t) => t ? `${u} of ${t}` : `${u}, unlimited`,
+  until: d => `until ${d}`, updated: d => `updated ${d}`, timeout: "no reply", logs: "Log", showLogs: "Show log",
+  uptime: "up", proxy: p => `proxy :${p}`, gateway: "TUN gateway",
+};
+document.documentElement.lang = ru ? "ru" : "en";
+
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text != null) node.textContent = text;
+  return node;
+};
+const bytes = n => {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(i === 0 || n >= 100 ? 0 : 1)} ${units[i]}`;
+};
+const date = s => new Date(s * 1000).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+const duration = s => {
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? `${h} ч ${m} мин`.replace("ч", ru ? "ч" : "h").replace("мин", ru ? "мин" : "min") : `${m} ${ru ? "мин" : "min"}`;
+};
+
+async function api(path, body) {
+  const response = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || response.statusText);
+  return data;
+}
+
+let last = null;
+let previous = null; // { time, up, down } for speeds
+
+function render(state) {
+  last = state;
+  const status = $("status");
+  status.className = `card status ${state.status}`;
+  $("status-text").textContent = T[state.status] || state.status;
+
+  const current = state.servers.find(s => s.id === state.selected);
+  $("status-server").textContent = current ? current.name : T.none;
+
+  let traffic = "";
+  if (state.traffic) {
+    const now = Date.now();
+    let speed = "";
+    if (previous && now > previous.time) {
+      const seconds = (now - previous.time) / 1000;
+      speed = `   (${bytes(Math.max(0, state.traffic.down - previous.down) / seconds)}/s)`;
+    }
+    previous = { time: now, ...state.traffic };
+    traffic = T.traffic(bytes(state.traffic.down), bytes(state.traffic.up)) + speed;
+  } else {
+    previous = null;
+  }
+  const parts = [traffic];
+  if (state.since) parts.push(`${T.uptime} ${duration(Date.now() / 1000 - state.since)}`);
+  $("status-traffic").textContent = parts.filter(Boolean).join("  ·  ");
+
+  const error = $("status-error");
+  error.hidden = !state.error;
+  error.textContent = state.error || "";
+
+  $("update").textContent = state.updating ? T.updating : T.update;
+  $("update").disabled = state.updating || !state.subscriptions.length;
+  $("ping").textContent = state.pinging ? T.pinging : T.ping;
+  $("ping").disabled = state.pinging || !state.servers.length;
+  $("restart").textContent = T.restart;
+
+  renderGroups(state);
+  $("footer").textContent = `v${state.version} · ${state.tun ? T.gateway + " · " : ""}${T.proxy(state.mixedPort)} · HWID ${state.hwid}`;
+}
+
+function renderGroups(state) {
+  const groups = $("groups");
+  groups.replaceChildren();
+  if (!state.servers.length) {
+    groups.append(el("h2", null, T.server), el("p", "card sub muted", T.noServers));
+    return;
+  }
+  const manual = state.servers.filter(s => !s.group);
+  const sections = manual.length ? [{ title: T.manual, servers: manual }] : [];
+  for (const sub of state.subscriptions) {
+    sections.push({ title: sub.name, sub, servers: state.servers.filter(s => s.group === sub.id) });
+  }
+  for (const section of sections) {
+    groups.append(el("h2", null, section.title));
+    const card = el("section", "card");
+    if (section.sub) {
+      const info = el("div", "sub");
+      const lines = [];
+      const u = section.sub.userInfo;
+      if (u) lines.push(T.used(bytes(u.upload + u.download), u.total ? bytes(u.total) : ""));
+      if (u && u.expire) lines.push(T.until(new Date(u.expire * 1000).toLocaleDateString()));
+      if (section.sub.updatedAt) lines.push(T.updated(date(section.sub.updatedAt)));
+      info.append(el("div", "muted", lines.join("  ·  ")));
+      if (section.sub.lastError) info.append(el("div", "error", section.sub.lastError));
+      card.append(info);
+    }
+    const list = el("ul");
+    list.setAttribute("role", "radiogroup");
+    for (const server of section.servers) {
+      const item = el("li");
+      const button = el("button", "server");
+      button.setAttribute("role", "radio");
+      button.setAttribute("aria-checked", String(server.id === state.selected));
+      const text = el("span", "server-text");
+      text.append(el("span", "server-name", server.name), el("span", "muted", `${server.protocol} · ${server.transport} · ${server.security}`));
+      button.append(el("span", "radio"), text);
+      if (server.delay != null) {
+        const ms = server.delay;
+        button.append(el("span", `delay mono ${ms < 0 ? "bad" : ms < 300 ? "good" : ms < 800 ? "slow" : "bad"}`, ms < 0 ? T.timeout : `${ms} ms`));
+      }
+      button.addEventListener("click", () => select(server.id));
+      item.append(button);
+      list.append(item);
+    }
+    card.append(list);
+    groups.append(card);
+  }
+}
+
+async function refresh() {
+  try { render(await api("/api/state")); } catch (err) { console.warn(err); }
+}
+
+async function select(id) {
+  if (last && id === last.selected) return;
+  if (last) render({ ...last, selected: id, status: "starting", error: null });
+  try { await api("/api/select", { id }); } catch (err) { alert(err.message); }
+  refresh();
+}
+
+async function action(path) {
+  try { await api(path, {}); } catch (err) { alert(err.message); }
+  refresh();
+}
+
+async function loadLogs() {
+  if (!$("logs").open) return;
+  try {
+    const { lines } = await api("/api/logs");
+    const pre = $("logs-text");
+    const atEnd = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 30;
+    pre.textContent = lines.join("\n");
+    if (atEnd) pre.scrollTop = pre.scrollHeight;
+  } catch (err) { console.warn(err); }
+}
+
+$("update").addEventListener("click", () => action("/api/update"));
+$("ping").addEventListener("click", () => action("/api/ping"));
+$("restart").addEventListener("click", () => action("/api/restart"));
+$("logs").addEventListener("toggle", loadLogs);
+$("logs-title").textContent = T.logs;
+$("logs-summary").textContent = T.showLogs;
+
+refresh();
+setInterval(refresh, 2000);
+setInterval(loadLogs, 3000);
+</script>
+</body>
+</html>
