@@ -20,6 +20,9 @@ object TunnelMetrics {
           socket.connect(LocalSocketAddress(socketPath, LocalSocketAddress.Namespace.FILESYSTEM))
           socket.soTimeout = 2000
           socket.outputStream.write("GET /debug/vars HTTP/1.0\r\nHost: localhost\r\n\r\n".toByteArray())
+          // Xray closes the tunnel inbound only once the request side has
+          // ended; without this the read below waits out the timeout.
+          socket.shutdownOutput()
           socket.inputStream.readBytes().toString(Charsets.UTF_8)
         }
       } catch (e: Exception) {

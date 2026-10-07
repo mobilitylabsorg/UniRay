@@ -7,10 +7,11 @@ const store = useAppStore();
 <template>
   <div class="pointer-events-none fixed inset-x-0 top-[max(1rem,env(safe-area-inset-top))] z-50 flex flex-col items-center gap-2 px-4">
     <TransitionGroup
-      enter-active-class="transition duration-200"
-      enter-from-class="-translate-y-2 opacity-0"
-      leave-active-class="transition duration-150"
-      leave-to-class="opacity-0"
+      enter-active-class="transition duration-300 ease-[var(--ease-out)]"
+      enter-from-class="-translate-y-3 scale-95 opacity-0"
+      leave-active-class="transition duration-150 ease-[var(--ease-in)]"
+      leave-to-class="scale-95 opacity-0"
+      move-class="transition-transform duration-300"
     >
       <button
         v-for="toast in store.toasts"

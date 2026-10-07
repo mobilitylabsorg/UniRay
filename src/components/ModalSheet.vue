@@ -1,4 +1,5 @@
 <script setup lang="ts">
+// Open it inside <Transition name="sheet"> for the slide in and out.
 import { onBeforeUnmount, onMounted } from "vue";
 
 import AppIcon from "./AppIcon.vue";
@@ -17,7 +18,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 <template>
   <div class="fixed inset-0 z-40 flex items-end justify-center bg-black/50 sm:items-center" @click.self="emit('close')">
     <div
-      class="flex max-h-[90%] w-full max-w-md flex-col rounded-t-3xl bg-surface p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:rounded-3xl"
+      class="sheet-panel flex max-h-[90%] w-full max-w-md flex-col rounded-t-3xl bg-surface p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:rounded-3xl"
       role="dialog"
       aria-modal="true"
       :aria-label="title"

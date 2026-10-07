@@ -170,6 +170,8 @@ class StealthService : Service() {
     missedReads = 0
 
     if (!level.canStealth) return "stealth needs root; this device offers none"
+    // This service lives in :vpn, where Shizuku's binder does not arrive on its own.
+    if (level == Privilege.SHIZUKU_ROOT) PrivilegedShell.ensureShizukuBinder(this)
 
     val dir = installAssets()
     val configFile = File(dir, "config.json").apply { writeText(config) }
@@ -202,6 +204,7 @@ class StealthService : Service() {
     // xray leak. Recover the level from the spec, or re-detect, as a fallback.
     var lvl = level
     if (!lvl.canStealth) lvl = parseLevel(spec?.optString("privilege").orEmpty())
+    if (!lvl.canStealth || lvl == Privilege.SHIZUKU_ROOT) PrivilegedShell.ensureShizukuBinder(this)
     if (!lvl.canStealth) lvl = PrivilegedShell.detect(this).level
     val result = PrivilegedShell.execPrivileged(lvl, downScript(ipv6))
     if (!result.ok) Log.w(TAG, "stealth down reported: ${result.errText()}")

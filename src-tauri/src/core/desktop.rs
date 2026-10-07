@@ -18,7 +18,7 @@ use tokio::sync::{oneshot, watch};
 use uniray_core::config::{self, LogSink, Runtime, Tun};
 use uniray_core::model::{Mode, Server, Settings};
 
-use super::free_port;
+use super::{free_port, PROBE_TIMEOUT, PROBE_URL};
 use crate::app::App;
 use crate::error::{CmdError, CmdResult};
 use crate::state::write_private;
@@ -41,8 +41,6 @@ const READY_TIMEOUT_TUN: Duration = Duration::from_secs(120);
 /// How long the helper gets to stop Xray before it is given up on.
 const HELPER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
-const PROBE_URL: &str = "https://www.gstatic.com/generate_204";
-const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 /// Servers measured by one probe process.
 const PROBE_BATCH: usize = 32;
 

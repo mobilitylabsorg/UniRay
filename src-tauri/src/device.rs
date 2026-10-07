@@ -80,7 +80,26 @@ fn read_trimmed(path: &str) -> String {
     std::fs::read_to_string(path).map(|text| text.trim().to_owned()).unwrap_or_default()
 }
 
-#[cfg(all(desktop, not(target_os = "linux")))]
+/// `10.0.22631`. `RtlGetVersion` reports the real version, unlike
+/// `GetVersionEx`, which lies to apps without a compatibility manifest.
+#[cfg(windows)]
+fn os_version() -> String {
+    use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
+    use windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW;
+
+    // SAFETY: the struct is plain data, sized as the call requires.
+    let info = unsafe {
+        let mut info: OSVERSIONINFOW = std::mem::zeroed();
+        info.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOW>() as u32;
+        if RtlGetVersion(&mut info) != 0 {
+            return String::new();
+        }
+        info
+    };
+    format!("{}.{}.{}", info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber)
+}
+
+#[cfg(all(desktop, not(any(target_os = "linux", windows))))]
 fn os_version() -> String {
     String::new()
 }

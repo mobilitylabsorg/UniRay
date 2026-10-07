@@ -23,7 +23,11 @@ onMounted(async () => {
 <template>
   <div class="mx-auto flex h-full max-w-2xl flex-col">
     <main class="min-h-0 flex-1 overflow-y-auto pt-[env(safe-area-inset-top)]">
-      <RouterView v-if="store.snapshot" />
+      <RouterView v-if="store.snapshot" v-slot="{ Component }">
+        <Transition name="page" mode="out-in">
+          <component :is="Component" />
+        </Transition>
+      </RouterView>
     </main>
     <BottomNav />
     <ToastStack />

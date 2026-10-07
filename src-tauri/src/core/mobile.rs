@@ -18,15 +18,13 @@ use uniray_core::config::{self, LogSink, Runtime, Tun};
 use uniray_core::hwid::derive_hwid;
 use uniray_core::model::{PerAppMode, Server, Settings};
 
-use super::{ConnectionInfo, Status};
+use super::{ConnectionInfo, Status, PROBE_TIMEOUT, PROBE_URL};
 use crate::app::{emit_state, App};
 use crate::network::NetworkInfo;
 use crate::error::{CmdError, CmdResult};
 use crate::state::write_private;
 use crate::{logs, stats};
 
-const PROBE_URL: &str = "https://www.gstatic.com/generate_204";
-const PROBE_TIMEOUT_SECS: u32 = 6;
 /// libXray tests at most this many configs per call.
 const PROBE_BATCH: usize = 5;
 /// Plain resolver for the core's own (Go-side) lookups, which do not resolve
@@ -453,7 +451,7 @@ pub async fn measure_delays(
                     .unwrap_or_default()
             })
             .collect();
-        let args = json!({ "configs": configs, "url": PROBE_URL, "timeout": PROBE_TIMEOUT_SECS });
+        let args = json!({ "configs": configs, "url": PROBE_URL, "timeout": PROBE_TIMEOUT.as_secs() });
         match call::<Delays>(app, "measureDelays", args).await {
             Ok(result) => {
                 for (index, server) in batch.iter().enumerate() {

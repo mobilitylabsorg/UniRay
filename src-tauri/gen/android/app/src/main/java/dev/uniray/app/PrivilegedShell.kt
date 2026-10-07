@@ -4,7 +4,9 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.util.Log
 import com.topjohnwu.superuser.Shell
+import java.lang.reflect.InvocationTargetException
 import rikka.shizuku.Shizuku
+import rikka.shizuku.ShizukuProvider
 
 /** What elevated access the device offers. */
 enum class Privilege {
@@ -109,6 +111,9 @@ object PrivilegedShell {
    * reflection, so this degrades to a failure rather than failing to compile.
    */
   fun execShizuku(script: String): ShellResult {
+    if (!shizukuAlive()) {
+      return ShellResult(-1, emptyList(), listOf("Shizuku is not reachable from this process"))
+    }
     return try {
       val newProcess =
         Shizuku::class
@@ -122,8 +127,24 @@ object PrivilegedShell {
       val code = process.waitFor()
       ShellResult(code, out, err)
     } catch (e: Throwable) {
-      Log.w(TAG, "shizuku exec failed", e)
-      ShellResult(-1, emptyList(), listOf(e.message ?: e.toString()))
+      // Reflection wraps whatever Shizuku threw; report that, not the wrapper.
+      val cause = (e as? InvocationTargetException)?.targetException ?: e
+      Log.w(TAG, "shizuku exec failed", cause)
+      ShellResult(-1, emptyList(), listOf(cause.message ?: cause.toString()))
+    }
+  }
+
+  /**
+   * Shizuku hands its binder only to the process hosting [ShizukuProvider]
+   * (the main one). Services in another process (`:vpn`) fetch it from there
+   * before any Shizuku call. A no-op when the binder is already here.
+   */
+  fun ensureShizukuBinder(context: Context) {
+    if (shizukuAlive()) return
+    try {
+      ShizukuProvider.requestBinderForNonProviderProcess(context)
+    } catch (e: Throwable) {
+      Log.w(TAG, "fetching the Shizuku binder failed", e)
     }
   }
 

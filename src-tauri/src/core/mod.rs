@@ -54,6 +54,12 @@ pub struct ConnectionInfo {
     pub check: Option<crate::monitor::CheckResult>,
 }
 
+/// Delay tests fetch this through each server. Shared by every platform so that
+/// the same server reads the same everywhere.
+pub(crate) const PROBE_URL: &str = "https://www.gstatic.com/generate_204";
+/// How long one server gets before its delay test counts as a timeout.
+pub(crate) const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// A loopback port that is free right now.
 pub(crate) fn free_port() -> CmdResult<u16> {
     TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))

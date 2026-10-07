@@ -98,6 +98,9 @@ async fn read_vars(http: &reqwest::Client, source: &MetricsSource) -> Option<Vec
             let timeout = std::time::Duration::from_secs(2);
             let mut stream = tokio::time::timeout(timeout, tokio::net::UnixStream::connect(path)).await.ok()?.ok()?;
             stream.write_all(b"GET /debug/vars HTTP/1.0\r\nHost: localhost\r\n\r\n").await.ok()?;
+            // The socket is a tunnel inbound: Xray closes it only once the
+            // request side has ended, so end it, or the read below never sees EOF.
+            stream.shutdown().await.ok()?;
             let mut response = Vec::new();
             tokio::time::timeout(timeout, stream.read_to_end(&mut response)).await.ok()?.ok()?;
             let body = response.windows(4).position(|window| window == b"\r\n\r\n")? + 4;
