@@ -13,6 +13,8 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // libsu (root shell management) is published here.
+        maven { url = uri("https://jitpack.io") }
     }
 }
 

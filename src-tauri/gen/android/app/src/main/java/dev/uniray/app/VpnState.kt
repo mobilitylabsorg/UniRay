@@ -41,15 +41,30 @@ object VpnState {
     }
   }
 
-  /** Whether the service process exists; it may have been killed without a word. */
+  /**
+   * Whether a tunnel service process exists; it may have been killed without a
+   * word. Either the VPN service or the stealth service counts - they are the
+   * two ways the tunnel runs and never run at once.
+   */
   fun serviceAlive(context: Context): Boolean {
     val manager = context.getSystemService(ActivityManager::class.java) ?: return false
+    val tunnels = setOf(UniRayVpnService::class.java.name, StealthService::class.java.name)
     // Deprecated for third-party services, still answers for the app's own.
     @Suppress("DEPRECATION")
-    return manager.getRunningServices(Int.MAX_VALUE).any {
-      it.service.className == UniRayVpnService::class.java.name && it.started
-    }
+    return manager.getRunningServices(Int.MAX_VALUE).any { it.service.className in tunnels && it.started }
   }
 
   fun isRunning(context: Context): Boolean = read(context).running && serviceAlive(context)
+
+  /** Which tunnel service is currently running, if any. */
+  fun aliveTunnel(context: Context): Class<out android.app.Service>? {
+    val manager = context.getSystemService(ActivityManager::class.java) ?: return null
+    @Suppress("DEPRECATION")
+    val running = manager.getRunningServices(Int.MAX_VALUE).filter { it.started }.map { it.service.className }.toSet()
+    return when {
+      UniRayVpnService::class.java.name in running -> UniRayVpnService::class.java
+      StealthService::class.java.name in running -> StealthService::class.java
+      else -> null
+    }
+  }
 }

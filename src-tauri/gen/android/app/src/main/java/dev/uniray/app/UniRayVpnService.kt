@@ -15,8 +15,6 @@ import android.text.format.Formatter
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import java.io.File
-import android.net.LocalSocket
-import android.net.LocalSocketAddress
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
@@ -285,40 +283,8 @@ class UniRayVpnService : VpnService() {
     lastCheckAt = System.currentTimeMillis()
   }
 
-  /**
-   * Bytes sent and received through the proxy, from the core's counters. They
-   * are served on a Unix socket in the app's private directory, not on a
-   * port, so no other app can find or read them.
-   */
-  private fun readTraffic(): Pair<Long, Long>? {
-    if (metricsSocket.isEmpty()) return null
-    val body =
-      try {
-        LocalSocket().use { socket ->
-          socket.connect(LocalSocketAddress(metricsSocket, LocalSocketAddress.Namespace.FILESYSTEM))
-          socket.soTimeout = 2000
-          socket.outputStream.write("GET /debug/vars HTTP/1.0\r\nHost: localhost\r\n\r\n".toByteArray())
-          socket.inputStream.readBytes().toString(Charsets.UTF_8)
-        }
-      } catch (e: Exception) {
-        return null
-      }
-    val json = body.substringAfter("\r\n\r\n", "")
-    val outbound =
-      try {
-        JSONObject(json).optJSONObject("stats")?.optJSONObject("outbound") ?: return 0L to 0L
-      } catch (e: Exception) {
-        return null
-      }
-    var up = 0L
-    var down = 0L
-    for (tag in proxyTags) {
-      val counters = outbound.optJSONObject(tag) ?: continue
-      up += counters.optLong("uplink")
-      down += counters.optLong("downlink")
-    }
-    return up to down
-  }
+  /** Bytes sent and received through the proxy, from the core's counters. */
+  private fun readTraffic(): Pair<Long, Long>? = TunnelMetrics.readTraffic(metricsSocket, proxyTags)
 
   /**
    * Unpacks geoip.dat and geosite.dat from the APK, once per installed

@@ -6,3 +6,5 @@
 /tauri.properties# Downloaded by scripts/fetch-libxray-android.sh
 /libs/*.aar
 /libs/libXray.version
+# Standalone Xray for stealth mode, downloaded by scripts/fetch-xray-android.sh
+/src/main/assets/stealth/xray

@@ -23,6 +23,7 @@ import java.util.UUID
 import kotlin.concurrent.thread
 import org.json.JSONArray
 import org.json.JSONObject
+import rikka.shizuku.Shizuku
 
 /** How long to wait for the service to answer a start or a stop. */
 private const val START_TIMEOUT_MS = 60_000L
@@ -55,6 +56,18 @@ class DelayArgs {
   var configs: Array<String> = arrayOf()
   var url: String = ""
   var timeout: Int = 6
+}
+
+@InvokeArg
+class StealthArgs {
+  var config: String = ""
+  /** "tproxy" (iptables) or "roottun" (a root-owned TUN). */
+  var mode: String = "tproxy"
+  var port: Int = 12345
+  var ipv6: Boolean = false
+  var serverName: String = ""
+  var metricsSocket: String = ""
+  var proxyTags: Array<String> = arrayOf()
 }
 
 /**
@@ -140,17 +153,22 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun stop(invoke: Invoke) {
-    if (!VpnState.serviceAlive(activity)) {
+    // Either tunnel service may be the one running; stop whichever it is.
+    val stopIntent =
+      when (VpnState.aliveTunnel(activity)) {
+        UniRayVpnService::class.java ->
+          Intent(activity, UniRayVpnService::class.java).setAction(UniRayVpnService.ACTION_STOP)
+        StealthService::class.java ->
+          Intent(activity, StealthService::class.java).setAction(StealthService.ACTION_STOP)
+        else -> null
+      }
+    if (stopIntent == null) {
       invoke.resolve()
       return
     }
     val request = UUID.randomUUID().toString()
     try {
-      activity.startService(
-        Intent(activity, UniRayVpnService::class.java)
-          .setAction(UniRayVpnService.ACTION_STOP)
-          .putExtra(UniRayVpnService.EXTRA_REQUEST, request)
-      )
+      activity.startService(stopIntent.putExtra(UniRayVpnService.EXTRA_REQUEST, request))
     } catch (e: Exception) {
       invoke.reject("cannot reach the VPN service: ${e.message}")
       return
@@ -274,6 +292,94 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         invoke.resolve(JSObject().put("delays", JSArray(delays)))
       } catch (e: Exception) {
         invoke.reject(e.message ?: e.toString())
+      }
+    }
+  }
+
+  private fun privilegeToken(level: Privilege) =
+    when (level) {
+      Privilege.NONE -> "none"
+      Privilege.SHIZUKU_SHELL -> "shizukuShell"
+      Privilege.SHIZUKU_ROOT -> "shizukuRoot"
+      Privilege.ROOT -> "root"
+    }
+
+  /** The elevated access the device offers, for the UI. Never prompts. */
+  @Command
+  fun privilegeState(invoke: Invoke) {
+    thread {
+      val state = PrivilegedShell.detect(activity)
+      invoke.resolve(
+        JSObject()
+          .put("level", privilegeToken(state.level))
+          .put("shizukuAvailable", state.shizukuAvailable)
+          .put("shizukuGranted", state.shizukuGranted)
+      )
+    }
+  }
+
+  /** Asks Shizuku for permission (interactive); resolves the new state. */
+  @Command
+  fun requestShizuku(invoke: Invoke) {
+    try {
+      if (Shizuku.pingBinder() && !Shizuku.isPreV11()) {
+        Shizuku.requestPermission(PrivilegedShell.SHIZUKU_PERMISSION_REQUEST)
+      }
+    } catch (e: Exception) {
+      // Nothing to request against; the state call below just reports "none".
+    }
+    privilegeState(invoke)
+  }
+
+  /**
+   * Starts the stealth tunnel. Verifies root (prompting for it if need be);
+   * rejects with code `noRoot` so the caller can fall back to the VPN service.
+   */
+  @Command
+  fun startStealth(invoke: Invoke) {
+    val args = invoke.parseArgs(StealthArgs::class.java)
+    thread {
+      var state = PrivilegedShell.detect(activity)
+      if (!state.level.canStealth) {
+        // The grant dialog may be what is missing; ask once.
+        PrivilegedShell.requestRoot()
+        state = PrivilegedShell.detect(activity)
+      }
+      if (!state.level.canStealth) {
+        invoke.reject("stealth needs root, which this device does not grant", "noRoot")
+        return@thread
+      }
+
+      val spec =
+        JSONObject()
+          .put("config", args.config)
+          .put("mode", args.mode)
+          .put("port", args.port)
+          .put("ipv6", args.ipv6)
+          .put("privilege", state.level.name)
+          .put("serverName", args.serverName)
+          .put("metricsSocket", args.metricsSocket)
+          .put("proxyTags", JSONArray(args.proxyTags))
+      val file = StealthService.specFile(activity)
+      file.parentFile?.mkdirs()
+      file.writeText(spec.toString())
+
+      val request = UUID.randomUUID().toString()
+      val intent =
+        Intent(activity, StealthService::class.java)
+          .setAction(StealthService.ACTION_START)
+          .putExtra(StealthService.EXTRA_REQUEST, request)
+      try {
+        ContextCompat.startForegroundService(activity, intent)
+      } catch (e: Exception) {
+        invoke.reject("cannot start the stealth service: ${e.message}")
+        return@thread
+      }
+      val answer = awaitAnswer(request, START_TIMEOUT_MS)
+      when {
+        answer == null -> invoke.reject("the stealth service did not answer")
+        answer.running -> invoke.resolve()
+        else -> invoke.reject(answer.error ?: "the stealth service failed to start")
       }
     }
   }

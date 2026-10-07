@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Stealth mode may be driven through Shizuku instead of root. -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <!-- The per-app proxy list shows the installed apps. -->
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
@@ -46,6 +48,33 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="vpn" />
         </service>
+
+        <!-- Stealth tunnel: a plain foreground service, not a VpnService, so it
+             does not advertise itself as a VPN. It runs the standalone Xray as
+             a root process and sets up the capture (tproxy/iptables or a
+             root-owned TUN); the privileged work happens through the shell, not
+             here. Shares the :vpn process so it survives the app being swept
+             away, like the VpnService (never both at once). -->
+        <service
+            android:name=".StealthService"
+            android:exported="false"
+            android:process=":vpn"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="proxy" />
+        </service>
+
+        <!-- Shizuku client provider. Declared even though stealth prefers root:
+             when Shizuku is started as root it can provide stealth too, and in
+             ADB mode it still powers the non-stealth conveniences. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
         <provider
           android:name="androidx.core.content.FileProvider"
