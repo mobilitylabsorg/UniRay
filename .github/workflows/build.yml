@@ -3,8 +3,8 @@
 # gateway container (armv7, arm64). Every run uploads the packages as workflow
 # artifacts; a pushed `v*` tag also publishes them as a GitHub release.
 #
-# macOS signing: without secrets the app is unsigned, and macOS refuses to
-# open it straight from a download (see README). To sign and notarize, add
+# macOS signing: without secrets the app is signed ad-hoc, which macOS opens
+# only after the user allows it (see README). To sign and notarize, add
 # APPLE_CERTIFICATE (the .p12, base64), APPLE_CERTIFICATE_PASSWORD,
 # APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD (an app-specific password)
 # and APPLE_TEAM_ID; Tauri picks them up by these names.
@@ -244,7 +244,12 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           if [ -z "$APPLE_CERTIFICATE" ]; then
-            echo "No APPLE_CERTIFICATE secret: the app is left unsigned."
+            # Ad-hoc: the bundle gets a valid signature that seals its contents,
+            # just not one from an identified developer. Left unsigned, the
+            # binaries carry only the linker's signature and the sealed bundle
+            # does not match it, so macOS calls the app damaged.
+            echo "No APPLE_CERTIFICATE secret: signing ad-hoc."
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
             exit 0
           fi
           for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do

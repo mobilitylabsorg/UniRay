@@ -31,6 +31,7 @@ pub struct Traffic {
 #[derive(Clone, Debug)]
 pub enum MetricsSource {
     /// A loopback port (desktop).
+    #[cfg(desktop)]
     Port(u16),
     /// A Unix socket in the app's private directory (Android): no port for
     /// other apps to find.
@@ -87,7 +88,10 @@ pub fn spawn(app: AppHandle, source: MetricsSource, proxy_tags: Vec<String>) -> 
 
 /// The body of `GET /debug/vars`.
 async fn read_vars(http: &reqwest::Client, source: &MetricsSource) -> Option<Vec<u8>> {
+    #[cfg(mobile)]
+    let _ = http; // the socket is read by hand
     match source {
+        #[cfg(desktop)]
         MetricsSource::Port(port) => {
             let response = http.get(format!("http://127.0.0.1:{port}/debug/vars")).send().await.ok()?;
             Some(response.bytes().await.ok()?.to_vec())

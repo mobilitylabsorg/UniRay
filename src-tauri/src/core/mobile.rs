@@ -18,7 +18,7 @@ use uniray_core::config::{self, LogSink, Runtime, Tun};
 use uniray_core::hwid::derive_hwid;
 use uniray_core::model::{PerAppMode, Server, Settings};
 
-use super::{ConnectionInfo, Status, PROBE_TIMEOUT, PROBE_URL};
+use super::{ConnectionInfo, RunEnd, Status, PROBE_TIMEOUT, PROBE_URL};
 use crate::app::{emit_state, App};
 use crate::network::NetworkInfo;
 use crate::error::{CmdError, CmdResult};
@@ -99,6 +99,19 @@ struct StartArgs {
 #[derive(Deserialize)]
 struct ServiceState {
     running: bool,
+    /// The service wrote its own stop; otherwise it was killed.
+    #[serde(default)]
+    reported: bool,
+    /// Why it stopped, when it was not asked to.
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StopAnswer {
+    /// What the service could not tear down.
+    #[serde(default)]
+    error: Option<String>,
 }
 
 async fn network_info(app: &AppHandle) -> Option<NetworkInfo> {
@@ -161,9 +174,11 @@ fn run_files(app: &AppHandle) -> RunFiles {
 }
 
 async fn service_running(app: &AppHandle) -> bool {
-    call::<ServiceState>(app, "state", json!({}))
-        .await
-        .is_ok_and(|state| state.running)
+    service_state(app).await.is_some_and(|state| state.running)
+}
+
+async fn service_state(app: &AppHandle) -> Option<ServiceState> {
+    call::<ServiceState>(app, "state", json!({})).await.ok()
 }
 
 pub struct Running {
@@ -243,13 +258,19 @@ impl Running {
         })
     }
 
-    pub async fn stop(self, app: &AppHandle) {
+    /// Stops the service. Returns what it could not tear down: a stealth
+    /// rule left in place cuts the device off the network.
+    pub async fn stop(self, app: &AppHandle) -> Option<CmdError> {
         self.watcher.abort();
         self.stats.abort();
-        let _ = call::<Value>(app, "stop", json!({})).await;
+        let teardown = match call::<StopAnswer>(app, "stop", json!({})).await {
+            Ok(answer) => answer.error.map(|message| CmdError::new("teardown", message)),
+            Err(err) => Some(err),
+        };
         tokio::time::sleep(Duration::from_millis(400)).await;
         self.tailer.abort();
         let _ = std::fs::remove_file(run_files(app).session);
+        teardown
     }
 }
 
@@ -351,12 +372,17 @@ fn spawn_watcher(app: AppHandle, generation: u64) -> JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(WATCH_INTERVAL).await;
-            if !service_running(&app).await {
-                // Not awaited: the handler aborts this very task.
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move { super::on_core_exit(&app, generation).await });
-                return;
-            }
+            let end = match service_state(&app).await {
+                Some(state) if state.running => continue,
+                Some(ServiceState { reported: true, error: Some(reason), .. }) => RunEnd::Failed(reason),
+                // Stopped on request from outside the app: the notification.
+                Some(ServiceState { reported: true, error: None, .. }) => RunEnd::Stopped,
+                _ => RunEnd::Crashed,
+            };
+            // Not awaited: the handler aborts this very task.
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { super::on_run_end(&app, generation, end).await });
+            return;
         }
     })
 }

@@ -136,7 +136,7 @@ class UniRayVpnService : VpnService() {
 
   /** The user turned the VPN off in system settings, or another VPN took over. */
   override fun onRevoke() {
-    worker.execute { shutdown(null) }
+    worker.execute { shutdown(null, "the VPN was turned off by the system or another VPN app") }
   }
 
   override fun onDestroy() {
@@ -238,12 +238,14 @@ class UniRayVpnService : VpnService() {
   }
 
   /** Stops everything; [request] is the stop request being answered, if any. */
-  private fun shutdown(request: String?) {
+  /** Stops everything; [request] is the stop request being answered, if any,
+   * and [reason] why the tunnel went down when nobody asked. */
+  private fun shutdown(request: String?, reason: String? = null) {
     stopped = true
     tick?.cancel(false)
     stopCore()
     clearNotification()
-    VpnState.write(this, false, request, null)
+    VpnState.write(this, false, request, reason)
     stopSelf()
   }
 

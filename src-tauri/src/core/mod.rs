@@ -17,6 +17,7 @@ pub use mobile::{
     update_notification, InstalledApp, Running,
 };
 
+#[cfg(desktop)]
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::atomic::Ordering;
 
@@ -61,6 +62,7 @@ pub(crate) const PROBE_URL: &str = "https://www.gstatic.com/generate_204";
 pub(crate) const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// A loopback port that is free right now.
+#[cfg(desktop)]
 pub(crate) fn free_port() -> CmdResult<u16> {
     TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .and_then(|listener| listener.local_addr())
@@ -79,7 +81,9 @@ pub async fn connect(app: &AppHandle) -> CmdResult<()> {
     let mut running = state.running.lock().await;
     crate::monitor::stop(app);
     if let Some(previous) = running.take() {
-        previous.stop(app).await;
+        if let Some(err) = previous.stop(app).await {
+            logs::push(app, &format!("[Error] {}", err.message));
+        }
     }
 
     let (server, settings) = {
@@ -129,11 +133,14 @@ pub async fn disconnect(app: &AppHandle) {
     let state = app.state::<App>();
     let mut running = state.running.lock().await;
     crate::monitor::stop(app);
+    let mut error = None;
     if let Some(running) = running.take() {
         set_connection(app, |info| info.status = Status::Disconnecting);
-        running.stop(app).await;
+        error = running.stop(app).await;
     }
-    set_connection(app, |info| *info = ConnectionInfo::default());
+    // A teardown that left something behind is worth telling: on Android
+    // stealth it can cut the device off the network.
+    set_connection(app, |info| *info = ConnectionInfo { error, ..Default::default() });
 }
 
 /// Applies changed settings or a newly selected server to a live connection.
@@ -146,8 +153,26 @@ pub async fn reconnect_if_connected(app: &AppHandle) -> CmdResult<()> {
     }
 }
 
+/// How a run ended when the app did not end it.
+#[cfg_attr(desktop, allow(dead_code))] // only the mobile service reports why
+pub(crate) enum RunEnd {
+    /// The core died; its log may say why.
+    Crashed,
+    /// The tunnel service was stopped from outside the app (the notification's
+    /// disconnect): an ordinary disconnect.
+    Stopped,
+    /// The tunnel service stopped and said why.
+    Failed(String),
+}
+
 /// Called when the core of run `generation` stopped without being asked to.
+#[cfg(desktop)]
 pub(crate) async fn on_core_exit(app: &AppHandle, generation: u64) {
+    on_run_end(app, generation, RunEnd::Crashed).await
+}
+
+/// Called when run `generation` ended without the app ending it.
+pub(crate) async fn on_run_end(app: &AppHandle, generation: u64, end: RunEnd) {
     let state = app.state::<App>();
     // Waits out a connect or disconnect in progress; whichever it is, it has
     // dealt with this run by the time the lock is free, unless the run is
@@ -161,10 +186,15 @@ pub(crate) async fn on_core_exit(app: &AppHandle, generation: u64) {
     };
     let log_mark = stopped.log_mark;
     crate::monitor::stop(app);
-    stopped.stop(app).await;
-    let reason = logs::last_problem(&state.logs.lock().unwrap(), log_mark)
-        .unwrap_or_else(|| "the core stopped unexpectedly".into());
-    set_connection(app, |info| {
-        *info = ConnectionInfo { error: Some(CmdError::core(reason)), ..Default::default() }
-    });
+    let teardown = stopped.stop(app).await;
+    let error = match end {
+        RunEnd::Stopped => teardown,
+        RunEnd::Failed(reason) => Some(CmdError::new("coreStopped", reason)),
+        RunEnd::Crashed => {
+            let reason = logs::last_problem(&state.logs.lock().unwrap(), log_mark)
+                .unwrap_or_else(|| "the core stopped unexpectedly".into());
+            Some(CmdError::new("coreStopped", reason))
+        }
+    };
+    set_connection(app, |info| *info = ConnectionInfo { error, ..Default::default() });
 }

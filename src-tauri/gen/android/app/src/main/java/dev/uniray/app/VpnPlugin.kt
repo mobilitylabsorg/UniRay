@@ -176,9 +176,10 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
       return
     }
     // Resolves either way: a service that does not answer is gone or going.
+    // What it could not tear down comes back as `error`.
     thread {
-      awaitAnswer(request, STOP_TIMEOUT_MS) { !it.running && !VpnState.serviceAlive(activity) }
-      invoke.resolve()
+      val answer = awaitAnswer(request, STOP_TIMEOUT_MS) { !it.running && !VpnState.serviceAlive(activity) }
+      invoke.resolve(JSObject().put("error", answer?.error))
     }
   }
 
@@ -222,7 +223,15 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun state(invoke: Invoke) {
-    invoke.resolve(JSObject().put("running", VpnState.isRunning(activity)))
+    val state = VpnState.read(activity)
+    // `reported`: the service wrote its own stop (asked to, or with `error`
+    // saying why); otherwise a tunnel that is not running was killed.
+    invoke.resolve(
+      JSObject()
+        .put("running", state.running && VpnState.serviceAlive(activity))
+        .put("reported", !state.running)
+        .put("error", state.error)
+    )
   }
 
   /** The Material You palette as UI tokens for both themes; empty before Android 12. */

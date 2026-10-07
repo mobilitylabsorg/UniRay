@@ -124,7 +124,9 @@ impl Running {
         })
     }
 
-    pub async fn stop(mut self, app: &AppHandle) {
+    /// Stops the core. Returns what went wrong tearing it down, if anything
+    /// the user needs to know about; on desktop there is nothing of the kind.
+    pub async fn stop(mut self, app: &AppHandle) -> Option<CmdError> {
         self.stats.abort();
         if self.system_proxy {
             if let Err(err) = sysproxy::reset().await {
@@ -141,6 +143,7 @@ impl Running {
             tailer.abort();
         }
         let _ = std::fs::remove_file(app.state::<App>().paths.run_dir.join("config.json"));
+        None
     }
 }
 

@@ -268,6 +268,7 @@ async fn present(app: &AppHandle, summary: Summary) {
 }
 
 /// `1.2 MB/s`, for the tray tooltip.
+#[cfg(desktop)]
 pub fn format_speed(bytes_per_second: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
     let mut value = bytes_per_second as f64;

@@ -79,7 +79,8 @@ pub fn last_problem(logs: &VecDeque<LogLine>, mark: u64) -> Option<String> {
     recent()
         .find(|line| line.level == "error")
         .or_else(|| recent().find(|line| line.level == "warning"))
-        .or_else(|| recent().next())
+        // A connection the core accepted explains nothing about its end.
+        .or_else(|| recent().find(|line| line.level != "access"))
         .map(|line| line.text.clone())
 }
 
@@ -217,6 +218,14 @@ mod tests {
         assert_eq!(last_problem(&logs, 2).as_deref(), Some("a later warning"));
         assert_eq!(last_problem(&logs, 3).as_deref(), Some("bye"));
         assert_eq!(last_problem(&logs, 4), None);
+        // Access lines are traffic, not a reason.
+        let logs: VecDeque<LogLine> = [
+            line(1, "info", "started"),
+            line(2, "access", "from 10.0.0.45:41314 accepted tcp:149.154.167.92:5222 [tun -> proxy]"),
+        ]
+        .into();
+        assert_eq!(last_problem(&logs, 1).as_deref(), Some("started"));
+        assert_eq!(last_problem(&logs, 2), None);
         assert_eq!(last_problem(&VecDeque::new(), 0), None);
     }
 }

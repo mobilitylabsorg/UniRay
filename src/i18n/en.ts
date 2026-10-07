@@ -172,6 +172,8 @@ const en: typeof ru = {
     noServer: "Select a server first",
     portBusy: "The local proxy port is used by another program. Change it in settings",
     core: "The Xray core failed to start",
+    coreStopped: "The connection dropped",
+    teardown: "Stealth mode could not undo its network setup",
     network: "Could not reach the subscription server",
     http: "The subscription server returned an error",
     hwidLimit: "The device limit of this subscription is reached. Unlink another device with your provider",

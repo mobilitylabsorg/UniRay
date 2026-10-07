@@ -158,8 +158,8 @@ class StealthService : Service() {
     ticker.shutdown()
     worker.execute {
       if (running) {
-        stopCore()
-        VpnState.write(this, false, null, null)
+        val left = stopCore()
+        VpnState.write(this, false, null, left)
       }
     }
     worker.shutdown()
@@ -192,6 +192,10 @@ class StealthService : Service() {
     val ipv6 = spec.optBoolean("ipv6", false)
     val tunName = spec.optString("tunName").ifEmpty { "uniray0" }
 
+    // Whatever an earlier run left behind (a crash, a lost teardown) would
+    // otherwise sit in front of the new rules.
+    PrivilegedShell.execPrivileged(level, downScript())
+
     val up =
       if (mode == MODE_ROOT_TUN) rootTunUpScript(dir, configFile, tunName, ipv6)
       else tproxyUpScript(dir, configFile, port, ipv6)
@@ -199,20 +203,24 @@ class StealthService : Service() {
     if (!result.ok) {
       Log.e(TAG, "stealth up failed: ${result.errText()}")
       // Leave nothing half-set-up behind.
-      PrivilegedShell.execPrivileged(level, downScript(ipv6))
+      PrivilegedShell.execPrivileged(level, downScript())
       return "could not set up the stealth tunnel: ${result.errText().take(200)}"
     }
     running = true
     return null
   }
 
-  private fun stopCore() {
+  /**
+   * Tears the tunnel down and checks that nothing of it is left: a rule left
+   * in place sends all traffic to a core that is gone, which takes the whole
+   * connection with it. Returns what could not be removed, if anything.
+   */
+  private fun stopCore(): String? {
     val spec = try {
       JSONObject(specFile(this).readText())
     } catch (e: Exception) {
       null
     }
-    val ipv6 = spec?.optBoolean("ipv6", false) ?: false
     // The teardown must run even in a fresh process that never ran startCore
     // (so `level` is NONE) - otherwise the iptables rules, routes and the root
     // xray leak. Recover the level from the spec, or re-detect, as a fallback.
@@ -220,17 +228,28 @@ class StealthService : Service() {
     if (!lvl.canStealth) lvl = parseLevel(spec?.optString("privilege").orEmpty())
     if (!lvl.canStealth || lvl == Privilege.SHIZUKU_ROOT) PrivilegedShell.ensureShizukuBinder(this)
     if (!lvl.canStealth) lvl = PrivilegedShell.detect(this).level
-    val result = PrivilegedShell.execPrivileged(lvl, downScript(ipv6))
-    if (!result.ok) Log.w(TAG, "stealth down reported: ${result.errText()}")
     running = false
+    var left = ""
+    for (attempt in 1..3) {
+      val result = PrivilegedShell.execPrivileged(lvl, downScript())
+      if (!result.ok) Log.w(TAG, "stealth down reported: ${result.errText()}")
+      val check = PrivilegedShell.execPrivileged(lvl, leftoversScript())
+      left = if (check.ok) check.outText().trim() else "unknown (${check.errText().take(100)})"
+      if (left.isEmpty()) return null
+      Log.w(TAG, "stealth teardown left: $left (attempt $attempt)")
+      Thread.sleep(500)
+    }
+    return "could not remove the stealth network setup (${left.replace('\n', ',')}); restart the phone to clear it"
   }
 
-  private fun shutdown(request: String?) {
+  /** Stops everything; [request] is the stop request being answered, if any,
+   * and [reason] why the tunnel went down when nobody asked. */
+  private fun shutdown(request: String?, reason: String? = null) {
     stopped = true
     tick?.cancel(false)
-    stopCore()
+    val teardown = stopCore()
     clearNotification()
-    VpnState.write(this, false, request, null)
+    VpnState.write(this, false, request, teardown ?: reason)
     stopSelf()
   }
 
@@ -321,35 +340,35 @@ class StealthService : Service() {
     if (ipv6) ""
     else
       """
-      ip6tables -t filter -N $CHAIN_OUT 2>/dev/null || ip6tables -t filter -F $CHAIN_OUT
-      ip6tables -t filter -A $CHAIN_OUT -o lo -j RETURN
-      ip6tables -t filter -A $CHAIN_OUT -d fc00::/7 -j RETURN
-      ip6tables -t filter -A $CHAIN_OUT -d fe80::/10 -j RETURN
-      ip6tables -t filter -A $CHAIN_OUT -d 2000::/3 -j DROP
-      ip6tables -t filter -A OUTPUT -j $CHAIN_OUT
+      ip6tables -w -t filter -N $CHAIN_OUT 2>/dev/null || ip6tables -w -t filter -F $CHAIN_OUT
+      ip6tables -w -t filter -A $CHAIN_OUT -o lo -j RETURN
+      ip6tables -w -t filter -A $CHAIN_OUT -d fc00::/7 -j RETURN
+      ip6tables -w -t filter -A $CHAIN_OUT -d fe80::/10 -j RETURN
+      ip6tables -w -t filter -A $CHAIN_OUT -d 2000::/3 -j DROP
+      ip6tables -w -t filter -A OUTPUT -j $CHAIN_OUT
       """.trimIndent()
 
   private fun tproxyUpScript(dir: File, configFile: File, port: Int, ipv6: Boolean): String {
-    val returns = privateNets.joinToString("\n") { "iptables -t mangle -A $CHAIN_PRE -d $it -j RETURN" }
-    val returnsOut = privateNets.joinToString("\n") { "iptables -t mangle -A $CHAIN_OUT -d $it -j RETURN" }
+    val returns = privateNets.joinToString("\n") { "iptables -w -t mangle -A $CHAIN_PRE -d $it -j RETURN" }
+    val returnsOut = privateNets.joinToString("\n") { "iptables -w -t mangle -A $CHAIN_OUT -d $it -j RETURN" }
     val v6 = blockIpv6Script(ipv6)
     return """
       set -e
       ip rule add fwmark $MARK lookup $TABLE 2>/dev/null || true
       ip route add local 0.0.0.0/0 dev lo table $TABLE 2>/dev/null || true
 
-      iptables -t mangle -N $CHAIN_PRE 2>/dev/null || iptables -t mangle -F $CHAIN_PRE
-      iptables -t mangle -N $CHAIN_OUT 2>/dev/null || iptables -t mangle -F $CHAIN_OUT
+      iptables -w -t mangle -N $CHAIN_PRE 2>/dev/null || iptables -w -t mangle -F $CHAIN_PRE
+      iptables -w -t mangle -N $CHAIN_OUT 2>/dev/null || iptables -w -t mangle -F $CHAIN_OUT
       $returns
-      iptables -t mangle -A $CHAIN_PRE -p tcp -j TPROXY --on-port $port --tproxy-mark $MARK
-      iptables -t mangle -A $CHAIN_PRE -p udp -j TPROXY --on-port $port --tproxy-mark $MARK
-      iptables -t mangle -A PREROUTING -j $CHAIN_PRE
+      iptables -w -t mangle -A $CHAIN_PRE -p tcp -j TPROXY --on-port $port --tproxy-mark $MARK
+      iptables -w -t mangle -A $CHAIN_PRE -p udp -j TPROXY --on-port $port --tproxy-mark $MARK
+      iptables -w -t mangle -A PREROUTING -j $CHAIN_PRE
 
-      iptables -t mangle -A $CHAIN_OUT -m owner --uid-owner 0 -j RETURN
+      iptables -w -t mangle -A $CHAIN_OUT -m owner --uid-owner 0 -j RETURN
       $returnsOut
-      iptables -t mangle -A $CHAIN_OUT -p tcp -j MARK --set-mark $MARK
-      iptables -t mangle -A $CHAIN_OUT -p udp -j MARK --set-mark $MARK
-      iptables -t mangle -A OUTPUT -j $CHAIN_OUT
+      iptables -w -t mangle -A $CHAIN_OUT -p tcp -j MARK --set-mark $MARK
+      iptables -w -t mangle -A $CHAIN_OUT -p udp -j MARK --set-mark $MARK
+      iptables -w -t mangle -A OUTPUT -j $CHAIN_OUT
 
       $v6
 
@@ -411,40 +430,53 @@ class StealthService : Service() {
     """.trimIndent()
   }
 
-  private fun downScript(ipv6: Boolean): String {
+  /**
+   * Removes everything either mode sets up, whatever mode ran and whatever
+   * the IPv6 setting was: idempotent, so it also clears what an earlier run
+   * left behind. `-w` waits for the xtables lock, which Android's netd holds
+   * often; without it a delete fails quietly and leaves traffic going to a
+   * core that is gone. Jumps are deleted until none is left, in case a rule
+   * was added twice.
+   */
+  private fun downScript(): String {
     val pid = File(stealthDir(this), "xray.pid").absolutePath
     val xray = File(stealthDir(this), XRAY_TPROXY).absolutePath
     val xrayTun = File(stealthDir(this), XRAY_TUN).absolutePath
     val savedRpFilter = File(stealthDir(this), "rp_filter.saved").absolutePath
-    val v6 =
-      if (ipv6) ""
-      else
-        """
-        ip6tables -t filter -D OUTPUT -j $CHAIN_OUT 2>/dev/null || true
-        ip6tables -t filter -F $CHAIN_OUT 2>/dev/null || true
-        ip6tables -t filter -X $CHAIN_OUT 2>/dev/null || true
-        """.trimIndent()
     return """
       [ -f $pid ] && kill ${'$'}(cat $pid) 2>/dev/null || true
       pkill -f "$xray run" 2>/dev/null || true
       pkill -f "$xrayTun run" 2>/dev/null || true
       rm -f $pid 2>/dev/null || true
-      iptables -t mangle -D OUTPUT -j $CHAIN_OUT 2>/dev/null || true
-      iptables -t mangle -D PREROUTING -j $CHAIN_PRE 2>/dev/null || true
-      iptables -t mangle -F $CHAIN_OUT 2>/dev/null || true
-      iptables -t mangle -F $CHAIN_PRE 2>/dev/null || true
-      iptables -t mangle -X $CHAIN_OUT 2>/dev/null || true
-      iptables -t mangle -X $CHAIN_PRE 2>/dev/null || true
-      ip rule del fwmark $MARK lookup $TABLE 2>/dev/null || true
+      while iptables -w -t mangle -D OUTPUT -j $CHAIN_OUT 2>/dev/null; do :; done
+      while iptables -w -t mangle -D PREROUTING -j $CHAIN_PRE 2>/dev/null; do :; done
+      iptables -w -t mangle -F $CHAIN_OUT 2>/dev/null || true
+      iptables -w -t mangle -F $CHAIN_PRE 2>/dev/null || true
+      iptables -w -t mangle -X $CHAIN_OUT 2>/dev/null || true
+      iptables -w -t mangle -X $CHAIN_PRE 2>/dev/null || true
+      while ip6tables -w -t filter -D OUTPUT -j $CHAIN_OUT 2>/dev/null; do :; done
+      ip6tables -w -t filter -F $CHAIN_OUT 2>/dev/null || true
+      ip6tables -w -t filter -X $CHAIN_OUT 2>/dev/null || true
+      while ip rule del fwmark $MARK lookup $TABLE 2>/dev/null; do :; done
       ip route flush table $TABLE 2>/dev/null || true
       while ip rule del pref $TUN_RULE_PREF 2>/dev/null; do :; done
       while ip -6 rule del pref $TUN_RULE_PREF 2>/dev/null; do :; done
       ip route flush table $TUN_TABLE 2>/dev/null || true
       ip -6 route flush table $TUN_TABLE 2>/dev/null || true
       if [ -f $savedRpFilter ]; then cat $savedRpFilter > /proc/sys/net/ipv4/conf/all/rp_filter; rm -f $savedRpFilter; fi
-      $v6
+      true
     """.trimIndent()
   }
+
+  /** Prints what of the setup is still in place; nothing when all is gone. */
+  private fun leftoversScript(): String =
+    """
+    iptables -w -t mangle -S 2>/dev/null | grep -q -e $CHAIN_OUT -e $CHAIN_PRE && echo "iptables rules"
+    ip6tables -w -t filter -S 2>/dev/null | grep -q $CHAIN_OUT && echo "ip6tables rules"
+    ip rule 2>/dev/null | grep -q -e "lookup $TABLE" -e "lookup $TUN_TABLE" && echo "routing rules"
+    ip -6 rule 2>/dev/null | grep -q "lookup $TUN_TABLE" && echo "IPv6 routing rules"
+    true
+    """.trimIndent()
 
   private fun parseLevel(name: String): Privilege =
     try {
@@ -537,7 +569,7 @@ class StealthService : Service() {
       // The root core answers on the socket; several misses mean it is gone.
       if (++missedReads >= DEAD_AFTER_MISSES) {
         Log.w(TAG, "stealth core stopped answering; shutting down")
-        worker.execute { shutdown(null) }
+        worker.execute { shutdown(null, "the stealth core stopped responding") }
       }
     } else {
       missedReads = 0
