@@ -42,11 +42,30 @@ pub fn spawn(app: AppHandle, source: MetricsSource, proxy_tags: Vec<String>) -> 
     tauri::async_runtime::spawn(async move {
         let http = app.state::<App>().http.clone();
         let mut previous: Option<(Instant, u64, u64)> = None;
+        // A one-shot note in the app log: whether the counters are reachable.
+        // Speed that stays zero usually means the socket does not answer or the
+        // outbound tags do not match where the traffic is counted.
+        let mut diagnosed = false;
+        let mut misses = 0u32;
         loop {
             tokio::time::sleep(INTERVAL).await;
-            let Some(body) = read_vars(&http, &source).await else { continue };
+            let Some(body) = read_vars(&http, &source).await else {
+                misses += 1;
+                if misses == 5 && !diagnosed {
+                    crate::logs::push(&app, "[Warning] traffic counters: the metrics endpoint is not answering");
+                    diagnosed = true;
+                }
+                continue;
+            };
             let Ok(vars) = serde_json::from_slice::<Value>(&body) else { continue };
             let (up, down) = totals(&vars, &proxy_tags);
+            if !diagnosed {
+                crate::logs::push(
+                    &app,
+                    &format!("[Info] traffic counters active: up={up} down={down} over {} tag(s)", proxy_tags.len()),
+                );
+                diagnosed = true;
+            }
             let now = Instant::now();
             let (up_speed, down_speed) = match previous {
                 Some((then, last_up, last_down)) => {

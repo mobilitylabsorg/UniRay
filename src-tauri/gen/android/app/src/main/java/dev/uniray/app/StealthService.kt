@@ -57,10 +57,13 @@ class StealthService : Service() {
     private const val CHANNEL_ID = "vpn"
     private const val NOTIFICATION_ID = 1
 
-    // The firewall mark and routing table the tproxy setup owns. Values well
-    // clear of anything Android uses itself.
-    private const val MARK = "0x1ea7" // "leat" ~ stealth
-    private const val TABLE = "0x1ea7"
+    // The firewall mark and routing table the tproxy setup owns. The mark is a
+    // single high bit, set and matched through a mask, so it does not disturb
+    // the fwmark bits Android's netd uses for network selection (netId and
+    // flags live in the low bits). The table id must be decimal: `ip` parses
+    // `table`/`lookup` values in base 10, not hex.
+    private const val MARK = "0x10000000/0x10000000"
+    private const val TABLE = "7847"
     private const val CHAIN_PRE = "UNIRAY_PRE"
     private const val CHAIN_OUT = "UNIRAY_OUT"
 
@@ -80,6 +83,8 @@ class StealthService : Service() {
   private val ticker = Executors.newSingleThreadScheduledExecutor()
   private var tick: ScheduledFuture<*>? = null
   @Volatile private var running = false
+  // Set once we begin stopping, so no late refresh re-posts the notification.
+  @Volatile private var stopped = false
   private var notification: NotificationCompat.Builder? = null
 
   private var level = Privilege.NONE
@@ -110,10 +115,11 @@ class StealthService : Service() {
           latencyMs = if (intent.hasExtra(EXTRA_LATENCY)) intent.getLongExtra(EXTRA_LATENCY, 0) else null
           lastCheckAt = System.currentTimeMillis()
         }
-        ticker.execute { refreshNotification() }
+        submitRefresh()
         return START_NOT_STICKY
       }
     }
+    stopped = false
     showNotification()
     worker.execute {
       val error =
@@ -134,6 +140,7 @@ class StealthService : Service() {
   }
 
   override fun onDestroy() {
+    stopped = true
     tick?.cancel(false)
     ticker.shutdown()
     worker.execute {
@@ -184,26 +191,61 @@ class StealthService : Service() {
   }
 
   private fun stopCore() {
-    val ipv6 = try {
-      JSONObject(specFile(this).readText()).optBoolean("ipv6", false)
+    val spec = try {
+      JSONObject(specFile(this).readText())
     } catch (e: Exception) {
-      false
+      null
     }
-    val result = PrivilegedShell.execPrivileged(level, downScript(ipv6))
+    val ipv6 = spec?.optBoolean("ipv6", false) ?: false
+    // The teardown must run even in a fresh process that never ran startCore
+    // (so `level` is NONE) - otherwise the iptables rules, routes and the root
+    // xray leak. Recover the level from the spec, or re-detect, as a fallback.
+    var lvl = level
+    if (!lvl.canStealth) lvl = parseLevel(spec?.optString("privilege").orEmpty())
+    if (!lvl.canStealth) lvl = PrivilegedShell.detect(this).level
+    val result = PrivilegedShell.execPrivileged(lvl, downScript(ipv6))
     if (!result.ok) Log.w(TAG, "stealth down reported: ${result.errText()}")
     running = false
   }
 
   private fun shutdown(request: String?) {
+    stopped = true
     tick?.cancel(false)
     stopCore()
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-      stopForeground(STOP_FOREGROUND_REMOVE)
-    } else {
-      @Suppress("DEPRECATION") stopForeground(true)
-    }
+    clearNotification()
     VpnState.write(this, false, request, null)
     stopSelf()
+  }
+
+  /**
+   * Removes the notification for good, on the ticker thread after any queued
+   * refresh, so nothing re-posts it; [stopped] blocks later refreshes.
+   */
+  private fun clearNotification() {
+    val drop = Runnable {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+      } else {
+        @Suppress("DEPRECATION") stopForeground(true)
+      }
+      (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIFICATION_ID)
+    }
+    try {
+      ticker.execute(drop)
+      ticker.shutdown()
+    } catch (e: java.util.concurrent.RejectedExecutionException) {
+      drop.run()
+    }
+  }
+
+  /** Queues a notification refresh unless we are stopping. */
+  private fun submitRefresh() {
+    if (stopped) return
+    try {
+      ticker.execute { refreshNotification() }
+    } catch (e: java.util.concurrent.RejectedExecutionException) {
+      // The ticker is gone; we are stopping anyway.
+    }
   }
 
   /** Unpacks the standalone xray binary and the geo databases into the app's
@@ -411,7 +453,7 @@ class StealthService : Service() {
 
   private fun refreshNotification() {
     val builder = notification ?: return
-    if (!running) return
+    if (stopped || !running) return
     var (down, up) = 0L to 0L
     val traffic = TunnelMetrics.readTraffic(metricsSocket, proxyTags)
     if (traffic == null) {

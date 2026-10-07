@@ -79,6 +79,9 @@ class UniRayVpnService : VpnService() {
   private val ticker = Executors.newSingleThreadScheduledExecutor()
   private var tick: ScheduledFuture<*>? = null
   @Volatile private var running = false
+  // Set once we begin stopping, so no late refresh re-posts the notification
+  // after it has been removed (which would leave it stuck, with us gone).
+  @Volatile private var stopped = false
   private var tun: ParcelFileDescriptor? = null
   private var notification: NotificationCompat.Builder? = null
 
@@ -105,10 +108,12 @@ class UniRayVpnService : VpnService() {
           latencyMs = if (intent.hasExtra(EXTRA_LATENCY)) intent.getLongExtra(EXTRA_LATENCY, 0) else null
           lastCheckAt = System.currentTimeMillis()
         }
-        ticker.execute { refreshNotification() }
+        submitRefresh()
         return START_NOT_STICKY
       }
     }
+    // A fresh start: this instance may be reused after a previous stop.
+    stopped = false
     // Must happen within seconds of startForegroundService().
     showNotification()
     worker.execute {
@@ -135,6 +140,7 @@ class UniRayVpnService : VpnService() {
   }
 
   override fun onDestroy() {
+    stopped = true
     tick?.cancel(false)
     ticker.shutdown()
     worker.execute {
@@ -233,15 +239,44 @@ class UniRayVpnService : VpnService() {
 
   /** Stops everything; [request] is the stop request being answered, if any. */
   private fun shutdown(request: String?) {
+    stopped = true
     tick?.cancel(false)
     stopCore()
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-      stopForeground(STOP_FOREGROUND_REMOVE)
-    } else {
-      @Suppress("DEPRECATION") stopForeground(true)
-    }
+    clearNotification()
     VpnState.write(this, false, request, null)
     stopSelf()
+  }
+
+  /**
+   * Removes the notification for good. Runs the removal on the ticker thread,
+   * after any refresh already queued there, so nothing re-posts it afterwards;
+   * [stopped] keeps later refreshes from posting at all.
+   */
+  private fun clearNotification() {
+    val drop = Runnable {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+      } else {
+        @Suppress("DEPRECATION") stopForeground(true)
+      }
+      (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIFICATION_ID)
+    }
+    try {
+      ticker.execute(drop)
+      ticker.shutdown()
+    } catch (e: java.util.concurrent.RejectedExecutionException) {
+      drop.run()
+    }
+  }
+
+  /** Queues a notification refresh unless we are stopping. */
+  private fun submitRefresh() {
+    if (stopped) return
+    try {
+      ticker.execute { refreshNotification() }
+    } catch (e: java.util.concurrent.RejectedExecutionException) {
+      // The ticker is gone; we are stopping anyway.
+    }
   }
 
   private fun startTicker() {
@@ -343,7 +378,7 @@ class UniRayVpnService : VpnService() {
   /** Server in the title; speed and the latency of the last check below. */
   private fun refreshNotification() {
     val builder = notification ?: return
-    if (!running) return
+    if (stopped || !running) return
     var (down, up) = 0L to 0L
     readTraffic()?.let { (totalUp, totalDown) ->
       val now = System.currentTimeMillis()
