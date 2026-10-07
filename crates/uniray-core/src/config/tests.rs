@@ -139,6 +139,27 @@ fn external_tun_leaves_the_interface_to_the_os() {
 }
 
 #[test]
+fn transparent_inbound_captures_with_tproxy_and_shares_the_routing() {
+    let server = parse_link(VLESS).unwrap();
+    let runtime = Runtime { tun: Some(Tun::Transparent { port: 12345 }), mixed_port: None, log: LogSink::Stdout, ..proxy_runtime() };
+    let config = build(&server, &Settings::default(), &runtime).unwrap().config;
+
+    // No interface: a single dokodemo-door inbound, tagged like the TUN.
+    assert_eq!(tags(&config, "inbounds"), ["tun"]);
+    let inbound = &config["inbounds"][0];
+    assert_eq!(inbound["protocol"], "dokodemo-door");
+    assert_eq!(inbound["listen"], "0.0.0.0");
+    assert_eq!(inbound["port"], 12345);
+    assert_eq!(inbound["settings"], json!({ "network": "tcp,udp", "followRedirect": true }));
+    assert_eq!(inbound["streamSettings"]["sockopt"]["tproxy"], "tproxy");
+    // DNS arriving through the capture inbound is still answered by the core.
+    assert_eq!(
+        config["routing"]["rules"][0],
+        json!({ "inboundTag": ["tun"], "port": "53", "outboundTag": "dns-out" })
+    );
+}
+
+#[test]
 fn dns_server_hosts() {
     assert_eq!(dns_host("1.1.1.1"), "1.1.1.1");
     assert_eq!(dns_host("tcp://8.8.8.8:53"), "8.8.8.8");

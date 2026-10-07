@@ -32,7 +32,7 @@ pub const DEFAULT_INTERFACE_NAME: &str = "rmnet3";
 pub const TUN_ADDRESS_V4: &str = "172.19.0.1/30";
 pub const TUN_ADDRESS_V6: &str = "fdfe:dcba:9876::1/126";
 
-/// How traffic gets into the TUN inbound.
+/// How system-wide traffic reaches the core's capture inbound.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tun {
     /// Xray creates the interface, assigns addresses and installs routes
@@ -47,6 +47,12 @@ pub enum Tun {
     /// LAN clients whose traffic is forwarded through it leave by the normal
     /// interface instead of looping back in. IPv4 only.
     Gateway { name: String, routes: Vec<String> },
+    /// No interface at all: a transparent-proxy (TPROXY) inbound on `port`,
+    /// fed by the iptables rules the caller installs. Capturing traffic this
+    /// way needs CAP_NET_ADMIN, so the core runs as a privileged standalone
+    /// process (Android stealth mode). With no TUN device and no VpnService,
+    /// the structural signals an on-device VPN scanner keys on are gone.
+    Transparent { port: u16 },
 }
 
 /// Where the core writes its logs.
@@ -359,6 +365,19 @@ fn inbounds(settings: &Settings, runtime: &Runtime) -> Vec<Value> {
             // pick a free one, which Android forbids to apps (netlink:
             // permission denied). It stays cosmetic: the fd is already open.
             "settings": { "name": name, "mtu": TUN_MTU },
+            "sniffing": sniffing,
+        })),
+        Some(Tun::Transparent { port }) => inbounds.push(json!({
+            // Tagged like the TUN so the shared routing - the DNS hijack and
+            // the retargeted provider rules - applies to it unchanged.
+            "tag": TAG_TUN,
+            "listen": "0.0.0.0",
+            "port": port,
+            "protocol": "dokodemo-door",
+            // `followRedirect` recovers each packet's original destination from
+            // the TPROXY mark; tproxy captures both TCP and UDP, DNS included.
+            "settings": { "network": "tcp,udp", "followRedirect": true },
+            "streamSettings": { "sockopt": { "tproxy": "tproxy" } },
             "sniffing": sniffing,
         })),
         None => {}

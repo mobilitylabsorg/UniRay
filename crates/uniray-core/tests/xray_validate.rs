@@ -126,6 +126,7 @@ fn runtimes(dir: &Path) -> Vec<Runtime> {
         Runtime { tun: None, mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout },
         Runtime { tun: Some(Tun::Managed { name: "uniraytest0".into() }), mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout },
         Runtime { tun: Some(Tun::External { name: "rmnet3".into() }), mixed_port: None, metrics_port: None, metrics_socket: Some("@uniray-validate-metrics".into()), log: files },
+        Runtime { tun: Some(Tun::Transparent { port: 28082 }), mixed_port: None, metrics_port: None, metrics_socket: Some("@uniray-validate-tproxy".into()), log: LogSink::Stdout },
         Runtime {
             tun: Some(Tun::Gateway { name: "uniray0".into(), routes: vec!["8.0.0.0/7".into(), "11.0.0.0/8".into(), "12.0.0.0/6".into()] }),
             mixed_port: Some(28080),
