@@ -79,7 +79,7 @@ impl Running {
         let runtime = Runtime {
             tun: tun.then(|| Tun::Managed { name: interface_name(&settings.interface_name) }),
             mixed_port: Some(mixed_port),
-            metrics_port: Some(metrics_port),
+            metrics_port: Some(metrics_port), metrics_socket: None,
             log: LogSink::Stdout,
         };
         let built = config::build(server, settings, &runtime)?;
@@ -120,7 +120,7 @@ impl Running {
             stop: Some(stop),
             supervisor,
             tailer,
-            stats: stats::spawn(app.clone(), metrics_port, built.proxy_tags),
+            stats: stats::spawn(app.clone(), stats::MetricsSource::Port(metrics_port), built.proxy_tags),
             system_proxy,
             mixed_port,
         })

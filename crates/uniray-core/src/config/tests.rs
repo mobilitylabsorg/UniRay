@@ -11,7 +11,7 @@ fn proxy_runtime() -> Runtime {
     Runtime {
         tun: None,
         mixed_port: Some(10808),
-        metrics_port: Some(10809),
+        metrics_port: Some(10809), metrics_socket: None,
         log: LogSink::Files { error: "/tmp/error.log".into(), access: "/tmp/access.log".into() },
     }
 }
@@ -397,4 +397,53 @@ fn every_install_gets_its_own_proxy_password() {
     assert_eq!(a.proxy_password.len(), 16);
     assert_ne!(a.proxy_password, b.proxy_password);
     assert!(!a.proxy_auth);
+}
+
+#[test]
+fn balancer_exit_is_named_after_the_matching_server() {
+    let balancer = Server { protocol: "balancer".into(), ..config_server(json!({
+        "outbounds": [
+            { "tag": "proxy", "protocol": "vless", "settings": { "vnext": [{ "address": "nl.example.com", "port": 443, "users": [] }] } },
+            { "tag": "proxy-2", "protocol": "vless", "settings": { "address": "ee.example.com", "port": 8443, "id": "x" } },
+            { "tag": "direct", "protocol": "freedom" },
+        ],
+    })) };
+    let named = |name: &str, address: &str, port: u16| Server {
+        name: name.into(),
+        address: address.into(),
+        port,
+        ..parse_link(VLESS).unwrap()
+    };
+    let servers = vec![
+        balancer.clone(),
+        named("🇳🇱 Shoggoth", "nl.example.com", 443),
+        named("🇪🇪 Ctulhu (other port)", "ee.example.com", 443),
+        named("🇪🇪 Ctulhu", "ee.example.com", 8443),
+    ];
+    let name = |tag: &str| exit_server(&servers, &balancer, tag).map(|server| server.name.as_str());
+    assert_eq!(name("proxy"), Some("🇳🇱 Shoggoth"));
+    assert_eq!(name("proxy-2"), Some("🇪🇪 Ctulhu"));
+    assert_eq!(name("direct"), None);
+    assert_eq!(name("missing"), None);
+    // A plain server is its own exit.
+    assert_eq!(exit_server(&servers, &servers[1], "proxy"), None);
+}
+
+#[test]
+fn metrics_can_live_on_a_unix_socket() {
+    let server = parse_link(VLESS).unwrap();
+    let runtime = Runtime {
+        tun: Some(Tun::External { name: "rmnet3".into() }),
+        mixed_port: None,
+        metrics_port: Some(10809),
+        metrics_socket: Some("/data/user/0/app/files/run/m.sock".into()),
+        log: LogSink::Stdout,
+    };
+    let config = build(&server, &Settings::default(), &runtime).unwrap().config;
+    // No port anywhere: the metrics service is reached through the socket.
+    assert_eq!(config["metrics"], json!({ "tag": "metrics" }));
+    assert_eq!(tags(&config, "inbounds"), ["tun", "uniray-metrics"]);
+    assert_eq!(config["inbounds"][1]["listen"], "/data/user/0/app/files/run/m.sock");
+    assert_eq!(config["routing"]["rules"][0], json!({ "inboundTag": ["uniray-metrics"], "outboundTag": "metrics" }));
+    assert_eq!(config["policy"]["system"]["statsOutboundUplink"], true);
 }

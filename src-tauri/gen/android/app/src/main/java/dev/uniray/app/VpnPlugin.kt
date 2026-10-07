@@ -19,9 +19,14 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSArray
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
+import java.util.UUID
 import kotlin.concurrent.thread
 import org.json.JSONArray
 import org.json.JSONObject
+
+/** How long to wait for the service to answer a start or a stop. */
+private const val START_TIMEOUT_MS = 60_000L
+private const val STOP_TIMEOUT_MS = 15_000L
 
 @InvokeArg
 class StartArgs {
@@ -31,6 +36,9 @@ class StartArgs {
   var dns: String = "8.8.8.8:53"
   var mtu: Int = 1500
   var sessionName: String = "VPN"
+  var serverName: String = ""
+  var metricsSocket: String = ""
+  var proxyTags: Array<String> = arrayOf()
 }
 
 @InvokeArg
@@ -52,6 +60,9 @@ class DelayArgs {
 /**
  * The native half of the Rust `core::mobile` module: starts and stops
  * [UniRayVpnService] and answers what only Android knows.
+ *
+ * The service lives in another process (`:vpn`): requests go out as intents
+ * carrying a request id, and answers come back through [VpnState].
  */
 @TauriPlugin
 class VpnPlugin(private val activity: Activity) : Plugin(activity) {
@@ -99,44 +110,91 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         .put("dns", args.dns)
         .put("mtu", args.mtu)
         .put("sessionName", args.sessionName)
+        .put("serverName", args.serverName)
+        .put("metricsSocket", args.metricsSocket)
+        .put("proxyTags", JSONArray(args.proxyTags))
     val file = UniRayVpnService.specFile(activity)
     file.parentFile?.mkdirs()
     file.writeText(spec.toString())
 
-    UniRayVpnService.onStarted = { error ->
-      if (error == null) invoke.resolve() else invoke.reject(error)
-    }
-    val intent = Intent(activity, UniRayVpnService::class.java).setAction(UniRayVpnService.ACTION_START)
+    val request = UUID.randomUUID().toString()
+    val intent =
+      Intent(activity, UniRayVpnService::class.java)
+        .setAction(UniRayVpnService.ACTION_START)
+        .putExtra(UniRayVpnService.EXTRA_REQUEST, request)
     try {
       ContextCompat.startForegroundService(activity, intent)
     } catch (e: Exception) {
-      UniRayVpnService.onStarted = null
       invoke.reject("cannot start the VPN service: ${e.message}")
+      return
+    }
+    thread {
+      val answer = awaitAnswer(request, START_TIMEOUT_MS)
+      when {
+        answer == null -> invoke.reject("the VPN service did not answer")
+        answer.running -> invoke.resolve()
+        else -> invoke.reject(answer.error ?: "the VPN service failed to start")
+      }
     }
   }
 
   @Command
   fun stop(invoke: Invoke) {
-    if (!UniRayVpnService.running) {
+    if (!VpnState.serviceAlive(activity)) {
       invoke.resolve()
       return
     }
-    UniRayVpnService.onStopped = { invoke.resolve() }
-    activity.startService(
-      Intent(activity, UniRayVpnService::class.java).setAction(UniRayVpnService.ACTION_STOP)
-    )
+    val request = UUID.randomUUID().toString()
+    try {
+      activity.startService(
+        Intent(activity, UniRayVpnService::class.java)
+          .setAction(UniRayVpnService.ACTION_STOP)
+          .putExtra(UniRayVpnService.EXTRA_REQUEST, request)
+      )
+    } catch (e: Exception) {
+      invoke.reject("cannot reach the VPN service: ${e.message}")
+      return
+    }
+    // Resolves either way: a service that does not answer is gone or going.
+    thread {
+      awaitAnswer(request, STOP_TIMEOUT_MS)
+      invoke.resolve()
+    }
+  }
+
+  /** The service's answer to [request], or null when it does not come in time. */
+  private fun awaitAnswer(request: String, timeoutMs: Long): VpnState.State? {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      val state = VpnState.read(activity)
+      if (state.request == request) return state
+      Thread.sleep(100)
+    }
+    return null
   }
 
   @Command
   fun updateNotification(invoke: Invoke) {
     val args = invoke.parseArgs(NotificationArgs::class.java)
-    UniRayVpnService.instance?.updateNotification(args.server, args.down, args.up, args.latencyMs, args.ok)
+    if (VpnState.isRunning(activity)) {
+      val intent =
+        Intent(activity, UniRayVpnService::class.java)
+          .setAction(UniRayVpnService.ACTION_NOTIFY)
+          .putExtra(UniRayVpnService.EXTRA_SERVER, args.server)
+      args.ok?.let { intent.putExtra(UniRayVpnService.EXTRA_OK, it) }
+      args.latencyMs?.let { intent.putExtra(UniRayVpnService.EXTRA_LATENCY, it) }
+      try {
+        activity.startService(intent)
+      } catch (e: Exception) {
+        // The service keeps its own notification current anyway.
+      }
+    }
     invoke.resolve()
   }
 
   @Command
   fun state(invoke: Invoke) {
-    invoke.resolve(JSObject().put("running", UniRayVpnService.running))
+    invoke.resolve(JSObject().put("running", VpnState.isRunning(activity)))
   }
 
   /** The Material You palette as UI tokens for both themes; empty before Android 12. */
@@ -197,7 +255,8 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun measureDelays(invoke: Invoke) {
     val args = invoke.parseArgs(DelayArgs::class.java)
-    if (UniRayVpnService.running) {
+    // Probes from this process would go through the tunnel.
+    if (VpnState.isRunning(activity)) {
       invoke.reject("delays cannot be tested while connected", "busy")
       return
     }

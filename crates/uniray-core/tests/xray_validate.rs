@@ -123,13 +123,13 @@ fn runtimes(dir: &Path) -> Vec<Runtime> {
     let log = |name: &str| dir.join(name).to_string_lossy().into_owned();
     let files = LogSink::Files { error: log("error.log"), access: log("access.log") };
     vec![
-        Runtime { tun: None, mixed_port: Some(28080), metrics_port: Some(28081), log: LogSink::Stdout },
-        Runtime { tun: Some(Tun::Managed { name: "uniraytest0".into() }), mixed_port: Some(28080), metrics_port: Some(28081), log: LogSink::Stdout },
-        Runtime { tun: Some(Tun::External { name: "rmnet3".into() }), mixed_port: None, metrics_port: Some(28081), log: files },
+        Runtime { tun: None, mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout },
+        Runtime { tun: Some(Tun::Managed { name: "uniraytest0".into() }), mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout },
+        Runtime { tun: Some(Tun::External { name: "rmnet3".into() }), mixed_port: None, metrics_port: None, metrics_socket: Some("@uniray-validate-metrics".into()), log: files },
         Runtime {
             tun: Some(Tun::Gateway { name: "uniray0".into(), routes: vec!["8.0.0.0/7".into(), "11.0.0.0/8".into(), "12.0.0.0/6".into()] }),
             mixed_port: Some(28080),
-            metrics_port: Some(28081),
+            metrics_port: Some(28081), metrics_socket: None,
             log: LogSink::Stdout,
         },
     ]

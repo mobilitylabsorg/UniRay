@@ -15,7 +15,13 @@ import android.text.format.Formatter
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import java.io.File
+import android.net.LocalSocket
+import android.net.LocalSocketAddress
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 import libXray.DialerController
 import libXray.LibXray
 import org.json.JSONObject
@@ -23,15 +29,26 @@ import org.json.JSONObject
 /**
  * Owns the TUN interface and runs the Xray core on it.
  *
- * The plugin writes what to run into [specFile] and starts the service; the
- * outcome is reported through [onStarted]. The service runs in the app
- * process, so the core's metrics endpoint and log files are directly
- * reachable from the Rust side.
+ * It lives in its own process (`:vpn`, see the manifest): the app's UI can be
+ * swept away or crash and the tunnel stays up. The app writes what to run into
+ * [specFile] and sends [ACTION_START] with a request id; the outcome comes back
+ * through [VpnState]. The core's metrics endpoint and log files are reachable
+ * from the app as before (localhost and shared files).
+ *
+ * The notification keeps itself current (speed every 5 s, latency every 5 min)
+ * so that it stays live without the app; while the app runs, it sends the
+ * server it found the traffic going through ([ACTION_NOTIFY]).
  */
 class UniRayVpnService : VpnService() {
   companion object {
     const val ACTION_START = "dev.uniray.app.action.START"
     const val ACTION_STOP = "dev.uniray.app.action.STOP"
+    const val ACTION_NOTIFY = "dev.uniray.app.action.NOTIFY"
+    /** Request id echoed in [VpnState], so the app knows its answer. */
+    const val EXTRA_REQUEST = "request"
+    const val EXTRA_SERVER = "server"
+    const val EXTRA_LATENCY = "latencyMs"
+    const val EXTRA_OK = "ok"
 
     private const val TAG = "UniRayVpn"
     private const val CHANNEL_ID = "vpn"
@@ -45,22 +62,9 @@ class UniRayVpnService : VpnService() {
     private const val ADDRESS_V6 = "fdfe:dcba:9876::1"
     private const val PREFIX_V6 = 126
 
-    @Volatile
-    var running = false
-      private set
-
-    /** Called once with the error of a start attempt, or null on success. */
-    @Volatile
-    var onStarted: ((String?) -> Unit)? = null
-
-    /** Called once when a requested stop has completed. */
-    @Volatile
-    var onStopped: (() -> Unit)? = null
-
-    /** The running service, for updating its notification. */
-    @Volatile
-    var instance: UniRayVpnService? = null
-      private set
+    private const val REFRESH_SECONDS = 5L
+    private const val CHECK_INTERVAL_MS = 5 * 60 * 1000L
+    private const val CHECK_URL = "https://www.cloudflare.com/cdn-cgi/trace"
 
     fun specFile(context: Context) = File(context.filesDir, "run/vpn.json")
 
@@ -69,18 +73,38 @@ class UniRayVpnService : VpnService() {
 
   // Start and stop are serialized: libXray keeps process-wide state.
   private val worker = Executors.newSingleThreadExecutor()
+  private val ticker = Executors.newSingleThreadScheduledExecutor()
+  private var tick: ScheduledFuture<*>? = null
+  @Volatile private var running = false
   private var tun: ParcelFileDescriptor? = null
   private var notification: NotificationCompat.Builder? = null
 
-  override fun onCreate() {
-    super.onCreate()
-    instance = this
-  }
+  // Notification content.
+  @Volatile private var serverName = ""
+  @Volatile private var latencyMs: Long? = null
+  @Volatile private var checkOk: Boolean? = null
+  @Volatile private var lastCheckAt = 0L
+  private var metricsSocket = ""
+  private var proxyTags: List<String> = emptyList()
+  private var lastTraffic: Triple<Long, Long, Long>? = null // time, up, down
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    if (intent?.action == ACTION_STOP) {
-      worker.execute { shutdown() }
-      return START_NOT_STICKY
+    val request = intent?.getStringExtra(EXTRA_REQUEST)
+    when (intent?.action) {
+      ACTION_STOP -> {
+        worker.execute { shutdown(request) }
+        return START_NOT_STICKY
+      }
+      ACTION_NOTIFY -> {
+        intent.getStringExtra(EXTRA_SERVER)?.takeIf { it.isNotEmpty() }?.let { serverName = it }
+        if (intent.hasExtra(EXTRA_OK)) {
+          checkOk = intent.getBooleanExtra(EXTRA_OK, false)
+          latencyMs = if (intent.hasExtra(EXTRA_LATENCY)) intent.getLongExtra(EXTRA_LATENCY, 0) else null
+          lastCheckAt = System.currentTimeMillis()
+        }
+        ticker.execute { refreshNotification() }
+        return START_NOT_STICKY
+      }
     }
     // Must happen within seconds of startForegroundService().
     showNotification()
@@ -92,21 +116,28 @@ class UniRayVpnService : VpnService() {
           Log.e(TAG, "start failed", e)
           e.message ?: e.toString()
         }
-      onStarted?.invoke(error)
-      onStarted = null
-      if (error != null) shutdown()
+      if (error != null) {
+        shutdown(null)
+      } else {
+        startTicker()
+      }
+      VpnState.write(this, error == null, request, error)
     }
     return START_NOT_STICKY
   }
 
   /** The user turned the VPN off in system settings, or another VPN took over. */
   override fun onRevoke() {
-    worker.execute { shutdown() }
+    worker.execute { shutdown(null) }
   }
 
   override fun onDestroy() {
-    instance = null
-    worker.execute { stopCore() }
+    tick?.cancel(false)
+    ticker.shutdown()
+    worker.execute {
+      if (running) stopCore()
+      VpnState.write(this, false, null, null)
+    }
     worker.shutdown()
     super.onDestroy()
   }
@@ -115,6 +146,13 @@ class UniRayVpnService : VpnService() {
     if (running) stopCore()
     val spec = JSONObject(specFile(this).readText())
     val config = JSONObject(spec.getString("config"))
+    serverName = spec.optString("serverName")
+    metricsSocket = spec.optString("metricsSocket")
+    proxyTags = spec.optJSONArray("proxyTags")?.let { tags -> (0 until tags.length()).map { tags.getString(it) } }.orEmpty()
+    latencyMs = null
+    checkOk = null
+    lastCheckAt = 0L
+    lastTraffic = null
     installAssets()
 
     val builder =
@@ -186,16 +224,91 @@ class UniRayVpnService : VpnService() {
     running = false
   }
 
-  private fun shutdown() {
+  /** Stops everything; [request] is the stop request being answered, if any. */
+  private fun shutdown(request: String?) {
+    tick?.cancel(false)
     stopCore()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
       stopForeground(STOP_FOREGROUND_REMOVE)
     } else {
       @Suppress("DEPRECATION") stopForeground(true)
     }
+    VpnState.write(this, false, request, null)
     stopSelf()
-    onStopped?.invoke()
-    onStopped = null
+  }
+
+  private fun startTicker() {
+    tick?.cancel(false)
+    tick =
+      ticker.scheduleWithFixedDelay(
+        {
+          try {
+            if (System.currentTimeMillis() - lastCheckAt >= CHECK_INTERVAL_MS) checkConnection()
+            refreshNotification()
+          } catch (e: Exception) {
+            Log.w(TAG, "notification refresh failed", e)
+          }
+        },
+        1,
+        REFRESH_SECONDS,
+        TimeUnit.SECONDS,
+      )
+  }
+
+  /** One HTTPS request through the tunnel: the latency shown in the notification. */
+  private fun checkConnection() {
+    val started = System.nanoTime()
+    val ok =
+      try {
+        val connection = URL(CHECK_URL).openConnection() as HttpURLConnection
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 10_000
+        try {
+          connection.responseCode == 200
+        } finally {
+          connection.disconnect()
+        }
+      } catch (e: Exception) {
+        false
+      }
+    checkOk = ok
+    latencyMs = if (ok) (System.nanoTime() - started) / 1_000_000 else null
+    lastCheckAt = System.currentTimeMillis()
+  }
+
+  /**
+   * Bytes sent and received through the proxy, from the core's counters. They
+   * are served on a Unix socket in the app's private directory, not on a
+   * port, so no other app can find or read them.
+   */
+  private fun readTraffic(): Pair<Long, Long>? {
+    if (metricsSocket.isEmpty()) return null
+    val body =
+      try {
+        LocalSocket().use { socket ->
+          socket.connect(LocalSocketAddress(metricsSocket, LocalSocketAddress.Namespace.FILESYSTEM))
+          socket.soTimeout = 2000
+          socket.outputStream.write("GET /debug/vars HTTP/1.0\r\nHost: localhost\r\n\r\n".toByteArray())
+          socket.inputStream.readBytes().toString(Charsets.UTF_8)
+        }
+      } catch (e: Exception) {
+        return null
+      }
+    val json = body.substringAfter("\r\n\r\n", "")
+    val outbound =
+      try {
+        JSONObject(json).optJSONObject("stats")?.optJSONObject("outbound") ?: return 0L to 0L
+      } catch (e: Exception) {
+        return null
+      }
+    var up = 0L
+    var down = 0L
+    for (tag in proxyTags) {
+      val counters = outbound.optJSONObject(tag) ?: continue
+      up += counters.optLong("uplink")
+      down += counters.optLong("downlink")
+    }
+    return up to down
   }
 
   /**
@@ -252,24 +365,32 @@ class UniRayVpnService : VpnService() {
     }
   }
 
-  /**
-   * Server in the title; speed and the latency of the last check below.
-   * [latencyMs] and [ok] are null before the first check.
-   */
-  fun updateNotification(server: String, down: Long, up: Long, latencyMs: Long?, ok: Boolean?) {
+  /** Server in the title; speed and the latency of the last check below. */
+  private fun refreshNotification() {
     val builder = notification ?: return
     if (!running) return
+    var (down, up) = 0L to 0L
+    readTraffic()?.let { (totalUp, totalDown) ->
+      val now = System.currentTimeMillis()
+      lastTraffic?.let { (then, lastUp, lastDown) ->
+        val seconds = ((now - then).coerceAtLeast(1)) / 1000.0
+        up = ((totalUp - lastUp).coerceAtLeast(0) / seconds).toLong()
+        down = ((totalDown - lastDown).coerceAtLeast(0) / seconds).toLong()
+      }
+      lastTraffic = Triple(now, totalUp, totalDown)
+    }
     var text =
       getString(
         R.string.vpn_speed,
         Formatter.formatShortFileSize(this, down),
         Formatter.formatShortFileSize(this, up),
       )
+    val latency = latencyMs
     when {
-      ok == true && latencyMs != null -> text += " · " + getString(R.string.vpn_latency, latencyMs)
-      ok == false -> text += " · " + getString(R.string.vpn_no_connection)
+      checkOk == true && latency != null -> text += " · " + getString(R.string.vpn_latency, latency)
+      checkOk == false -> text += " · " + getString(R.string.vpn_no_connection)
     }
-    builder.setContentTitle(server.ifEmpty { getString(R.string.vpn_connected) }).setContentText(text)
+    builder.setContentTitle(serverName.ifEmpty { getString(R.string.vpn_connected) }).setContentText(text)
     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     manager.notify(NOTIFICATION_ID, builder.build())
   }

@@ -27,15 +27,24 @@ pub struct Traffic {
     pub down_speed: u64,
 }
 
-pub fn spawn(app: AppHandle, metrics_port: u16, proxy_tags: Vec<String>) -> JoinHandle<()> {
+/// Where the core serves its counters.
+#[derive(Clone, Debug)]
+pub enum MetricsSource {
+    /// A loopback port (desktop).
+    Port(u16),
+    /// A Unix socket in the app's private directory (Android): no port for
+    /// other apps to find.
+    #[cfg(mobile)]
+    Socket(std::path::PathBuf),
+}
+
+pub fn spawn(app: AppHandle, source: MetricsSource, proxy_tags: Vec<String>) -> JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
-        let url = format!("http://127.0.0.1:{metrics_port}/debug/vars");
         let http = app.state::<App>().http.clone();
         let mut previous: Option<(Instant, u64, u64)> = None;
         loop {
             tokio::time::sleep(INTERVAL).await;
-            let Ok(response) = http.get(&url).send().await else { continue };
-            let Ok(body) = response.bytes().await else { continue };
+            let Some(body) = read_vars(&http, &source).await else { continue };
             let Ok(vars) = serde_json::from_slice::<Value>(&body) else { continue };
             let (up, down) = totals(&vars, &proxy_tags);
             let now = Instant::now();
@@ -55,6 +64,27 @@ pub fn spawn(app: AppHandle, metrics_port: u16, proxy_tags: Vec<String>) -> Join
             let _ = app.emit(EVENT, traffic);
         }
     })
+}
+
+/// The body of `GET /debug/vars`.
+async fn read_vars(http: &reqwest::Client, source: &MetricsSource) -> Option<Vec<u8>> {
+    match source {
+        MetricsSource::Port(port) => {
+            let response = http.get(format!("http://127.0.0.1:{port}/debug/vars")).send().await.ok()?;
+            Some(response.bytes().await.ok()?.to_vec())
+        }
+        #[cfg(mobile)]
+        MetricsSource::Socket(path) => {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let timeout = std::time::Duration::from_secs(2);
+            let mut stream = tokio::time::timeout(timeout, tokio::net::UnixStream::connect(path)).await.ok()?.ok()?;
+            stream.write_all(b"GET /debug/vars HTTP/1.0\r\nHost: localhost\r\n\r\n").await.ok()?;
+            let mut response = Vec::new();
+            tokio::time::timeout(timeout, stream.read_to_end(&mut response)).await.ok()?.ok()?;
+            let body = response.windows(4).position(|window| window == b"\r\n\r\n")? + 4;
+            Some(response[body..].to_vec())
+        }
+    }
 }
 
 /// Sums uplink and downlink over the given outbound tags.

@@ -27,7 +27,8 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// Records a raw line printed by the core and forwards it to the UI.
 pub fn push(app: &AppHandle, raw: &str) {
     let raw = raw.trim_end();
-    if raw.is_empty() {
+    // Our own counter reads, once a second: noise in the log.
+    if raw.is_empty() || raw.contains(uniray_core::config::TAG_METRICS_IN) {
         return;
     }
     let (level, text) = parse(raw);
@@ -46,6 +47,19 @@ pub fn push(app: &AppHandle, raw: &str) {
         logs.push_back(line.clone());
     }
     let _ = app.emit(EVENT, line);
+}
+
+/// The outbound an access log line says a connection to `host` went out
+/// through: `from 127.0.0.1:5 accepted tcp:host:443 [mixed -> proxy-7]`
+/// gives `proxy-7` (a balancer logs the server it picked, not itself).
+pub fn access_outbound(text: &str, host: &str) -> Option<String> {
+    if !text.contains(" accepted ") || !text.contains(host) {
+        return None;
+    }
+    let route = text.rsplit_once('[')?.1.strip_suffix(']')?;
+    let (_, outbound) = route.split_once(" -> ").or_else(|| route.split_once(" >> "))?;
+    let outbound = outbound.trim();
+    (!outbound.is_empty()).then(|| outbound.to_owned())
 }
 
 /// The id the next line will get; lines of a run starting now have ids from
@@ -165,6 +179,21 @@ mod tests {
         assert_eq!(parse("Xray 26.9.30 (Xray, Penetrates Everything.)"), ("info", "Xray 26.9.30 (Xray, Penetrates Everything.)"));
         assert_eq!(parse("Failed to start: main: bad config").0, "error");
         assert_eq!(parse("uniray-helper: cannot start xray").0, "error");
+    }
+
+    #[test]
+    fn access_lines_name_the_outbound() {
+        let host = "www.cloudflare.com:443";
+        assert_eq!(
+            access_outbound("from tcp:127.0.0.1:49290 accepted tcp:www.cloudflare.com:443 [mixed -> proxy-fi]", host).as_deref(),
+            Some("proxy-fi")
+        );
+        assert_eq!(
+            access_outbound("from 172.19.0.1:5 accepted tcp:www.cloudflare.com:443 [tun >> proxy-7]", host).as_deref(),
+            Some("proxy-7")
+        );
+        assert_eq!(access_outbound("from 1.2.3.4:5 accepted tcp:example.com:443 [mixed -> proxy]", host), None);
+        assert_eq!(access_outbound("[Warning] www.cloudflare.com:443 [x -> y]", host), None);
     }
 
     #[test]

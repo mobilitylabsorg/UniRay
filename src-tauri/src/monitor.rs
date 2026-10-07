@@ -12,11 +12,14 @@ use uniray_core::model::Settings;
 use crate::app::{emit_state, App};
 use crate::core::Status;
 use crate::error::{CmdError, CmdResult};
-use crate::logs::now_secs;
+use crate::logs::{self, now_secs};
 
 /// Answers with the client's IP and country as seen from the outside, in
 /// plain text: a check of the tunnel and of where it comes out.
 const TRACE_URL: &str = "https://www.cloudflare.com/cdn-cgi/trace";
+/// How the check's connection shows up in the core's access log.
+const TRACE_HOST: &str = "www.cloudflare.com:443";
+const EXIT_LOG_WAIT: Duration = Duration::from_millis(1500);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// How often the latency is measured again while connected.
 const CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -34,6 +37,9 @@ pub struct CheckResult {
     /// Exit address and its country, as the outside world sees them.
     pub ip: Option<String>,
     pub country: Option<String>,
+    /// The server the check went out through when the connected one is a
+    /// balancer group: the group's pick, with its real name.
+    pub server: Option<String>,
     pub error: Option<String>,
     /// Unix seconds.
     pub at: i64,
@@ -89,6 +95,7 @@ async fn run_check(app: &AppHandle) -> CheckResult {
         latency_ms: None,
         ip: None,
         country: None,
+        server: None,
         error: Some(error),
         at: now_secs(),
     };
@@ -96,6 +103,7 @@ async fn run_check(app: &AppHandle) -> CheckResult {
         Ok(client) => client,
         Err(err) => return failed(err.message),
     };
+    let mark = logs::mark();
     let started = Instant::now();
     let response = match client.get(TRACE_URL).send().await {
         Ok(response) => response,
@@ -116,9 +124,38 @@ async fn run_check(app: &AppHandle) -> CheckResult {
         latency_ms: Some(latency),
         ip: field("ip"),
         country: field("loc"),
+        server: exit_server(app, mark).await,
         error: None,
         at: now_secs(),
     }
+}
+
+/// Which server of a balancer group carried the check: the core's access log
+/// names the outbound it picked, and the subscription has a server with the
+/// same endpoint and a real name.
+async fn exit_server(app: &AppHandle, mark: u64) -> Option<String> {
+    // The log line may trail the response a little (files are tailed).
+    let deadline = Instant::now() + EXIT_LOG_WAIT;
+    let tag = loop {
+        let found = {
+            let state = app.state::<App>();
+            let logs = state.logs.lock().unwrap();
+            logs.iter()
+                .rev()
+                .take_while(|line| line.id >= mark)
+                .find_map(|line| logs::access_outbound(&line.text, TRACE_HOST))
+        };
+        if found.is_some() || Instant::now() >= deadline {
+            break found?;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let state = app.state::<App>();
+    let connected = state.connection.lock().unwrap().server_id.clone()?;
+    let store = state.store.lock().unwrap();
+    let servers = &store.data.servers;
+    let connected = servers.iter().find(|server| server.id == connected)?;
+    uniray_core::config::exit_server(servers, connected, &tag).map(|server| server.name.clone())
 }
 
 /// Checks the connection now and records the result.
@@ -206,6 +243,8 @@ fn summary(app: &AppHandle) -> Summary {
             store.data.servers.iter().find(|server| server.id == id).map(|server| server.name.clone())
         })
         .unwrap_or_default();
+    // A balancer's pick, when the last check found it.
+    let server = connection.check.as_ref().and_then(|check| check.server.clone()).unwrap_or(server);
     Summary {
         server,
         down: traffic.down_speed,

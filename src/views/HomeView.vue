@@ -33,7 +33,11 @@ const error = computed(() => (store.connection?.error ? store.describe(store.con
 
 const checking = ref(false);
 /** The connected server, flagged with the exit country when it has no flag. */
-const exitName = computed(() => (server.value ? withFlag(server.value.name, check.value?.country) : flagOf(check.value?.country)));
+const exitName = computed(() => {
+  // A balancer group's pick, else the connected server itself.
+  const name = check.value?.server ?? server.value?.name;
+  return name ? withFlag(name, check.value?.country) : flagOf(check.value?.country);
+});
 const check = computed(() => store.connection?.check ?? null);
 const checkedAgo = computed(() => {
   if (!check.value) return "";

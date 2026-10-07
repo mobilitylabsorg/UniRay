@@ -128,7 +128,7 @@ fn traffic_flows_and_is_counted() {
     let runtime = Runtime {
         tun: None,
         mixed_port: Some(mixed_port),
-        metrics_port: Some(metrics_port),
+        metrics_port: Some(metrics_port), metrics_socket: None,
         log: LogSink::Stdout,
     };
     let built = build(&server, &settings, &runtime).unwrap();

@@ -19,6 +19,10 @@ pub const TAG_MIXED: &str = "mixed";
 pub const TAG_TUN: &str = "tun";
 /// Tag of the traffic produced by the built-in DNS client.
 pub const TAG_DNS: &str = "dns";
+pub const TAG_METRICS: &str = "metrics";
+/// Inbound feeding the metrics service from `Runtime::metrics_socket`; its
+/// connections show up in the access log under this tag.
+pub const TAG_METRICS_IN: &str = "uniray-metrics";
 
 pub const TUN_MTU: u32 = 1500;
 /// Default TUN interface name. A neutral, non-VPN-looking name so that, on the
@@ -65,6 +69,10 @@ pub struct Runtime {
     pub mixed_port: Option<u16>,
     /// Loopback port serving `/debug/vars` with traffic counters.
     pub metrics_port: Option<u16>,
+    /// Serve the counters on this Unix socket instead of a port: nothing
+    /// listens on the network, and the socket's directory decides who may
+    /// connect. Takes precedence over `metrics_port`.
+    pub metrics_socket: Option<String>,
     pub log: LogSink,
 }
 
@@ -379,13 +387,32 @@ fn apply_observability(config: &mut Value, settings: &Settings, runtime: &Runtim
         }
     };
 
-    if let Some(port) = runtime.metrics_port {
-        config["stats"] = json!({});
-        config["metrics"] = json!({ "tag": "metrics", "listen": format!("127.0.0.1:{port}") });
-        let system = object_entry(object_entry_value(config, "policy"), "system");
-        system.insert("statsOutboundUplink".into(), true.into());
-        system.insert("statsOutboundDownlink".into(), true.into());
+    if let Some(path) = &runtime.metrics_socket {
+        // Xray's metrics listener only does TCP; a tunnel inbound on the
+        // socket hands connections to the metrics service by its tag.
+        config["metrics"] = json!({ "tag": TAG_METRICS });
+        if let Some(inbounds) = config["inbounds"].as_array_mut() {
+            inbounds.push(json!({
+                "tag": TAG_METRICS_IN,
+                "listen": path,
+                "protocol": "tunnel",
+                "settings": { "address": "127.0.0.1", "port": 80, "network": "tcp" },
+            }));
+        }
+        let routing = object_entry(config, "routing");
+        let rules = routing.entry("rules").or_insert_with(|| json!([]));
+        if let Some(rules) = rules.as_array_mut() {
+            rules.insert(0, json!({ "inboundTag": [TAG_METRICS_IN], "outboundTag": TAG_METRICS }));
+        }
+    } else if let Some(port) = runtime.metrics_port {
+        config["metrics"] = json!({ "tag": TAG_METRICS, "listen": format!("127.0.0.1:{port}") });
+    } else {
+        return;
     }
+    config["stats"] = json!({});
+    let system = object_entry(object_entry_value(config, "policy"), "system");
+    system.insert("statsOutboundUplink".into(), true.into());
+    system.insert("statsOutboundDownlink".into(), true.into());
 }
 
 /// `config[key]` as an object, created or replaced when it is not one.
@@ -512,6 +539,33 @@ pub fn proxy_everything(config: &mut Value, fallback_dns: &str) {
             }
         }
     }
+}
+
+/// Address and port an outbound connects to, in any of the layouts Xray
+/// accepts (flat settings, `vnext`, `servers`).
+pub fn outbound_endpoint(outbound: &Value) -> Option<(String, u16)> {
+    let settings = &outbound["settings"];
+    [settings, &settings["vnext"][0], &settings["servers"][0]]
+        .into_iter()
+        .find_map(|candidate| {
+            let address = candidate["address"].as_str()?;
+            let port = u16::try_from(candidate["port"].as_u64()?).ok()?;
+            Some((address.to_owned(), port))
+        })
+}
+
+/// The server that actually carries traffic when `connected` (typically a
+/// provider's balancer group) sent it out through its outbound `tag`: another
+/// server of the list with the same endpoint, which has a real name.
+pub fn exit_server<'a>(servers: &'a [Server], connected: &Server, tag: &str) -> Option<&'a Server> {
+    let ServerSource::Config(config) = &connected.source else {
+        return None;
+    };
+    let outbound = config["outbounds"].as_array()?.iter().find(|outbound| outbound["tag"] == tag)?;
+    let (address, port) = outbound_endpoint(outbound)?;
+    servers
+        .iter()
+        .find(|server| server.id != connected.id && server.address == address && server.port == port)
 }
 
 /// The outbound a delay probe should go through, tagged `tag`.

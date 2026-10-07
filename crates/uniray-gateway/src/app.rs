@@ -328,7 +328,7 @@ impl App {
         let runtime = Runtime {
             tun: self.options.tun.then(|| Tun::Gateway { name: self.options.tun_name.clone(), routes }),
             mixed_port: Some(self.options.mixed_port),
-            metrics_port: Some(metrics_port),
+            metrics_port: Some(metrics_port), metrics_socket: None,
             log: LogSink::Stdout,
         };
         let built = config::build(&server, &settings, &runtime).map_err(|err| err.to_string())?;

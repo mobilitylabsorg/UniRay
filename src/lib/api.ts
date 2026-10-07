@@ -90,6 +90,8 @@ export interface CheckResult {
   /** Exit address and its country code, as seen from the outside. */
   ip: string | null;
   country: string | null;
+  /** The server a balancer group picked, with its real name. */
+  server: string | null;
   error: string | null;
   /** Unix seconds. */
   at: number;

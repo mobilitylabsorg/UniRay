@@ -18,7 +18,7 @@ use uniray_core::config::{self, LogSink, Runtime, Tun};
 use uniray_core::hwid::derive_hwid;
 use uniray_core::model::{PerAppMode, Server, Settings};
 
-use super::{free_port, ConnectionInfo, Status};
+use super::{ConnectionInfo, Status};
 use crate::app::{emit_state, App};
 use crate::network::{direct_dns, needs_reconnect, NetworkInfo};
 use crate::error::{CmdError, CmdResult};
@@ -86,6 +86,11 @@ struct StartArgs {
     mtu: u32,
     /// Label shown for the VPN in Android's system settings.
     session_name: String,
+    /// What the service needs to keep its notification current by itself
+    /// once the app is gone: the server, and where to read the counters.
+    server_name: String,
+    metrics_socket: String,
+    proxy_tags: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -130,7 +135,7 @@ struct Delays {
 struct Session {
     server_id: String,
     since: i64,
-    metrics_port: u16,
+    metrics_socket: PathBuf,
     proxy_tags: Vec<String>,
 }
 
@@ -138,6 +143,8 @@ struct RunFiles {
     error_log: PathBuf,
     access_log: PathBuf,
     session: PathBuf,
+    /// Counters socket; the directory is private to the app.
+    metrics: PathBuf,
 }
 
 fn run_files(app: &AppHandle) -> RunFiles {
@@ -146,6 +153,7 @@ fn run_files(app: &AppHandle) -> RunFiles {
         error_log: dir.join("error.log"),
         access_log: dir.join("access.log"),
         session: dir.join("session.json"),
+        metrics: dir.join("m.sock"),
     }
 }
 
@@ -173,7 +181,8 @@ impl Running {
         for log in [&files.error_log, &files.access_log] {
             write_private(log, b"").map_err(CmdError::io)?;
         }
-        let metrics_port = free_port()?;
+        // A stale socket file would make the core fail to listen.
+        let _ = std::fs::remove_file(&files.metrics);
         let name = {
             let name = settings.interface_name.trim();
             if name.is_empty() { config::DEFAULT_INTERFACE_NAME.to_owned() } else { name.to_owned() }
@@ -181,7 +190,8 @@ impl Running {
         let runtime = Runtime {
             tun: Some(Tun::External { name: name.clone() }),
             mixed_port: None,
-            metrics_port: Some(metrics_port),
+            metrics_port: None,
+            metrics_socket: Some(files.metrics.to_string_lossy().into_owned()),
             log: LogSink::Files {
                 error: files.error_log.to_string_lossy().into_owned(),
                 access: files.access_log.to_string_lossy().into_owned(),
@@ -204,6 +214,9 @@ impl Running {
             dns: format!("{dns}:53"),
             mtu: config::TUN_MTU,
             session_name: name,
+            server_name: server.name.clone(),
+            metrics_socket: files.metrics.to_string_lossy().into_owned(),
+            proxy_tags: built.proxy_tags.clone(),
         };
 
         let log_mark = logs::mark();
@@ -218,7 +231,7 @@ impl Running {
         let session = Session {
             server_id: server.id.clone(),
             since: logs::now_secs(),
-            metrics_port,
+            metrics_socket: files.metrics.clone(),
             proxy_tags: built.proxy_tags.clone(),
         };
         if let Ok(bytes) = serde_json::to_vec(&session) {
@@ -227,7 +240,7 @@ impl Running {
 
         Ok(Self {
             log_mark,
-            stats: stats::spawn(app.clone(), metrics_port, built.proxy_tags),
+            stats: stats::spawn(app.clone(), stats::MetricsSource::Socket(files.metrics), built.proxy_tags),
             watcher: spawn_watcher(app.clone(), generation, network),
             tailer,
         })
@@ -304,7 +317,7 @@ pub async fn init_device(app: &AppHandle) {
             let generation = state.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             *running = Some(Running {
                 log_mark: logs::mark(),
-                stats: stats::spawn(app.clone(), session.metrics_port, session.proxy_tags),
+                stats: stats::spawn(app.clone(), stats::MetricsSource::Socket(session.metrics_socket), session.proxy_tags),
                 watcher: spawn_watcher(app.clone(), generation, network_info(app).await),
                 tailer: logs::tail(app.clone(), vec![files.error_log, files.access_log]),
             });
@@ -325,9 +338,18 @@ pub async fn init_device(app: &AppHandle) {
     emit_state(app);
 }
 
-/// Shows server, speed and latency in the VPN notification.
+/// Tells the service which server carries the traffic and how the last check
+/// went; it measures speed itself. Sent only when something changed.
 pub async fn update_notification(app: &AppHandle, summary: &crate::monitor::Summary) {
-    let _ = call::<Value>(app, "updateNotification", summary).await;
+    static LAST: std::sync::Mutex<Option<(String, Option<u64>, Option<bool>)>> = std::sync::Mutex::new(None);
+    let current = (summary.server.clone(), summary.latency_ms, summary.ok);
+    if LAST.lock().unwrap().as_ref() == Some(&current) {
+        return;
+    }
+    let args = json!({ "server": current.0, "latencyMs": current.1, "ok": current.2 });
+    if call::<Value>(app, "updateNotification", args).await.is_ok() {
+        *LAST.lock().unwrap() = Some(current);
+    }
 }
 
 /// The system's Material You palette as UI color tokens, `{ light, dark }`;
