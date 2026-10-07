@@ -135,8 +135,12 @@ class UniRayVpnService : VpnService() {
     tick?.cancel(false)
     ticker.shutdown()
     worker.execute {
-      if (running) stopCore()
-      VpnState.write(this, false, null, null)
+      // Only when nothing has reported the stop yet: overwriting the answer
+      // to a stop request would leave the app waiting for it.
+      if (running) {
+        stopCore()
+        VpnState.write(this, false, null, null)
+      }
     }
     worker.shutdown()
     super.onDestroy()

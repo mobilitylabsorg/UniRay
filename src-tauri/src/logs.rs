@@ -49,11 +49,15 @@ pub fn push(app: &AppHandle, raw: &str) {
     let _ = app.emit(EVENT, line);
 }
 
-/// The outbound an access log line says a connection to `host` went out
-/// through: `from 127.0.0.1:5 accepted tcp:host:443 [mixed -> proxy-7]`
+/// The outbound an access log line says a connection to one of `targets`
+/// went out through: `from 127.0.0.1:5 accepted tcp:host:443 [mixed -> proxy-7]`
 /// gives `proxy-7` (a balancer logs the server it picked, not itself).
-pub fn access_outbound(text: &str, host: &str) -> Option<String> {
-    if !text.contains(" accepted ") || !text.contains(host) {
+/// Targets are `host:port` or `ip:port`: through a TUN the log names the IP.
+pub fn access_outbound(text: &str, targets: &[String]) -> Option<String> {
+    let (_, destination) = text.split_once(" accepted ")?;
+    let destination = destination.split_whitespace().next()?;
+    let destination = destination.split_once(':').map_or(destination, |(_, rest)| rest);
+    if !targets.iter().any(|target| target == destination) {
         return None;
     }
     let route = text.rsplit_once('[')?.1.strip_suffix(']')?;
@@ -183,17 +187,20 @@ mod tests {
 
     #[test]
     fn access_lines_name_the_outbound() {
-        let host = "www.cloudflare.com:443";
+        let targets = ["www.cloudflare.com:443".to_owned(), "104.16.124.96:443".to_owned()];
+        let outbound = |line: &str| access_outbound(line, &targets);
         assert_eq!(
-            access_outbound("from tcp:127.0.0.1:49290 accepted tcp:www.cloudflare.com:443 [mixed -> proxy-fi]", host).as_deref(),
+            outbound("from tcp:127.0.0.1:49290 accepted tcp:www.cloudflare.com:443 [mixed -> proxy-fi]").as_deref(),
             Some("proxy-fi")
         );
+        // Through a TUN the destination is the address the app connected to.
         assert_eq!(
-            access_outbound("from 172.19.0.1:5 accepted tcp:www.cloudflare.com:443 [tun >> proxy-7]", host).as_deref(),
+            outbound("from tcp:172.19.0.1:41234 accepted tcp:104.16.124.96:443 [tun >> proxy-7]").as_deref(),
             Some("proxy-7")
         );
-        assert_eq!(access_outbound("from 1.2.3.4:5 accepted tcp:example.com:443 [mixed -> proxy]", host), None);
-        assert_eq!(access_outbound("[Warning] www.cloudflare.com:443 [x -> y]", host), None);
+        assert_eq!(outbound("from 1.2.3.4:5 accepted tcp:104.16.124.97:443 [tun -> proxy]"), None);
+        assert_eq!(outbound("from 1.2.3.4:5 accepted tcp:example.com:443 [mixed -> proxy]"), None);
+        assert_eq!(outbound("[Warning] www.cloudflare.com:443 [x -> y]"), None);
     }
 
     #[test]

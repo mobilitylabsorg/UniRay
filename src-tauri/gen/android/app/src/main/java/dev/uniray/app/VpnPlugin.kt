@@ -157,18 +157,26 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
     }
     // Resolves either way: a service that does not answer is gone or going.
     thread {
-      awaitAnswer(request, STOP_TIMEOUT_MS)
+      awaitAnswer(request, STOP_TIMEOUT_MS) { !it.running && !VpnState.serviceAlive(activity) }
       invoke.resolve()
     }
   }
 
-  /** The service's answer to [request], or null when it does not come in time. */
-  private fun awaitAnswer(request: String, timeoutMs: Long): VpnState.State? {
+  /**
+   * The service's answer to [request], or null when it does not come in time.
+   * [settled] accepts a state that answers the request by other means (the
+   * service is simply gone).
+   */
+  private fun awaitAnswer(
+    request: String,
+    timeoutMs: Long,
+    settled: (VpnState.State) -> Boolean = { false },
+  ): VpnState.State? {
     val deadline = System.currentTimeMillis() + timeoutMs
     while (System.currentTimeMillis() < deadline) {
       val state = VpnState.read(activity)
-      if (state.request == request) return state
-      Thread.sleep(100)
+      if (state.request == request || settled(state)) return state
+      Thread.sleep(50)
     }
     return null
   }

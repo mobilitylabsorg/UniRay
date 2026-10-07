@@ -110,6 +110,12 @@ async fn run_check(app: &AppHandle) -> CheckResult {
         Err(err) => return failed(crate::subscriptions::describe(&err)),
     };
     let latency = started.elapsed().as_millis() as u64;
+    // Through a TUN the core logs the address, not the name.
+    let mut targets = vec![TRACE_HOST.to_owned()];
+    if let Some(peer) = response.remote_addr() {
+        // `1.2.3.4:443` or `[2606:4700::6810:7c60]:443`, as the log writes it.
+        targets.push(peer.to_string());
+    }
     if !response.status().is_success() {
         return failed(format!("HTTP {}", response.status().as_u16()));
     }
@@ -124,7 +130,7 @@ async fn run_check(app: &AppHandle) -> CheckResult {
         latency_ms: Some(latency),
         ip: field("ip"),
         country: field("loc"),
-        server: exit_server(app, mark).await,
+        server: exit_server(app, mark, &targets).await,
         error: None,
         at: now_secs(),
     }
@@ -133,7 +139,7 @@ async fn run_check(app: &AppHandle) -> CheckResult {
 /// Which server of a balancer group carried the check: the core's access log
 /// names the outbound it picked, and the subscription has a server with the
 /// same endpoint and a real name.
-async fn exit_server(app: &AppHandle, mark: u64) -> Option<String> {
+async fn exit_server(app: &AppHandle, mark: u64, targets: &[String]) -> Option<String> {
     // The log line may trail the response a little (files are tailed).
     let deadline = Instant::now() + EXIT_LOG_WAIT;
     let tag = loop {
@@ -143,7 +149,7 @@ async fn exit_server(app: &AppHandle, mark: u64) -> Option<String> {
             logs.iter()
                 .rev()
                 .take_while(|line| line.id >= mark)
-                .find_map(|line| logs::access_outbound(&line.text, TRACE_HOST))
+                .find_map(|line| logs::access_outbound(&line.text, targets))
         };
         if found.is_some() || Instant::now() >= deadline {
             break found?;
