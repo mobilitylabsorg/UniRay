@@ -1,0 +1,188 @@
+// Typed bridge to the Rust backend. The shapes mirror `uniray-core::model`
+// and `src-tauri/src/app.rs`.
+
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
+export interface Server {
+  id: string;
+  name: string;
+  protocol: string;
+  address: string;
+  port: number;
+  transport: string;
+  security: string;
+  link: string | null;
+  subscriptionId: string | null;
+  /** Milliseconds; -1 when the test failed, null when not measured. */
+  delayMs: number | null;
+  warnings?: string[];
+}
+
+export interface UserInfo {
+  upload: number;
+  download: number;
+  /** Bytes, 0 means unlimited. */
+  total: number;
+  /** Unix seconds, null means never. */
+  expire: number | null;
+}
+
+export interface Subscription {
+  id: string;
+  name: string;
+  url: string;
+  updatedAt: number | null;
+  updateIntervalHours: number | null;
+  userInfo: UserInfo | null;
+  hwidActive: boolean;
+  supportUrl: string | null;
+  webPageUrl: string | null;
+  announce: string | null;
+  lastError: string | null;
+}
+
+export type Mode = "proxy" | "tun";
+export type RoutingPreset = "global" | "bypassLan" | "bypassRu";
+export type RuleKind = "domain" | "ip";
+export type RuleAction = "proxy" | "direct" | "block";
+export type PerAppMode = "off" | "allow" | "disallow";
+
+export interface Rule {
+  id: string;
+  kind: RuleKind;
+  value: string;
+  action: RuleAction;
+  enabled: boolean;
+}
+
+export interface Settings {
+  mode: Mode;
+  mixedPort: number;
+  allowLan: boolean;
+  proxyAuth: boolean;
+  proxyUser: string;
+  proxyPassword: string;
+  routingPreset: RoutingPreset;
+  customRules: Rule[];
+  remoteDns: string;
+  directDns: string;
+  ipv6: boolean;
+  sendHwid: boolean;
+  logLevel: string;
+  interfaceName: string;
+  perApp: { mode: PerAppMode; packages: string[] };
+  selectedServer: string | null;
+  locale: string | null;
+}
+
+export interface CmdError {
+  code: string;
+  message: string;
+}
+
+export type Status = "disconnected" | "connecting" | "connected" | "disconnecting";
+
+export interface CheckResult {
+  ok: boolean;
+  /** One HTTPS request through the tunnel, connection setup included. */
+  latencyMs: number | null;
+  /** Exit address and its country code, as seen from the outside. */
+  ip: string | null;
+  country: string | null;
+  error: string | null;
+  /** Unix seconds. */
+  at: number;
+}
+
+export interface Connection {
+  status: Status;
+  serverId: string | null;
+  mode: Mode;
+  since: number | null;
+  error: CmdError | null;
+  mixedPort: number | null;
+  /** The last check of this connection; repeated every 5 minutes. */
+  check: CheckResult | null;
+}
+
+export interface Snapshot {
+  servers: Server[];
+  subscriptions: Subscription[];
+  settings: Settings;
+  connection: Connection;
+  device: { hwid: string; os: string; osVersion: string; model: string };
+  version: string;
+  platform: "linux" | "windows" | "macos" | "android" | "ios";
+  testing: boolean;
+}
+
+export interface Traffic {
+  up: number;
+  down: number;
+  upSpeed: number;
+  downSpeed: number;
+}
+
+export interface LogLine {
+  id: number;
+  time: number;
+  level: "debug" | "info" | "warning" | "error" | "access";
+  text: string;
+}
+
+export interface InstalledApp {
+  package: string;
+  label: string;
+  system: boolean;
+}
+
+/** UI color tokens (`bg`, `surface`, `accent`, ...) as `#rrggbb`. */
+export type ColorTokens = Record<string, string>;
+
+export interface SystemColors {
+  light?: ColorTokens;
+  dark?: ColorTokens;
+}
+
+export interface ImportReport {
+  added: number;
+  errors: string[];
+}
+
+export const api = {
+  getState: () => invoke<Snapshot>("get_state"),
+  import: (text: string) => invoke<ImportReport>("import", { text }),
+  deleteServers: (ids: string[]) => invoke<void>("delete_servers", { ids }),
+  selectServer: (id: string) => invoke<void>("select_server", { id }),
+  addSubscription: (url: string) => invoke<ImportReport>("add_subscription", { url }),
+  updateSubscription: (id: string) => invoke<ImportReport>("update_subscription", { id }),
+  deleteSubscription: (id: string) => invoke<void>("delete_subscription", { id }),
+  saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
+  connect: () => invoke<void>("connect"),
+  disconnect: () => invoke<void>("disconnect"),
+  testDelays: (ids?: string[]) => invoke<void>("test_delays", { ids: ids ?? null }),
+  checkConnection: () => invoke<CheckResult>("check_connection"),
+  listApps: () => invoke<InstalledApp[]>("list_apps"),
+  systemColors: () => invoke<SystemColors | null>("system_colors"),
+  getLogs: () => invoke<LogLine[]>("get_logs"),
+  clearLogs: () => invoke<void>("clear_logs"),
+  quit: () => invoke<void>("quit"),
+};
+
+export const events = {
+  state: (handler: (snapshot: Snapshot) => void): Promise<UnlistenFn> =>
+    listen<Snapshot>("state", (event) => handler(event.payload)),
+  traffic: (handler: (traffic: Traffic) => void): Promise<UnlistenFn> =>
+    listen<Traffic>("traffic", (event) => handler(event.payload)),
+  log: (handler: (line: LogLine) => void): Promise<UnlistenFn> =>
+    listen<LogLine>("log", (event) => handler(event.payload)),
+};
+
+/** Commands reject with a `CmdError`; anything else is an unexpected failure. */
+export function toCmdError(err: unknown): CmdError {
+  if (typeof err === "object" && err !== null && "code" in err && "message" in err) {
+    return err as CmdError;
+  }
+  return { code: "other", message: String(err) };
+}
