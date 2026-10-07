@@ -5,7 +5,8 @@
 Состояние:
 - проверено вживую: Linux в режиме прокси, подписки (в том числе с балансировщиками), контейнер для MikroTik — в Docker с лимитом 64 МБ;
 - собирается, но вживую не проверено: TUN на Linux и Windows, Windows целиком (кросс-сборка с Linux), туннель на Android;
-- в планах: macOS и iOS.
+- собирается в CI, вживую не проверено: macOS (только режим прокси, TUN пока нет);
+- iOS: интерфейс собирается, но туннеля ещё нет — подключение не работает (см. «iOS» ниже).
 
 ## Возможности
 
@@ -39,9 +40,43 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles n
 
 ### CI
 
-`.github/workflows/build.yml` собирает AppImage для Linux, установщик и портативный zip для Windows и APK для Android (arm64) на каждый push в `main`, на pull request и вручную. Готовые файлы лежат в артефактах запуска; при push тега `v*` они же публикуются как релиз GitHub.
+`.github/workflows/build.yml` собирает AppImage для Linux, установщик и портативный zip для Windows, DMG для macOS (Apple Silicon и Intel), APK для Android (arm64) и образы контейнера для MikroTik (armv7, arm64) на каждый push в `main`, на pull request и вручную. Готовые файлы лежат в артефактах запуска; при push тега `v*` они же публикуются как релиз GitHub.
 
 Без секретов APK подписывается одноразовым отладочным ключом, и каждая сборка ставится только начисто. Чтобы обновления ставились поверх, добавьте в секреты репозитория `ANDROID_KEYSTORE` (keystore в base64), `ANDROID_KEYSTORE_PASSWORD` и `ANDROID_KEY_ALIAS`.
+
+Без секретов приложение для macOS не подписано, и macOS не откроет его сразу после скачивания («повреждено» или «не удаётся проверить разработчика»). Перетащите UniRay в «Программы» и снимите карантин:
+
+```sh
+xattr -cr /Applications/UniRay.app
+```
+
+Для подписи и нотаризации добавьте секреты `APPLE_CERTIFICATE` (сертификат Developer ID Application в .p12, base64), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` (пароль приложения с appleid.apple.com) и `APPLE_TEAM_ID`. Нужен платный Apple Developer Program.
+
+### iOS
+
+В CI iOS не собрать: нужны Mac с Xcode и аккаунт Apple. Сейчас приложение на iOS запускается, импортирует серверы и обновляет подписки, но **не подключается**: для VPN на iOS нужно расширение Network Extension (Packet Tunnel) с ядром Xray внутри, а его ещё нет. Для такого расширения обязателен платный Apple Developer Program ($99 в год): бесплатный аккаунт не даёт нужного разрешения.
+
+Сборка на Mac:
+
+1. Установите Xcode из App Store, запустите его один раз и примите лицензию. Затем:
+   ```sh
+   xcode-select --install
+   brew install cocoapods
+   rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+   ```
+2. В корне репозитория:
+   ```sh
+   pnpm install
+   pnpm tauri ios init        # создаёт Xcode-проект в src-tauri/gen/apple
+   ```
+3. Укажите свою команду разработчика: Team ID из Xcode (Settings → Accounts) или developer.apple.com → Membership. Его можно записать в `src-tauri/tauri.ios.conf.json` как `"bundle": { "iOS": { "developmentTeam": "ABCDE12345" } }` или передать переменной `APPLE_DEVELOPMENT_TEAM`.
+4. Запуск:
+   ```sh
+   pnpm tauri ios dev                       # в симуляторе (выбрать из списка)
+   pnpm tauri ios dev --host                # на iPhone по кабелю; на телефоне включите «Режим разработчика»
+   pnpm tauri ios build --export-method debugging   # .ipa в src-tauri/gen/apple/build/arm64/
+   ```
+   Готовый `.ipa` ставится на подключённый iPhone через Xcode (Window → Devices and Simulators, «+» под списком приложений).
 
 ### Тесты
 

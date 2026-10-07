@@ -15,6 +15,8 @@ scripts/build-gateway.sh linux/arm64     # другие варианты: linux/
 
 Нужны Docker с buildx и [cross](https://github.com/cross-rs/cross).
 
+Готовые образы для armv7 и arm64 собирает CI (`.github/workflows/build.yml`): они лежат в артефакте `uniray-gateway` каждого запуска и в релизах.
+
 ## Установка
 
 Пример: контейнер в отдельной сети `192.168.254.0/24`, файлы на `usb1`. Адреса и пути подставьте свои.
