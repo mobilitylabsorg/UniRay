@@ -1,0 +1,37 @@
+{
+  "name": "uniray",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "sidecars": "bash scripts/prepare-sidecars.sh",
+    "app:dev": "bash scripts/prepare-sidecars.sh && tauri dev",
+    "app:build": "bash scripts/prepare-sidecars.sh --release && tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-clipboard-manager": "^2.4.1",
+    "@tauri-apps/plugin-opener": "^2",
+    "jsqr": "^1.4.0",
+    "pinia": "^4.0.3",
+    "qrcode": "^1.5.4",
+    "vue": "^3.5.13",
+    "vue-i18n": "^11.4.13",
+    "vue-router": "^5.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^26.6.4",
+    "@types/qrcode": "^1.5.6",
+    "@vitejs/plugin-vue": "^6.0.7",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16",
+    "vue-tsc": "^3.3.5"
+  }
+}
