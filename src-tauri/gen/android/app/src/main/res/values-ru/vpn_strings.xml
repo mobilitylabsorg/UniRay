@@ -1,0 +1,8 @@
+<resources>
+    <string name="vpn_channel">VPN-подключение</string>
+    <string name="vpn_connected">VPN включён</string>
+    <string name="vpn_disconnect">Отключить</string>
+    <string name="vpn_speed">↓ %1$s/с  ↑ %2$s/с</string>
+    <string name="vpn_latency">%1$d мс</string>
+    <string name="vpn_no_connection">нет связи</string>
+</resources>

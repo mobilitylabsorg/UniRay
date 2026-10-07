@@ -1,0 +1,8 @@
+<resources>
+    <string name="vpn_channel">VPN connection</string>
+    <string name="vpn_connected">VPN is on</string>
+    <string name="vpn_disconnect">Disconnect</string>
+    <string name="vpn_speed">↓ %1$s/s  ↑ %2$s/s</string>
+    <string name="vpn_latency">%1$d ms</string>
+    <string name="vpn_no_connection">no connection</string>
+</resources>
