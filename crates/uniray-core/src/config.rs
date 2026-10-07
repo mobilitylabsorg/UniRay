@@ -390,7 +390,11 @@ fn inbounds(settings: &Settings, runtime: &Runtime) -> Vec<Value> {
             // Tagged like the TUN so the shared routing - the DNS hijack and
             // the retargeted provider rules - applies to it unchanged.
             "tag": TAG_TUN,
-            "listen": "0.0.0.0",
+            // Loopback only, so the network cannot reach it; the TPROXY rules
+            // deliver to it with `--on-ip 127.0.0.1`. It takes no password -
+            // the kernel hands it connections, there is no handshake - so the
+            // caller also refuses direct connections to it.
+            "listen": "127.0.0.1",
             "port": port,
             "protocol": "dokodemo-door",
             // `followRedirect` recovers each packet's original destination from

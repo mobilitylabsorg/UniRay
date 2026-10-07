@@ -30,11 +30,13 @@ import org.json.JSONObject
  * shell ([PrivilegedShell]). Two ways in:
  *
  *  - **tproxy** (primary): iptables TPROXY rules hand TCP+UDP to a
- *    dokodemo-door inbound. No interface at all, so `tun0`, `TRANSPORT_VPN`
- *    and the VpnService record an on-device scanner looks for are all absent.
- *  - **roottun** (fallback): Xray, being root, creates its own TUN and
- *    installs the routes itself (the desktop "managed" path). The interface
- *    exists but under a neutral name, and there is still no VpnService.
+ *    dokodemo-door inbound on loopback, which nothing may connect to
+ *    directly. No interface at all, so `tun0`, `TRANSPORT_VPN` and the
+ *    VpnService record an on-device scanner looks for are all absent.
+ *  - **roottun** (fallback): the Linux build of Xray, being root, creates
+ *    its own TUN, and policy rules route into it (see [rootTunUpScript]).
+ *    The interface exists but under a neutral name, and there is still no
+ *    VpnService.
  *
  * Like [UniRayVpnService] it lives in the `:vpn` process so it outlives the
  * app's UI, keeps its own notification current, and reports across processes
@@ -66,6 +68,8 @@ class StealthService : Service() {
     private const val TABLE = "7847"
     private const val CHAIN_PRE = "UNIRAY_PRE"
     private const val CHAIN_OUT = "UNIRAY_OUT"
+    // Refuses direct connections to the capture port (filter table).
+    private const val CHAIN_GUARD = "UNIRAY_GUARD"
     // The root TUN mode's routing table, and the priority of the rule that
     // sends everything but root's traffic to it: ahead of Android's own rules,
     // which start at 10000 (only the local table's rule, 0, comes earlier).
@@ -360,8 +364,8 @@ class StealthService : Service() {
       iptables -w -t mangle -N $CHAIN_PRE 2>/dev/null || iptables -w -t mangle -F $CHAIN_PRE
       iptables -w -t mangle -N $CHAIN_OUT 2>/dev/null || iptables -w -t mangle -F $CHAIN_OUT
       $returns
-      iptables -w -t mangle -A $CHAIN_PRE -p tcp -j TPROXY --on-port $port --tproxy-mark $MARK
-      iptables -w -t mangle -A $CHAIN_PRE -p udp -j TPROXY --on-port $port --tproxy-mark $MARK
+      iptables -w -t mangle -A $CHAIN_PRE -p tcp -j TPROXY --on-ip 127.0.0.1 --on-port $port --tproxy-mark $MARK
+      iptables -w -t mangle -A $CHAIN_PRE -p udp -j TPROXY --on-ip 127.0.0.1 --on-port $port --tproxy-mark $MARK
       iptables -w -t mangle -A PREROUTING -j $CHAIN_PRE
 
       iptables -w -t mangle -A $CHAIN_OUT -m owner --uid-owner 0 -j RETURN
@@ -369,6 +373,15 @@ class StealthService : Service() {
       iptables -w -t mangle -A $CHAIN_OUT -p tcp -j MARK --set-mark $MARK
       iptables -w -t mangle -A $CHAIN_OUT -p udp -j MARK --set-mark $MARK
       iptables -w -t mangle -A OUTPUT -j $CHAIN_OUT
+
+      # The capture port takes no password: the kernel hands it connections,
+      # there is no handshake. So nothing may connect to it directly - any app
+      # could otherwise find it, and the core would dial itself. Redirected
+      # traffic keeps its real destination and never matches.
+      iptables -w -t filter -N $CHAIN_GUARD 2>/dev/null || iptables -w -t filter -F $CHAIN_GUARD
+      iptables -w -t filter -A $CHAIN_GUARD -d 127.0.0.0/8 -p tcp --dport $port -j REJECT --reject-with tcp-reset
+      iptables -w -t filter -A $CHAIN_GUARD -d 127.0.0.0/8 -p udp --dport $port -j DROP
+      iptables -w -t filter -A OUTPUT -j $CHAIN_GUARD
 
       $v6
 
@@ -454,6 +467,9 @@ class StealthService : Service() {
       iptables -w -t mangle -F $CHAIN_PRE 2>/dev/null || true
       iptables -w -t mangle -X $CHAIN_OUT 2>/dev/null || true
       iptables -w -t mangle -X $CHAIN_PRE 2>/dev/null || true
+      while iptables -w -t filter -D OUTPUT -j $CHAIN_GUARD 2>/dev/null; do :; done
+      iptables -w -t filter -F $CHAIN_GUARD 2>/dev/null || true
+      iptables -w -t filter -X $CHAIN_GUARD 2>/dev/null || true
       while ip6tables -w -t filter -D OUTPUT -j $CHAIN_OUT 2>/dev/null; do :; done
       ip6tables -w -t filter -F $CHAIN_OUT 2>/dev/null || true
       ip6tables -w -t filter -X $CHAIN_OUT 2>/dev/null || true
@@ -472,6 +488,7 @@ class StealthService : Service() {
   private fun leftoversScript(): String =
     """
     iptables -w -t mangle -S 2>/dev/null | grep -q -e $CHAIN_OUT -e $CHAIN_PRE && echo "iptables rules"
+    iptables -w -t filter -S 2>/dev/null | grep -q $CHAIN_GUARD && echo "iptables guard"
     ip6tables -w -t filter -S 2>/dev/null | grep -q $CHAIN_OUT && echo "ip6tables rules"
     ip rule 2>/dev/null | grep -q -e "lookup $TABLE" -e "lookup $TUN_TABLE" && echo "routing rules"
     ip -6 rule 2>/dev/null | grep -q "lookup $TUN_TABLE" && echo "IPv6 routing rules"

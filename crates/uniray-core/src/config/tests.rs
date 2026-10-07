@@ -148,7 +148,8 @@ fn transparent_inbound_captures_with_tproxy_and_shares_the_routing() {
     assert_eq!(tags(&config, "inbounds"), ["tun"]);
     let inbound = &config["inbounds"][0];
     assert_eq!(inbound["protocol"], "dokodemo-door");
-    assert_eq!(inbound["listen"], "0.0.0.0");
+    // Not reachable from the network.
+    assert_eq!(inbound["listen"], "127.0.0.1");
     assert_eq!(inbound["port"], 12345);
     assert_eq!(inbound["settings"], json!({ "network": "tcp,udp", "followRedirect": true }));
     assert_eq!(inbound["streamSettings"]["sockopt"]["tproxy"], "tproxy");
