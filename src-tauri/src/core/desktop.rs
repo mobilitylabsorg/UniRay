@@ -159,6 +159,7 @@ async fn launch(app: &AppHandle, tun: bool, config_path: &std::path::Path, gener
     if tun {
         return spawn_elevated(app, config_path, generation).await;
     }
+    #[cfg(not(windows))]
     let command = if tun {
         let (helper, xray, assets) = root_readable(app)?;
         let mut command = Command::new("pkexec");
@@ -172,6 +173,8 @@ async fn launch(app: &AppHandle, tun: bool, config_path: &std::path::Path, gener
     } else {
         xray_command(&state.paths.xray, config_path, &state.paths.assets)
     };
+    #[cfg(windows)]
+    let command = xray_command(&state.paths.xray, config_path, &state.paths.assets);
     let (stop, supervisor, exited) = spawn_supervised(app, command, Some(generation))?;
     Ok((stop, supervisor, exited, None))
 }
