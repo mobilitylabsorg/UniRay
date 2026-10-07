@@ -37,19 +37,20 @@ fn proxy_mode_config() {
     assert_eq!(config["inbounds"][0]["listen"], "127.0.0.1");
     assert_eq!(config["inbounds"][0]["port"], 10808);
 
-    // The server's own domain is resolved by the direct DNS, through `direct`.
+    // The server's own domain is resolved by the direct DNS (DoH), through
+    // `direct`: encrypted and off the path, so it cannot be hijacked.
     assert_eq!(config["outbounds"][0]["streamSettings"]["sockopt"]["domainStrategy"], "UseIPv4");
     assert_eq!(
         config["dns"]["servers"],
         json!([
-            { "address": "77.88.8.8", "domains": ["full:vpn.example.com"], "skipFallback": true },
+            { "address": "https://8.8.8.8/dns-query", "domains": ["full:vpn.example.com"], "skipFallback": true },
             "https://1.1.1.1/dns-query",
         ])
     );
     assert_eq!(
         config["routing"]["rules"],
         json!([
-            { "inboundTag": ["dns"], "ip": ["77.88.8.8"], "outboundTag": "direct" },
+            { "inboundTag": ["dns"], "ip": ["8.8.8.8"], "outboundTag": "direct" },
             { "inboundTag": ["dns"], "ip": ["1.1.1.1"], "outboundTag": "proxy" },
             { "domain": ["geosite:private"], "outboundTag": "direct" },
             { "ip": ["geoip:private"], "outboundTag": "direct" },
@@ -193,14 +194,14 @@ fn full_config_keeps_provider_routing() {
         config["routing"]["rules"],
         json!([
             { "inboundTag": ["tun"], "port": "53", "outboundTag": "dns-out" },
-            // The core resolves the servers through the direct DNS, directly.
-            { "inboundTag": ["dns"], "ip": ["77.88.8.8"], "outboundTag": "direct" },
+            // The core resolves the servers through the direct DNS (DoH), directly.
+            { "inboundTag": ["dns"], "ip": ["8.8.8.8"], "outboundTag": "direct" },
             { "domain": ["geosite:google"], "outboundTag": "main" },
         ])
     );
     assert_eq!(
         config["dns"]["servers"][0],
-        json!({ "address": "77.88.8.8", "domains": ["full:vpn.example.com", "full:b.example.com"], "skipFallback": true })
+        json!({ "address": "https://8.8.8.8/dns-query", "domains": ["full:vpn.example.com", "full:b.example.com"], "skipFallback": true })
     );
     assert_eq!(config["dns"]["tag"], "dns");
     assert_eq!(config["outbounds"][0]["streamSettings"]["sockopt"]["domainStrategy"], "UseIPv4");

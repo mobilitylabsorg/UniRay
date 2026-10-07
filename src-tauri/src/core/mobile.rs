@@ -20,7 +20,7 @@ use uniray_core::model::{PerAppMode, Server, Settings};
 
 use super::{ConnectionInfo, Status};
 use crate::app::{emit_state, App};
-use crate::network::{direct_dns, needs_reconnect, NetworkInfo};
+use crate::network::NetworkInfo;
 use crate::error::{CmdError, CmdResult};
 use crate::state::write_private;
 use crate::{logs, stats};
@@ -29,11 +29,11 @@ const PROBE_URL: &str = "https://www.gstatic.com/generate_204";
 const PROBE_TIMEOUT_SECS: u32 = 6;
 /// libXray tests at most this many configs per call.
 const PROBE_BATCH: usize = 5;
-/// DNS server for the core's own lookups when the configured one is not an IP.
+/// Plain resolver for the core's own (Go-side) lookups, which do not resolve
+/// the proxy server - Xray's built-in DNS does that over DoH - so this only
+/// needs to be reachable. A public one, never the operator's.
 const FALLBACK_DNS: &str = "8.8.8.8";
 const WATCH_INTERVAL: Duration = Duration::from_secs(1);
-/// How often, in watch intervals, the network is checked for a change.
-const NETWORK_CHECK_TICKS: u32 = 3;
 
 struct Vpn(PluginHandle<Wry>);
 
@@ -197,16 +197,16 @@ impl Running {
                 access: files.access_log.to_string_lossy().into_owned(),
             },
         };
-        let network = network_info(app).await;
-        let direct = direct_dns(settings, network.as_ref());
-        if let Some(network) = &network {
-            logs::push(app, &format!("[Info] network: {}, resolving servers with {direct}", network.kind));
+        if let Some(network) = network_info(app).await {
+            logs::push(app, &format!("[Info] network: {}", network.kind));
         }
-        let settings = &Settings { direct_dns: direct.clone(), ..settings.clone() };
         let built = config::build(server, settings, &runtime)?;
 
-        // Go's own resolver needs a plain IP server.
-        let dns = if direct.parse::<IpAddr>().is_ok() { direct.as_str() } else { FALLBACK_DNS };
+        // Xray's built-in DNS resolves the servers over the configured DoH,
+        // straight out the physical interface, so a resolver on the path
+        // cannot substitute them. Go's own resolver still needs a plain IP; a
+        // public one when the direct DNS is a DoH URL (the usual case).
+        let dns = if settings.direct_dns.parse::<IpAddr>().is_ok() { settings.direct_dns.as_str() } else { FALLBACK_DNS };
         let args = StartArgs {
             config: built.config.to_string(),
             per_app_mode: settings.per_app.mode,
@@ -241,7 +241,7 @@ impl Running {
         Ok(Self {
             log_mark,
             stats: stats::spawn(app.clone(), stats::MetricsSource::Socket(files.metrics), built.proxy_tags),
-            watcher: spawn_watcher(app.clone(), generation, network),
+            watcher: spawn_watcher(app.clone(), generation),
             tailer,
         })
     }
@@ -256,12 +256,15 @@ impl Running {
     }
 }
 
-/// Notices when the service stops on its own (the user revoked the VPN,
-/// another VPN app took over, the notification's disconnect was tapped) and
-/// when the network changes in a way that needs another DNS server.
-fn spawn_watcher(app: AppHandle, generation: u64, network: Option<NetworkInfo>) -> JoinHandle<()> {
+/// Notices when the service stops on its own: the user revoked the VPN,
+/// another VPN app took over, or the notification's disconnect was tapped.
+///
+/// A change of underlying network (Wi-Fi to mobile data and back) needs no
+/// reconnect: the config's DNS no longer depends on the network, and Xray
+/// re-dials its own protected sockets onto whatever network is current. Not
+/// reconnecting also means less conspicuous churn.
+fn spawn_watcher(app: AppHandle, generation: u64) -> JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
-        let mut tick = 0u32;
         loop {
             tokio::time::sleep(WATCH_INTERVAL).await;
             if !service_running(&app).await {
@@ -269,21 +272,6 @@ fn spawn_watcher(app: AppHandle, generation: u64, network: Option<NetworkInfo>) 
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move { super::on_core_exit(&app, generation).await });
                 return;
-            }
-            tick += 1;
-            if tick % NETWORK_CHECK_TICKS != 0 {
-                continue;
-            }
-            if let (Some(before), Some(now)) = (&network, network_info(&app).await) {
-                if needs_reconnect(before, &now) {
-                    logs::push(&app, &format!("[Info] network changed to {}, reconnecting", now.kind));
-                    // Not awaited: reconnecting aborts this very task.
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let _ = super::connect(&app).await;
-                    });
-                    return;
-                }
             }
         }
     })
@@ -318,7 +306,7 @@ pub async fn init_device(app: &AppHandle) {
             *running = Some(Running {
                 log_mark: logs::mark(),
                 stats: stats::spawn(app.clone(), stats::MetricsSource::Socket(session.metrics_socket), session.proxy_tags),
-                watcher: spawn_watcher(app.clone(), generation, network_info(app).await),
+                watcher: spawn_watcher(app.clone(), generation),
                 tailer: logs::tail(app.clone(), vec![files.error_log, files.access_log]),
             });
             let mode = state.store.lock().unwrap().data.settings.mode;

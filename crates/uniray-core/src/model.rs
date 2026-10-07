@@ -165,8 +165,11 @@ pub struct Settings {
     pub custom_rules: Vec<Rule>,
     /// DNS server reached through the proxy.
     pub remote_dns: String,
-    /// Plain DNS server reached directly; resolves the proxy server itself
-    /// and the domains routed directly.
+    /// DNS server reached directly, out the physical interface. It resolves the
+    /// proxy server's own address and the directly-routed domains. The default
+    /// is encrypted (DoH) so that a resolver on the path - a mobile operator's,
+    /// or RKN's DNS spoofing - cannot substitute a fake address for the server
+    /// and break (or misdirect) the connection before the tunnel is even up.
     pub direct_dns: String,
     pub ipv6: bool,
     /// Send `x-hwid` and device headers when fetching subscriptions.
@@ -198,7 +201,10 @@ impl Default for Settings {
             routing_preset: RoutingPreset::default(),
             custom_rules: Vec::new(),
             remote_dns: "https://1.1.1.1/dns-query".into(),
-            direct_dns: "77.88.8.8".into(),
+            // A different host than remote_dns, so one routing rule can send
+            // this resolver's queries out directly while remote_dns's go
+            // through the proxy (both are the 53-less DoH port 443).
+            direct_dns: "https://8.8.8.8/dns-query".into(),
             ipv6: false,
             send_hwid: true,
             log_level: "warning".into(),

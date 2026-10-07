@@ -54,11 +54,16 @@ class UniRayVpnService : VpnService() {
     private const val CHANNEL_ID = "vpn"
     private const val NOTIFICATION_ID = 1
 
-    // The tunnel's own subnet. DNS queries are sent to an address inside it,
-    // so they enter the tunnel and are answered by the core.
+    // The tunnel's own gateway address and subnet.
     private const val ADDRESS_V4 = "172.19.0.1"
-    private const val DNS_V4 = "172.19.0.2"
     private const val PREFIX_V4 = 30
+    // The DNS server advertised to the system. A public resolver, not an
+    // address in the tunnel's private subnet: a private DNS server stands out
+    // to on-device VPN scanners ("DNS in a private subnet"). The address is
+    // only cosmetic - every port-53 query entering the tunnel is answered by
+    // the core regardless of which server it was aimed at (see the config's
+    // DNS-hijack rule) - so a well-known public resolver blends in best.
+    private const val DNS_V4 = "1.1.1.1"
     private const val ADDRESS_V6 = "fdfe:dcba:9876::1"
     private const val PREFIX_V6 = 126
 
