@@ -66,6 +66,14 @@ class StealthService : Service() {
     private const val TABLE = "7847"
     private const val CHAIN_PRE = "UNIRAY_PRE"
     private const val CHAIN_OUT = "UNIRAY_OUT"
+    // The root TUN mode's routing table, and the priority of the rule that
+    // sends everything but root's traffic to it: ahead of Android's own rules,
+    // which start at 10000 (only the local table's rule, 0, comes earlier).
+    private const val TUN_TABLE = "7848"
+    private const val TUN_RULE_PREF = "9000"
+    // Root CAs for the Linux build of Xray, which looks only in the desktop
+    // places: the updatable store (Android 14+), then the system one.
+    private const val ANDROID_CA_DIRS = "/apex/com.android.conscrypt/cacerts:/system/etc/security/cacerts"
 
     private const val REFRESH_SECONDS = 5L
     private const val CHECK_INTERVAL_MS = 5 * 60 * 1000L
@@ -77,6 +85,11 @@ class StealthService : Service() {
     fun specFile(context: Context) = File(context.filesDir, "run/stealth.json")
 
     fun stealthDir(context: Context) = File(context.filesDir, "stealth")
+
+    /** The Android build of Xray, for tproxy. */
+    private const val XRAY_TPROXY = "xray"
+    /** The Linux build, for the root TUN: only it creates a TUN itself. */
+    private const val XRAY_TUN = "xray-tun"
   }
 
   private val worker = Executors.newSingleThreadExecutor()
@@ -177,9 +190,10 @@ class StealthService : Service() {
     val configFile = File(dir, "config.json").apply { writeText(config) }
     val port = spec.optInt("port", 12345)
     val ipv6 = spec.optBoolean("ipv6", false)
+    val tunName = spec.optString("tunName").ifEmpty { "uniray0" }
 
     val up =
-      if (mode == MODE_ROOT_TUN) rootTunUpScript(dir, configFile)
+      if (mode == MODE_ROOT_TUN) rootTunUpScript(dir, configFile, tunName, ipv6)
       else tproxyUpScript(dir, configFile, port, ipv6)
     val result = PrivilegedShell.execPrivileged(level, up)
     if (!result.ok) {
@@ -251,7 +265,7 @@ class StealthService : Service() {
     }
   }
 
-  /** Unpacks the standalone xray binary and the geo databases into the app's
+  /** Unpacks the standalone xray binaries and the geo databases into the app's
    * private dir, once per installed version. Returns the stealth dir. */
   private fun installAssets(): File {
     val dir = stealthDir(this).apply { mkdirs() }
@@ -260,10 +274,12 @@ class StealthService : Service() {
     val version = packageManager.getPackageInfo(packageName, 0).lastUpdateTime.toString()
     if (stamp.exists() && stamp.readText() == version) return dir
 
-    val xray = File(dir, "xray")
-    assets.open("stealth/xray").use { input -> xray.outputStream().use { input.copyTo(it) } }
-    xray.setExecutable(true, false)
-    xray.setReadable(true, false)
+    for (name in listOf(XRAY_TPROXY, XRAY_TUN)) {
+      val xray = File(dir, name)
+      assets.open("stealth/$name").use { input -> xray.outputStream().use { input.copyTo(it) } }
+      xray.setExecutable(true, false)
+      xray.setReadable(true, false)
+    }
     for (name in listOf("geoip.dat", "geosite.dat")) {
       assets.open(name).use { input -> File(geo, name).outputStream().use { input.copyTo(it) } }
     }
@@ -277,16 +293,20 @@ class StealthService : Service() {
   // idempotent (every delete tolerates "not there").
 
   private fun paths(dir: File) =
-    Triple(File(dir, "xray").absolutePath, File(filesDir, "geo").absolutePath, File(dir, "xray.pid").absolutePath)
+    Pair(File(filesDir, "geo").absolutePath, File(dir, "xray.pid").absolutePath)
 
-  /** Launch xray detached, wait for the counters socket, open it to the app. */
-  private fun launch(dir: File, configFile: File): String {
-    val (xray, geo, pid) = paths(dir)
+  /**
+   * Launch [binary] (one of the xray builds in [dir]) detached with [env] in
+   * front, wait for the counters socket, open it to the app.
+   */
+  private fun launch(dir: File, configFile: File, binary: String = XRAY_TPROXY, env: String = ""): String {
+    val (geo, pid) = paths(dir)
+    val xray = File(dir, binary).absolutePath
     val log = File(dir, "xray.log").absolutePath
     val sock = metricsSocket
     return """
       cd ${dir.absolutePath}
-      XRAY_LOCATION_ASSET=$geo setsid $xray run -c ${configFile.absolutePath} >$log 2>&1 &
+      $env XRAY_LOCATION_ASSET=$geo setsid $xray run -c ${configFile.absolutePath} >$log 2>&1 &
       echo ${'$'}! > $pid
       for i in ${'$'}(seq 1 40); do [ -S "$sock" ] && chmod 666 "$sock" && break; sleep 0.1; done
     """.trimIndent()
@@ -295,22 +315,24 @@ class StealthService : Service() {
   private val privateNets =
     listOf("0.0.0.0/8", "10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4", "240.0.0.0/4")
 
+  /** Without IPv6 support, drops global unicast v6 egress so it cannot bypass
+   * the v4 tunnel. (ULA/link-local stay for on-device and LAN use.) */
+  private fun blockIpv6Script(ipv6: Boolean): String =
+    if (ipv6) ""
+    else
+      """
+      ip6tables -t filter -N $CHAIN_OUT 2>/dev/null || ip6tables -t filter -F $CHAIN_OUT
+      ip6tables -t filter -A $CHAIN_OUT -o lo -j RETURN
+      ip6tables -t filter -A $CHAIN_OUT -d fc00::/7 -j RETURN
+      ip6tables -t filter -A $CHAIN_OUT -d fe80::/10 -j RETURN
+      ip6tables -t filter -A $CHAIN_OUT -d 2000::/3 -j DROP
+      ip6tables -t filter -A OUTPUT -j $CHAIN_OUT
+      """.trimIndent()
+
   private fun tproxyUpScript(dir: File, configFile: File, port: Int, ipv6: Boolean): String {
     val returns = privateNets.joinToString("\n") { "iptables -t mangle -A $CHAIN_PRE -d $it -j RETURN" }
     val returnsOut = privateNets.joinToString("\n") { "iptables -t mangle -A $CHAIN_OUT -d $it -j RETURN" }
-    // Without IPv6 support, drop global unicast v6 egress so it cannot bypass
-    // the v4 tunnel. (ULA/link-local stay for on-device and LAN use.)
-    val v6 =
-      if (ipv6) ""
-      else
-        """
-        ip6tables -t filter -N $CHAIN_OUT 2>/dev/null || ip6tables -t filter -F $CHAIN_OUT
-        ip6tables -t filter -A $CHAIN_OUT -o lo -j RETURN
-        ip6tables -t filter -A $CHAIN_OUT -d fc00::/7 -j RETURN
-        ip6tables -t filter -A $CHAIN_OUT -d fe80::/10 -j RETURN
-        ip6tables -t filter -A $CHAIN_OUT -d 2000::/3 -j DROP
-        ip6tables -t filter -A OUTPUT -j $CHAIN_OUT
-        """.trimIndent()
+    val v6 = blockIpv6Script(ipv6)
     return """
       set -e
       ip rule add fwmark $MARK lookup $TABLE 2>/dev/null || true
@@ -335,19 +357,65 @@ class StealthService : Service() {
     """.trimIndent()
   }
 
-  private fun rootTunUpScript(dir: File, configFile: File): String {
-    // Xray creates and configures its own TUN (it has CAP_NET_ADMIN as root):
-    // nothing to set up here beyond making /dev/net/tun usable and launching.
+  /**
+   * Root TUN: the Linux build of Xray creates [tun] and gives it its
+   * addresses; this script routes into it. Android picks routes through
+   * policy rules, one table per network, so Xray's own route setup (the main
+   * table) would never be consulted. Instead a rule ahead of Android's sends
+   * everything except root's traffic to a table whose default route is the
+   * TUN. The core runs as root, so its own connections keep using Android's
+   * routing and do not loop back in, the same exemption the tproxy mode makes.
+   */
+  private fun rootTunUpScript(dir: File, configFile: File, tun: String, ipv6: Boolean): String {
+    val log = File(dir, "xray.log").absolutePath
+    val savedRpFilter = File(dir, "rp_filter.saved").absolutePath
+    val throws = privateNets.joinToString("\n") { "ip route add throw $it table $TUN_TABLE" }
+    val v6 =
+      if (ipv6)
+        """
+        ip -6 route add default dev $tun table $TUN_TABLE
+        ip -6 route add throw fc00::/7 table $TUN_TABLE
+        ip -6 route add throw fe80::/10 table $TUN_TABLE
+        ip -6 rule add not uidrange 0-0 lookup $TUN_TABLE pref $TUN_RULE_PREF
+        """.trimIndent()
+      else blockIpv6Script(false)
     return """
       set -e
+      if ip link show $tun >/dev/null 2>&1; then
+        echo "a network interface named $tun already exists; set another interface name in Settings" >&2
+        exit 1
+      fi
       [ -e /dev/net/tun ] || { mkdir -p /dev/net; mknod /dev/net/tun c 10 200; }
-      ${launch(dir, configFile)}
+
+      ${launch(dir, configFile, XRAY_TUN, "SSL_CERT_DIR=$ANDROID_CA_DIRS TMPDIR=${dir.absolutePath}")}
+
+      for i in ${'$'}(seq 1 50); do ip link show $tun 2>/dev/null | grep -q '[<,]UP[,>]' && break; sleep 0.1; done
+      if ! ip link show $tun 2>/dev/null | grep -q '[<,]UP[,>]'; then
+        echo "the core did not bring up $tun:" >&2
+        tail -n 5 $log >&2
+        exit 1
+      fi
+
+      # Replies come in on the TUN from addresses Android routes elsewhere;
+      # strict reverse-path filtering would drop them. Relaxed to loose for
+      # the session, restored on teardown.
+      [ -f $savedRpFilter ] || cat /proc/sys/net/ipv4/conf/all/rp_filter > $savedRpFilter
+      [ "${'$'}(cat /proc/sys/net/ipv4/conf/all/rp_filter)" = 1 ] && echo 2 > /proc/sys/net/ipv4/conf/all/rp_filter
+      echo 0 > /proc/sys/net/ipv4/conf/$tun/rp_filter
+
+      ip route add default dev $tun table $TUN_TABLE
+      $throws
+      ip rule add not uidrange 0-0 lookup $TUN_TABLE pref $TUN_RULE_PREF
+
+      $v6
     """.trimIndent()
   }
 
   private fun downScript(ipv6: Boolean): String {
     val pid = File(stealthDir(this), "xray.pid").absolutePath
-    val xray = File(stealthDir(this), "xray").absolutePath
+    val xray = File(stealthDir(this), XRAY_TPROXY).absolutePath
+    val xrayTun = File(stealthDir(this), XRAY_TUN).absolutePath
+    val savedRpFilter = File(stealthDir(this), "rp_filter.saved").absolutePath
     val v6 =
       if (ipv6) ""
       else
@@ -359,6 +427,7 @@ class StealthService : Service() {
     return """
       [ -f $pid ] && kill ${'$'}(cat $pid) 2>/dev/null || true
       pkill -f "$xray run" 2>/dev/null || true
+      pkill -f "$xrayTun run" 2>/dev/null || true
       rm -f $pid 2>/dev/null || true
       iptables -t mangle -D OUTPUT -j $CHAIN_OUT 2>/dev/null || true
       iptables -t mangle -D PREROUTING -j $CHAIN_PRE 2>/dev/null || true
@@ -368,6 +437,11 @@ class StealthService : Service() {
       iptables -t mangle -X $CHAIN_PRE 2>/dev/null || true
       ip rule del fwmark $MARK lookup $TABLE 2>/dev/null || true
       ip route flush table $TABLE 2>/dev/null || true
+      while ip rule del pref $TUN_RULE_PREF 2>/dev/null; do :; done
+      while ip -6 rule del pref $TUN_RULE_PREF 2>/dev/null; do :; done
+      ip route flush table $TUN_TABLE 2>/dev/null || true
+      ip -6 route flush table $TUN_TABLE 2>/dev/null || true
+      if [ -f $savedRpFilter ]; then cat $savedRpFilter > /proc/sys/net/ipv4/conf/all/rp_filter; rm -f $savedRpFilter; fi
       $v6
     """.trimIndent()
   }

@@ -311,6 +311,28 @@ fn gateway_tun_routes_only_the_given_prefixes() {
 }
 
 #[test]
+fn routed_tun_leaves_routing_to_the_caller() {
+    let server = parse_link(VLESS).unwrap();
+    let runtime = Runtime { tun: Some(Tun::Routed { name: "uniray0".into() }), mixed_port: None, ..proxy_runtime() };
+    let config = build(&server, &Settings::default(), &runtime).unwrap().config;
+    let tun = &config["inbounds"][0];
+    assert_eq!(tun["tag"], "tun");
+    assert_eq!(tun["settings"]["name"], "uniray0");
+    // IPv6 off by default: only the v4 address, so systems without IPv6 work.
+    assert_eq!(tun["settings"]["gateway"], json!([TUN_ADDRESS_V4]));
+    // No routes and no interface binding: Android's policy routing is the
+    // caller's to set up, and Xray's automatic setup would get it wrong.
+    assert!(tun["settings"].get("autoSystemRoutingTable").is_none());
+    assert!(tun["settings"].get("autoOutboundsInterface").is_none());
+    // DNS arriving through the tunnel is still answered by the core.
+    assert_eq!(config["routing"]["rules"][0]["outboundTag"], "dns-out");
+
+    let settings = Settings { ipv6: true, ..Default::default() };
+    let config = build(&server, &settings, &runtime).unwrap().config;
+    assert_eq!(config["inbounds"][0]["settings"]["gateway"], json!([TUN_ADDRESS_V4, TUN_ADDRESS_V6]));
+}
+
+#[test]
 fn proxy_everything_drops_split_routing_and_geodata() {
     let mut config = json!({
         "outbounds": [

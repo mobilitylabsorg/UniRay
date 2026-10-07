@@ -47,6 +47,12 @@ pub enum Tun {
     /// LAN clients whose traffic is forwarded through it leave by the normal
     /// interface instead of looping back in. IPv4 only.
     Gateway { name: String, routes: Vec<String> },
+    /// Xray creates the interface and gives it its addresses; the caller
+    /// routes traffic into it (Android stealth mode's root TUN). Android picks
+    /// routes through per-network policy rules that Xray's own route setup
+    /// does not know, and the caller keeps the core's own connections out of
+    /// the tunnel by their uid rather than by binding them to an interface.
+    Routed { name: String },
     /// No interface at all: a transparent-proxy (TPROXY) inbound on `port`,
     /// fed by the iptables rules the caller installs. Capturing traffic this
     /// way needs CAP_NET_ADMIN, so the core runs as a privileged standalone
@@ -355,6 +361,19 @@ fn inbounds(settings: &Settings, runtime: &Runtime) -> Vec<Value> {
                 "gateway": [TUN_ADDRESS_V4],
                 "autoSystemRoutingTable": routes,
                 "autoOutboundsInterface": "auto",
+            },
+            "sniffing": sniffing,
+        })),
+        Some(Tun::Routed { name }) => inbounds.push(json!({
+            "tag": TAG_TUN,
+            "protocol": "tun",
+            "settings": {
+                "name": name,
+                "mtu": TUN_MTU,
+                // Without IPv6 the caller blocks it rather than routing it
+                // here, and an IPv6 address would fail where the system has
+                // IPv6 turned off.
+                "gateway": if settings.ipv6 { vec![TUN_ADDRESS_V4, TUN_ADDRESS_V6] } else { vec![TUN_ADDRESS_V4] },
             },
             "sniffing": sniffing,
         })),

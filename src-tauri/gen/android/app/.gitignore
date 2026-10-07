@@ -8,3 +8,4 @@
 /libs/libXray.version
 # Standalone Xray for stealth mode, downloaded by scripts/fetch-xray-android.sh
 /src/main/assets/stealth/xray
+/src/main/assets/stealth/xray-tun

@@ -64,6 +64,8 @@ class StealthArgs {
   /** "tproxy" (iptables) or "roottun" (a root-owned TUN). */
   var mode: String = "tproxy"
   var port: Int = 12345
+  /** Interface the root TUN mode creates. */
+  var tunName: String = ""
   var ipv6: Boolean = false
   var serverName: String = ""
   var metricsSocket: String = ""
@@ -355,6 +357,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
           .put("config", args.config)
           .put("mode", args.mode)
           .put("port", args.port)
+          .put("tunName", args.tunName)
           .put("ipv6", args.ipv6)
           .put("privilege", state.level.name)
           .put("serverName", args.serverName)

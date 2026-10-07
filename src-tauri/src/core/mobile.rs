@@ -301,9 +301,10 @@ async fn start_stealth(
     log: &LogSink,
 ) -> CmdResult<Vec<String>> {
     // tproxy is the primary path (no interface); the root TUN is the fallback
-    // for kernels without TPROXY, where Xray makes its own interface as root.
+    // for kernels without TPROXY, where Xray makes its own interface as root
+    // and the service routes into it.
     let tun = if settings.stealth_root_tun {
-        Tun::Managed { name: name.to_owned() }
+        Tun::Routed { name: name.to_owned() }
     } else {
         Tun::Transparent { port: STEALTH_TPROXY_PORT }
     };
@@ -319,6 +320,7 @@ async fn start_stealth(
         "config": built.config.to_string(),
         "mode": if settings.stealth_root_tun { "roottun" } else { "tproxy" },
         "port": STEALTH_TPROXY_PORT,
+        "tunName": name,
         "ipv6": settings.ipv6,
         "serverName": server.name,
         "metricsSocket": metrics,
