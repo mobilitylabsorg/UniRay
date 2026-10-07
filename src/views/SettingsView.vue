@@ -146,10 +146,12 @@ onMounted(refreshPrivilege);
           @click="save({ mode })"
         >
           <span
-            class="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2"
+            class="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors duration-200"
             :class="store.settings.mode === mode ? 'border-accent bg-accent text-accent-ink' : 'border-line'"
           >
-            <AppIcon v-if="store.settings.mode === mode" name="check" :size="12" />
+            <Transition name="pop">
+              <AppIcon v-if="store.settings.mode === mode" name="check" :size="12" />
+            </Transition>
           </span>
           <span>
             <span class="block text-sm font-medium">{{ t(mode === "proxy" ? "home.modeProxy" : "home.modeTun") }}</span>
@@ -181,32 +183,34 @@ onMounted(refreshPrivilege);
             @update:model-value="(proxyAuth: boolean) => save({ proxyAuth })"
           />
         </div>
-        <div v-if="store.settings.proxyAuth" class="mt-3 grid grid-cols-2 gap-2">
-          <label class="block">
-            <span class="mb-1 block text-xs text-muted">{{ t("settings.proxyUser") }}</span>
-            <input
-              v-model="draft.proxyUser"
-              class="field selectable font-mono text-xs"
-              spellcheck="false"
-              autocapitalize="off"
-              autocomplete="off"
-              @blur="saveCredential('proxyUser')"
-              @keydown.enter="($event.target as HTMLInputElement).blur()"
-            />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-xs text-muted">{{ t("settings.proxyPassword") }}</span>
-            <input
-              v-model="draft.proxyPassword"
-              class="field selectable font-mono text-xs"
-              spellcheck="false"
-              autocapitalize="off"
-              autocomplete="off"
-              @blur="saveCredential('proxyPassword')"
-              @keydown.enter="($event.target as HTMLInputElement).blur()"
-            />
-          </label>
-        </div>
+        <Transition name="pop">
+          <div v-if="store.settings.proxyAuth" class="mt-3 grid grid-cols-2 gap-2">
+            <label class="block">
+              <span class="mb-1 block text-xs text-muted">{{ t("settings.proxyUser") }}</span>
+              <input
+                v-model="draft.proxyUser"
+                class="field selectable font-mono text-xs"
+                spellcheck="false"
+                autocapitalize="off"
+                autocomplete="off"
+                @blur="saveCredential('proxyUser')"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-xs text-muted">{{ t("settings.proxyPassword") }}</span>
+              <input
+                v-model="draft.proxyPassword"
+                class="field selectable font-mono text-xs"
+                spellcheck="false"
+                autocapitalize="off"
+                autocomplete="off"
+                @blur="saveCredential('proxyPassword')"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+            </label>
+          </div>
+        </Transition>
         <button class="btn btn-quiet mt-3 w-full" @click="copyProxyAddress">
           <AppIcon name="copy" :size="16" />{{ t("settings.proxyCopy") }}
         </button>
@@ -263,19 +267,21 @@ onMounted(refreshPrivilege);
             <option v-for="item in PER_APP_MODES" :key="item.value" :value="item.value">{{ t(item.label) }}</option>
           </select>
         </label>
-        <button
-          v-if="store.settings.perApp.mode !== 'off'"
-          class="flex w-full items-center gap-3 px-4 py-3 text-left"
-          @click="choosingApps = true"
-        >
-          <span class="flex-1">
-            <span class="block font-medium">{{ t("settings.perAppChoose") }}</span>
-            <span class="block text-xs text-muted">
-              {{ t("settings.perAppSelected", { count: store.settings.perApp.packages.length }) }}
+        <Transition name="pop">
+          <button
+            v-if="store.settings.perApp.mode !== 'off'"
+            class="flex w-full items-center gap-3 px-4 py-3 text-left"
+            @click="choosingApps = true"
+          >
+            <span class="flex-1">
+              <span class="block font-medium">{{ t("settings.perAppChoose") }}</span>
+              <span class="block text-xs text-muted">
+                {{ t("settings.perAppSelected", { count: store.settings.perApp.packages.length }) }}
+              </span>
             </span>
-          </span>
-          <AppIcon name="chevron" class="text-muted" />
-        </button>
+            <AppIcon name="chevron" class="text-muted" />
+          </button>
+        </Transition>
       </div>
 
       <div class="section-title">{{ t("settings.stealth") }}</div>
@@ -308,17 +314,19 @@ onMounted(refreshPrivilege);
             @update:model-value="(stealth: boolean) => save({ stealth })"
           />
         </div>
-        <div v-if="store.settings.stealth && canStealth" class="flex items-center gap-3 px-4 py-3">
-          <div class="flex-1">
-            <div class="font-medium">{{ t("settings.stealthRootTun") }}</div>
-            <div class="text-xs text-muted">{{ t("settings.stealthRootTunHint") }}</div>
+        <Transition name="pop">
+          <div v-if="store.settings.stealth && canStealth" class="flex items-center gap-3 px-4 py-3">
+            <div class="flex-1">
+              <div class="font-medium">{{ t("settings.stealthRootTun") }}</div>
+              <div class="text-xs text-muted">{{ t("settings.stealthRootTunHint") }}</div>
+            </div>
+            <ToggleSwitch
+              :model-value="store.settings.stealthRootTun"
+              :label="t('settings.stealthRootTun')"
+              @update:model-value="(stealthRootTun: boolean) => save({ stealthRootTun })"
+            />
           </div>
-          <ToggleSwitch
-            :model-value="store.settings.stealthRootTun"
-            :label="t('settings.stealthRootTun')"
-            @update:model-value="(stealthRootTun: boolean) => save({ stealthRootTun })"
-          />
-        </div>
+        </Transition>
       </div>
     </template>
 
@@ -405,6 +413,8 @@ onMounted(refreshPrivilege);
     <button v-if="store.isDesktop" class="btn btn-danger w-full" @click="api.quit()">
       <AppIcon name="power" :size="18" />{{ t("settings.quit") }}
     </button>
-    <PerAppDialog v-if="choosingApps" @close="choosingApps = false" />
+    <Transition name="sheet">
+      <PerAppDialog v-if="choosingApps" @close="choosingApps = false" />
+    </Transition>
   </div>
 </template>

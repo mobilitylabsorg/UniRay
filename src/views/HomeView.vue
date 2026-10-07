@@ -62,7 +62,7 @@ const MODES: { value: Mode; label: string }[] = [
   <div class="flex min-h-full flex-col items-center gap-6 px-5 py-8">
     <div class="flex flex-1 flex-col items-center justify-center gap-6">
       <button
-        class="relative flex size-44 items-center justify-center rounded-full border-4 transition-all duration-300 disabled:opacity-60"
+        class="relative flex size-44 items-center justify-center rounded-full border-4 transition-[color,background-color,border-color,box-shadow,transform,opacity] duration-300 active:scale-95 disabled:opacity-60 disabled:active:scale-100"
         :class="
           connected
             ? 'border-accent bg-accent text-accent-ink shadow-[0_0_60px_-10px_var(--color-accent)]'
@@ -72,28 +72,39 @@ const MODES: { value: Mode; label: string }[] = [
         :aria-label="connected ? t('home.disconnect') : t('home.connect')"
         @click="store.toggleConnection()"
       >
-        <span v-if="busy" class="absolute inset-[-4px] animate-spin rounded-full border-4 border-transparent border-t-accent" />
-        <AppIcon name="power" :size="64" />
+        <span v-if="connected" class="halo pointer-events-none absolute inset-[-4px] rounded-full border-2 border-accent" />
+        <Transition name="fade">
+          <span v-if="busy" class="absolute inset-[-4px] animate-spin rounded-full border-4 border-transparent border-t-accent" />
+        </Transition>
+        <AppIcon name="power" :size="64" class="transition-transform duration-300" :class="connected ? 'scale-110' : ''" />
       </button>
 
       <div class="text-center">
-        <div class="text-xl font-semibold" :class="connected ? 'text-accent' : ''">
-          {{ t(`status.${store.status}`) }}
+        <Transition name="fade" mode="out-in">
+          <div :key="store.status" class="text-xl font-semibold" :class="connected ? 'text-accent' : ''">
+            {{ t(`status.${store.status}`) }}
+          </div>
+        </Transition>
+        <div class="mt-1 h-5 font-mono text-sm text-muted tabular-nums">
+          <Transition name="fade">
+            <span v-if="uptime">{{ uptime }}</span>
+          </Transition>
         </div>
-        <div class="mt-1 h-5 font-mono text-sm text-muted tabular-nums">{{ uptime }}</div>
       </div>
 
-      <p
-        v-if="error"
-        class="selectable flex max-w-sm items-start gap-2 rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger"
-        role="alert"
-      >
-        <AppIcon name="alert" :size="18" class="mt-0.5 shrink-0" />
-        <span class="min-w-0 break-words">{{ error }}</span>
-      </p>
+      <Transition name="pop">
+        <p
+          v-if="error"
+          class="selectable flex max-w-sm items-start gap-2 rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger"
+          role="alert"
+        >
+          <AppIcon name="alert" :size="18" class="mt-0.5 shrink-0" />
+          <span class="min-w-0 break-words">{{ error }}</span>
+        </p>
+      </Transition>
     </div>
 
-    <div class="flex w-full max-w-sm flex-col gap-3">
+    <div class="rise flex w-full max-w-sm flex-col gap-3">
       <RouterLink to="/servers" class="card flex items-center gap-3 px-4 py-3 transition-colors hover:border-accent">
         <AppIcon name="server" class="shrink-0 text-muted" />
         <div v-if="server" class="min-w-0 flex-1">
@@ -126,38 +137,47 @@ const MODES: { value: Mode; label: string }[] = [
         </div>
       </div>
 
-      <div v-if="connected" class="card px-4 py-3">
-        <template v-if="check">
-          <div class="flex items-center gap-1.5 font-medium" :class="check.ok ? 'text-good' : 'text-danger'">
-            <AppIcon :name="check.ok ? 'check' : 'alert'" :size="16" class="shrink-0" />
-            <span>{{ check.ok ? t("home.checkOk") : t("home.checkFailed") }}</span>
-            <template v-if="check.ok && check.latencyMs !== null">
-              <span aria-hidden="true">·</span>
-              <span class="tabular-nums">{{ t("home.latency", { ms: check.latencyMs }) }}</span>
-            </template>
-            <span class="ml-auto shrink-0 text-xs font-normal text-muted">{{ checkedAgo }}</span>
-          </div>
-          <div class="mt-1 truncate text-sm text-muted">
-            <template v-if="check.ok">{{ exitName }}</template>
-            <span v-else class="selectable">{{ check.error }}</span>
-          </div>
-        </template>
-        <div v-else class="text-sm text-muted">{{ t("home.checking") }}</div>
-        <button class="btn btn-quiet mt-3 w-full" :disabled="checking" @click="runCheck">
-          <AppIcon name="refresh" :size="16" :class="checking ? 'animate-spin' : ''" />
-          {{ checking ? t("home.checking") : t("home.check") }}
-        </button>
-      </div>
+      <Transition name="pop">
+        <div v-if="connected" class="card px-4 py-3">
+          <Transition name="fade" mode="out-in">
+            <div v-if="check" :key="check.at">
+              <div class="flex items-center gap-1.5 font-medium" :class="check.ok ? 'text-good' : 'text-danger'">
+                <AppIcon :name="check.ok ? 'check' : 'alert'" :size="16" class="shrink-0" />
+                <span>{{ check.ok ? t("home.checkOk") : t("home.checkFailed") }}</span>
+                <template v-if="check.ok && check.latencyMs !== null">
+                  <span aria-hidden="true">·</span>
+                  <span class="tabular-nums">{{ t("home.latency", { ms: check.latencyMs }) }}</span>
+                </template>
+                <span class="ml-auto shrink-0 text-xs font-normal text-muted">{{ checkedAgo }}</span>
+              </div>
+              <div class="mt-1 truncate text-sm text-muted">
+                <template v-if="check.ok">{{ exitName }}</template>
+                <span v-else class="selectable">{{ check.error }}</span>
+              </div>
+            </div>
+            <div v-else class="text-sm text-muted">{{ t("home.checking") }}</div>
+          </Transition>
+          <button class="btn btn-quiet mt-3 w-full" :disabled="checking" @click="runCheck">
+            <AppIcon name="refresh" :size="16" :class="checking ? 'animate-spin' : ''" />
+            {{ checking ? t("home.checking") : t("home.check") }}
+          </button>
+        </div>
+      </Transition>
 
       <template v-if="store.tunSupported && store.settings">
-        <div class="card flex p-1" role="radiogroup" :aria-label="t('home.mode')">
+        <div class="card relative flex p-1" role="radiogroup" :aria-label="t('home.mode')">
+          <span
+            aria-hidden="true"
+            class="absolute inset-y-1 left-1 w-[calc(50%-0.25rem)] rounded-xl bg-accent-soft transition-transform duration-300 ease-[var(--ease-out)]"
+            :class="store.settings.mode === 'tun' ? 'translate-x-full' : ''"
+          />
           <button
             v-for="mode in MODES"
             :key="mode.value"
             role="radio"
             :aria-checked="store.settings.mode === mode.value"
-            class="h-9 flex-1 rounded-xl text-sm font-medium transition-colors disabled:opacity-50"
-            :class="store.settings.mode === mode.value ? 'bg-accent-soft text-accent' : 'text-muted hover:text-ink'"
+            class="relative h-9 flex-1 rounded-xl text-sm font-medium transition-colors duration-300 disabled:opacity-50"
+            :class="store.settings.mode === mode.value ? 'text-accent' : 'text-muted hover:text-ink'"
             :disabled="busy"
             @click="store.saveSettings({ mode: mode.value })"
           >

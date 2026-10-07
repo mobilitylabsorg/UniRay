@@ -117,7 +117,7 @@ async function confirm() {
       </button>
     </header>
 
-    <div v-if="groups.length === 0" class="card flex flex-col items-center gap-2 px-6 py-12 text-center">
+    <div v-if="groups.length === 0" class="card rise flex flex-col items-center gap-2 px-6 py-12 text-center">
       <AppIcon name="server" :size="36" class="text-muted" />
       <div class="font-medium">{{ t("servers.empty") }}</div>
       <p class="text-sm text-muted">{{ t("servers.emptyHint") }}</p>
@@ -171,14 +171,16 @@ async function confirm() {
         <p v-if="group.subscription.announce" class="selectable mt-1 text-xs text-warn">
           {{ group.subscription.announce }}
         </p>
-        <p v-if="group.subscription.lastError" class="selectable mt-1 flex gap-1.5 text-xs text-danger">
-          <AppIcon name="alert" :size="14" class="mt-0.5 shrink-0" />{{ group.subscription.lastError }}
-        </p>
+        <Transition name="pop">
+          <p v-if="group.subscription.lastError" class="selectable mt-1 flex gap-1.5 text-xs text-danger">
+            <AppIcon name="alert" :size="14" class="mt-0.5 shrink-0" />{{ group.subscription.lastError }}
+          </p>
+        </Transition>
       </div>
       <div v-else class="section-title">{{ t("servers.manual") }}</div>
 
-      <ul class="card divide-y divide-line overflow-hidden" role="radiogroup">
-        <li v-for="server in group.servers" :key="server.id" class="flex items-center">
+      <TransitionGroup tag="ul" name="list" class="card relative divide-y divide-line overflow-hidden" role="radiogroup">
+        <li v-for="server in group.servers" :key="server.id" class="flex items-center bg-surface">
           <button
             role="radio"
             :aria-checked="server.id === selectedId"
@@ -186,10 +188,12 @@ async function confirm() {
             @click="select(server)"
           >
             <span
-              class="flex size-5 shrink-0 items-center justify-center rounded-full border-2"
+              class="flex size-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors duration-200"
               :class="server.id === selectedId ? 'border-accent bg-accent text-accent-ink' : 'border-line'"
             >
-              <AppIcon v-if="server.id === selectedId" name="check" :size="12" />
+              <Transition name="pop">
+                <AppIcon v-if="server.id === selectedId" name="check" :size="12" />
+              </Transition>
             </span>
             <span class="min-w-0 flex-1">
               <span class="block truncate font-medium">{{ server.name }}</span>
@@ -198,14 +202,17 @@ async function confirm() {
                 <AppIcon v-if="server.warnings?.length" name="alert" :size="12" class="inline text-warn" />
               </span>
             </span>
-            <span
-              v-if="server.delayMs !== null"
-              class="shrink-0 font-mono text-xs tabular-nums"
-              :class="delayClass(server.delayMs)"
-            >
-              {{ server.delayMs < 0 ? t("servers.timeout") : `${server.delayMs} ${t("servers.ms")}` }}
-            </span>
-            <span v-else-if="testing" class="shrink-0 text-xs text-muted">…</span>
+            <Transition name="fade" mode="out-in">
+              <span
+                v-if="server.delayMs !== null"
+                :key="server.delayMs"
+                class="shrink-0 font-mono text-xs tabular-nums"
+                :class="delayClass(server.delayMs)"
+              >
+                {{ server.delayMs < 0 ? t("servers.timeout") : `${server.delayMs} ${t("servers.ms")}` }}
+              </span>
+              <span v-else-if="testing" class="shrink-0 animate-pulse text-xs text-muted">…</span>
+            </Transition>
           </button>
           <button class="icon-btn" :aria-label="t('servers.share')" :title="t('servers.share')" @click="sharing = server">
             <AppIcon name="qr" :size="18" />
@@ -221,18 +228,24 @@ async function confirm() {
           </button>
           <span v-else class="w-1" />
         </li>
-        <li v-if="group.servers.length === 0" class="px-4 py-3 text-sm text-muted">{{ t("servers.empty") }}</li>
-      </ul>
+        <li v-if="group.servers.length === 0" key="empty" class="px-4 py-3 text-sm text-muted">{{ t("servers.empty") }}</li>
+      </TransitionGroup>
     </section>
 
-    <ImportDialog v-if="importing" @close="importing = false" />
-    <ShareDialog v-if="sharing" :server="sharing" @close="sharing = null" />
-    <ModalSheet v-if="confirming" :title="t('common.delete')" @close="confirming = null">
-      <p class="text-sm">{{ confirming.text }}</p>
-      <div class="mt-4 flex gap-2">
-        <button class="btn btn-quiet flex-1" @click="confirming = null">{{ t("common.cancel") }}</button>
-        <button class="btn btn-danger flex-1" @click="confirm">{{ t("common.delete") }}</button>
-      </div>
-    </ModalSheet>
+    <Transition name="sheet">
+      <ImportDialog v-if="importing" @close="importing = false" />
+    </Transition>
+    <Transition name="sheet">
+      <ShareDialog v-if="sharing" :server="sharing" @close="sharing = null" />
+    </Transition>
+    <Transition name="sheet">
+      <ModalSheet v-if="confirming" :title="t('common.delete')" @close="confirming = null">
+        <p class="text-sm">{{ confirming.text }}</p>
+        <div class="mt-4 flex gap-2">
+          <button class="btn btn-quiet flex-1" @click="confirming = null">{{ t("common.cancel") }}</button>
+          <button class="btn btn-danger flex-1" @click="confirm">{{ t("common.delete") }}</button>
+        </div>
+      </ModalSheet>
+    </Transition>
   </div>
 </template>

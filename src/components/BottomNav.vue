@@ -20,10 +20,14 @@ const TABS: { to: string; icon: IconName; label: string }[] = [
       v-for="tab in TABS"
       :key="tab.to"
       :to="tab.to"
-      class="flex flex-1 flex-col items-center gap-1 py-2 text-[11px] text-muted transition-colors hover:text-ink"
-      exact-active-class="!text-accent"
+      class="group flex flex-1 flex-col items-center gap-1 py-2 text-[11px] text-muted transition-colors duration-200 hover:text-ink"
+      exact-active-class="is-active !text-accent"
     >
-      <AppIcon :name="tab.icon" />
+      <span
+        class="flex h-7 w-12 items-center justify-center rounded-full transition-[background-color,transform] duration-300 ease-[var(--ease-out)] group-active:scale-90 group-[.is-active]:bg-accent-soft"
+      >
+        <AppIcon :name="tab.icon" class="transition-transform duration-300 group-[.is-active]:scale-110" />
+      </span>
       {{ t(tab.label) }}
     </RouterLink>
   </nav>
