@@ -195,12 +195,13 @@ class StealthService : Service() {
     val port = spec.optInt("port", 12345)
     val ipv6 = spec.optBoolean("ipv6", false)
     val tunName = spec.optString("tunName").ifEmpty { "uniray0" }
-    val engine = engineScript(dir, spec, config)
 
     // Whatever an earlier run left behind (a crash, a lost teardown) would
     // otherwise sit in front of the new rules.
     PrivilegedShell.execPrivileged(level, downScript())
     rules(level)?.let { rulesBeforeFile().writeText(it.joinToString("\n")) }
+    // After the cleanup, which removes an engine config it finds.
+    val engine = engineScript(dir, spec, config)
 
     val up =
       if (mode == MODE_ROOT_TUN) rootTunUpScript(dir, configFile, tunName, ipv6, engine)
@@ -497,6 +498,8 @@ class StealthService : Service() {
     val pid = File(stealthDir(this), "xray.pid").absolutePath
     val enginePid = File(stealthDir(this), "engine.pid").absolutePath
     val dir = stealthDir(this).absolutePath
+    // The counters socket, also in a fresh process that never started.
+    val sock = metricsSocket.ifEmpty { File(applicationInfo.dataDir, "run/m.sock").absolutePath }
     val savedRpFilter = File(stealthDir(this), "rp_filter.saved").absolutePath
     // Order matters: the rules go first, so that traffic is the system's again
     // before anything else can go wrong; then the processes.
@@ -545,6 +548,9 @@ class StealthService : Service() {
       pkill -f "libuniray_engin[e].so" 2>/dev/null || true
       pkill -f "libnaiv[e].so" 2>/dev/null || true
       rm -f $dir/engine.json $dir/engine.out 2>/dev/null || true
+      # The root core's socket and its lock: the next core may run as the app
+      # (VPN mode), which could neither open nor remove root's.
+      rm -f "$sock" "$sock.lock" 2>/dev/null || true
       true
     """.trimIndent()
   }
