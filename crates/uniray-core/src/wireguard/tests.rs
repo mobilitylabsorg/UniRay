@@ -285,3 +285,58 @@ fn servers_saved_with_a_numeric_keepalive_still_load() {
     let loaded: WgConfig = serde_json::from_value(saved).unwrap();
     assert_eq!(loaded.peers[0].keepalive, None);
 }
+
+/// AmneziaVPN's newer options (a client exported by its 4.x server).
+fn awg_new_conf() -> String {
+    awg_conf().replace(
+        "[Peer]",
+        &format!(
+            "S3 = 16\nS4 = 16\nHeaderProtectionKey = {PSK}\nContentPaddingAddition = 10-100\nRekeyAfterTime = 100-120\nRekeyTimeout = 3-7\n\
+             RejectAfterTime = 150-180\nKeepaliveTimeout = 5-15\nMaxHandshakeAttempts = 15-20\nRandomTrailers = on\n\
+             DisableCookies = on\n[Peer]"
+        ),
+    )
+}
+
+#[test]
+fn newer_amneziawg_options_reach_the_engine() {
+    let (config, _, warnings) = parse_conf(&awg_new_conf()).unwrap();
+    let uapi = config.to_uapi(&["203.0.113.7:51820".parse().unwrap()]).unwrap();
+    for line in [
+        format!("header_protection_key={}", hex(PSK)),
+        "content_padding_addition=10-100".into(),
+        "rekey_after_time=100-120".into(),
+        "rekey_timeout=3-7".into(),
+        "reject_after_time=150-180".into(),
+        "keepalive_timeout=5-15".into(),
+        "max_handshake_attempts=15-20".into(),
+    ] {
+        assert!(uapi.contains(&format!("{line}\n")), "{line} missing from\n{uapi}");
+    }
+    // Device options, ahead of the peers.
+    assert!(uapi.find("max_handshake_attempts").unwrap() < uapi.find("replace_peers").unwrap());
+    // Not in any amneziawg-go yet: kept, exported, said so - not sent.
+    assert!(!uapi.contains("random_trailers") && !uapi.contains("disable_cookies"), "{uapi}");
+    assert_eq!(config.unsupported_options(), ["RandomTrailers", "DisableCookies"]);
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    let conf = config.to_conf();
+    assert!(conf.contains("RandomTrailers = on") && conf.contains("HeaderProtectionKey = "));
+    // The old names stay one word.
+    assert!(uapi.contains("\njc=4\njmin=10\njmax=50\n"), "{uapi}");
+}
+
+#[test]
+fn newer_amneziawg_options_are_checked() {
+    for (from, to) in [
+        ("ContentPaddingAddition = 10-100", "ContentPaddingAddition = 100-10"),
+        ("RekeyTimeout = 3-7", "RekeyTimeout = soon"),
+        ("RandomTrailers = on", "RandomTrailers = maybe"),
+        (&*format!("HeaderProtectionKey = {PSK}"), "HeaderProtectionKey = not-a-key"),
+        // A protected header's nonce must fit in every padding.
+        ("S2 = 19", "S2 = 11"),
+    ] {
+        let conf = awg_new_conf().replace(from, to);
+        assert_ne!(conf, awg_new_conf());
+        assert!(parse_conf(&conf).is_err(), "{to}");
+    }
+}

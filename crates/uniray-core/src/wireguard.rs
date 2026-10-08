@@ -18,20 +18,41 @@ use crate::error::{Error, Result};
 use crate::links::decode_base64;
 use crate::model::{new_id, Server, ServerSource};
 
-/// The AmneziaWG interface options, as written in a `.conf` file (the UAPI
-/// takes them lowercased). Jc/Jmin/Jmax: junk packets before a handshake;
-/// S1-S4: paddings of handshake, cookie and transport messages; H1-H4:
-/// message types (a number, or a range in AWG 2.0); I1-I5: signature packets
-/// (AWG 1.5+); J1-J3 and Itime: AWG 1.5 extras.
-pub const OBFUSCATION_KEYS: [&str; 20] = [
+/// The AmneziaWG interface options, as written in a `.conf` file (see
+/// [`uapi_name`] for the engine's names). Jc/Jmin/Jmax: junk packets before a
+/// handshake; S1-S4: paddings of handshake, cookie and transport messages;
+/// H1-H4: message types (a number, or a range in AWG 2.0); I1-I5: signature
+/// packets (AWG 1.5+); J1-J3 and Itime: AWG 1.5 extras. Then the newer ones:
+/// a key that encrypts the headers, random padding added to the content, and
+/// the protocol's timers drawn from ranges; RandomTrailers and
+/// DisableCookies come with them.
+pub const OBFUSCATION_KEYS: [&str; 29] = [
     "Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5", "J1", "J2",
-    "J3", "Itime",
+    "J3", "Itime", "HeaderProtectionKey", "ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout",
+    "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts", "RandomTrailers", "DisableCookies",
 ];
 
-/// AWG 1.5 options the engine's amneziawg-go (AWG 2.0) no longer has: kept
-/// in the server (and its `.conf` export) but left out of the UAPI, which
-/// would refuse them. See [`WgConfig::unsupported_options`].
-pub const ENGINE_UNSUPPORTED_KEYS: [&str; 4] = ["J1", "J2", "J3", "Itime"];
+/// Options the engine's amneziawg-go does not have: kept in the server (and
+/// its `.conf` export) but left out of the UAPI, which would refuse them. The
+/// AWG 1.5 extras are gone from it; RandomTrailers and DisableCookies are in
+/// no published amneziawg-go yet. See [`WgConfig::unsupported_options`].
+pub const ENGINE_UNSUPPORTED_KEYS: [&str; 6] = ["J1", "J2", "J3", "Itime", "RandomTrailers", "DisableCookies"];
+
+/// The nonce of a protected header (amneziawg-go's HeaderCipherNonceSize).
+const HEADER_NONCE_SIZE: u32 = 12;
+
+/// The UAPI name of an option: `HeaderProtectionKey` -> `header_protection_key`.
+fn uapi_name(key: &str) -> String {
+    let mut name = String::new();
+    for (index, c) in key.chars().enumerate() {
+        // Jc, S1, H4, I5: one word; the CamelCase names: one word each.
+        if c.is_ascii_uppercase() && index > 0 && key.len() > 5 {
+            name.push('_');
+        }
+        name.push(c.to_ascii_lowercase());
+    }
+    name
+}
 
 /// Keys a `.conf` may carry that mean nothing to us; dropped without a word.
 const IGNORED_KEYS: [&str; 3] = ["ListenPort", "Table", "SaveConfig"];
@@ -112,7 +133,9 @@ impl WgConfig {
         let mut uapi = format!("private_key={}\n", key_hex(&self.private_key)?);
         for key in OBFUSCATION_KEYS.into_iter().filter(|key| !ENGINE_UNSUPPORTED_KEYS.contains(key)) {
             if let Some(value) = self.obfuscation.get(key) {
-                uapi.push_str(&format!("{}={value}\n", key.to_ascii_lowercase()));
+                // The key is base64 like the others; the UAPI wants hex.
+                let value = if key == "HeaderProtectionKey" { key_hex(value)? } else { value.clone() };
+                uapi.push_str(&format!("{}={value}\n", uapi_name(key)));
             }
         }
         uapi.push_str("replace_peers=true\n");
@@ -180,6 +203,18 @@ impl WgConfig {
         }
         for (key, value) in &self.obfuscation {
             validate_obfuscation(key, value)?;
+        }
+        // The encrypted header's nonce lives in the padding, so with header
+        // protection every padding must hold one (amneziawg-go refuses less).
+        if self.obfuscation.contains_key("HeaderProtectionKey") {
+            for key in ["S1", "S2", "S3", "S4"] {
+                let padding = self.obfuscation.get(key).and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
+                if padding < HEADER_NONCE_SIZE {
+                    return Err(Error::InvalidConfig(format!(
+                        "HeaderProtectionKey needs {key} of at least {HEADER_NONCE_SIZE}, not {padding}"
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -249,9 +284,18 @@ fn validate_obfuscation(key: &str, value: &str) -> Result<()> {
         "Jc" | "Jmin" | "Jmax" | "S1" | "S2" | "S3" | "S4" | "Itime" => {
             value.parse::<u32>().map_err(|_| bad())?;
         }
-        // A message type, or a range of them (AWG 2.0).
-        "H1" | "H2" | "H3" | "H4" => {
+        // A message type, or a range of them (AWG 2.0); the timers.
+        "H1" | "H2" | "H3" | "H4" | "ContentPaddingAddition" | "RekeyAfterTime" | "RekeyTimeout"
+        | "RejectAfterTime" | "KeepaliveTimeout" | "MaxHandshakeAttempts" => {
             parse_range(value).ok_or_else(bad)?;
+        }
+        "HeaderProtectionKey" => {
+            key_hex(value).map_err(|_| bad())?;
+        }
+        "RandomTrailers" | "DisableCookies" => {
+            if !["on", "off", "true", "false", "1", "0"].iter().any(|flag| flag.eq_ignore_ascii_case(value)) {
+                return Err(bad());
+            }
         }
         // Signature packets in the CPS notation; one line each.
         _ => {
@@ -370,6 +414,9 @@ pub fn parse_conf(text: &str) -> Result<(WgConfig, Option<String>, Vec<String>)>
         return Err(Error::InvalidConfig("no Address".into()));
     }
     config.validate()?;
+    warnings.extend(
+        config.unsupported_options().into_iter().map(|key| format!("{key} is kept, but the AmneziaWG engine does not support it yet")),
+    );
     Ok((config, name, warnings))
 }
 

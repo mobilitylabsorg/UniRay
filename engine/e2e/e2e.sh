@@ -63,12 +63,24 @@ jmin=10
 jmax=50
 s1=117
 s2=19
-s3=8
+s3=16
 s4=16
 h1=100000-100500
 h2=200000-200500
 h3=300000-300500
 h4=400000-400500"
+# The newer options AmneziaVPN exports: a key encrypting the headers, padding
+# added to the content, the timers drawn from ranges.
+read -r hpk_b64 hpk_hex < <(python3 -c 'import base64, os; k = os.urandom(32); print(base64.b64encode(k).decode(), k.hex())')
+newer="content_padding_addition=10-100
+rekey_after_time=100-120
+rekey_timeout=3-7
+reject_after_time=150-180
+keepalive_timeout=5-15
+max_handshake_attempts=15-20"
+awg="$awg
+header_protection_key=$hpk_hex
+$newer"
 
 ip netns add srv
 ip netns add cli
@@ -271,8 +283,10 @@ chain() { # chain <proxy|tun>
   # Xray has made the TUN, and keeps sending out that interface (sticky
   # source), so the bypass rule this test checks would never be needed.
   printf '%s\n' "[Interface]" "PrivateKey = $client_priv" "Address = 10.8.0.2/32" "DNS = 10.8.0.1" \
-    "Jc = 4" "Jmin = 10" "Jmax = 50" "S1 = 117" "S2 = 19" "S3 = 8" "S4 = 16" \
+    "Jc = 4" "Jmin = 10" "Jmax = 50" "S1 = 117" "S2 = 19" "S3 = 16" "S4 = 16" \
     "H1 = 100000-100500" "H2 = 200000-200500" "H3 = 300000-300500" "H4 = 400000-400500" \
+    "HeaderProtectionKey = $hpk_b64" "ContentPaddingAddition = 10-100" "RekeyAfterTime = 100-120" "RekeyTimeout = 3-7" \
+    "RejectAfterTime = 150-180" "KeepaliveTimeout = 5-15" "MaxHandshakeAttempts = 15-20" "RandomTrailers = on" \
     "[Peer]" "PublicKey = $server_pub" "Endpoint = 198.51.100.1:51820" "AllowedIPs = 0.0.0.0/0" >"$dir/server.conf"
   "$CHAIN_CONFIGS" "$dir/server.conf" "$dir" 18080 18090 $([ "$mode" = tun ] && echo tun)
   if [ ! -e /proc/net/if_inet6 ]; then

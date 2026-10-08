@@ -69,7 +69,7 @@ fn wireguard_run(wireguard: &WgConfig, port: u16, ipv6: bool) -> Result<EngineRu
     let warnings = wireguard
         .unsupported_options()
         .into_iter()
-        .map(|key| format!("[Warning] engine: the AmneziaWG option {key} is from AWG 1.5 and is not used"))
+        .map(|key| format!("[Warning] engine: the AmneziaWG option {key} is not supported by the engine (amneziawg-go) and is not used"))
         .collect();
     Ok(EngineRun {
         mode: "awg",
