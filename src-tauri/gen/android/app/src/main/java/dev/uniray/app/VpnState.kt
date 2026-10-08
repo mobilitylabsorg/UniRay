@@ -56,15 +56,16 @@ object VpnState {
 
   fun isRunning(context: Context): Boolean = read(context).running && serviceAlive(context)
 
-  /** Which tunnel service is currently running, if any. */
-  fun aliveTunnel(context: Context): Class<out android.app.Service>? {
-    val manager = context.getSystemService(ActivityManager::class.java) ?: return null
+  /** The tunnel services currently started; normally one at most. */
+  fun aliveTunnels(context: Context): List<Class<out android.app.Service>> {
+    val manager = context.getSystemService(ActivityManager::class.java) ?: return emptyList()
     @Suppress("DEPRECATION")
     val running = manager.getRunningServices(Int.MAX_VALUE).filter { it.started }.map { it.service.className }.toSet()
-    return when {
-      UniRayVpnService::class.java.name in running -> UniRayVpnService::class.java
-      StealthService::class.java.name in running -> StealthService::class.java
-      else -> null
-    }
+    // The stealth service first: when both are somehow up, it is the one
+    // that matters (the VPN service carries nothing without its interface).
+    return listOf(StealthService::class.java, UniRayVpnService::class.java).filter { it.name in running }
   }
+
+  /** Which tunnel service is currently running, if any. */
+  fun aliveTunnel(context: Context): Class<out android.app.Service>? = aliveTunnels(context).firstOrNull()
 }

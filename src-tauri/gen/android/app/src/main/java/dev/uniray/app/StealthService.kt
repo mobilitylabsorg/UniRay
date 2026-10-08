@@ -453,13 +453,17 @@ class StealthService : Service() {
    */
   private fun downScript(): String {
     val pid = File(stealthDir(this), "xray.pid").absolutePath
-    val xray = File(stealthDir(this), XRAY_TPROXY).absolutePath
-    val xrayTun = File(stealthDir(this), XRAY_TUN).absolutePath
+    val dir = stealthDir(this).absolutePath
     val savedRpFilter = File(stealthDir(this), "rp_filter.saved").absolutePath
+    // The `[y]` keeps pkill from matching this very script: Shizuku runs it as
+    // `sh -c <script>`, so the script's text is the shell's command line, and
+    // a plain "…/xray run" would make pkill kill the shell running it - after
+    // the core is gone but before any rule is removed, which cut the device
+    // off the network. The bracket matches "xray", not its own spelling.
     return """
       [ -f $pid ] && kill ${'$'}(cat $pid) 2>/dev/null || true
-      pkill -f "$xray run" 2>/dev/null || true
-      pkill -f "$xrayTun run" 2>/dev/null || true
+      pkill -f "$dir/xra[y] run" 2>/dev/null || true
+      pkill -f "$dir/xra[y]-tun run" 2>/dev/null || true
       rm -f $pid 2>/dev/null || true
       while iptables -w -t mangle -D OUTPUT -j $CHAIN_OUT 2>/dev/null; do :; done
       while iptables -w -t mangle -D PREROUTING -j $CHAIN_PRE 2>/dev/null; do :; done

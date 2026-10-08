@@ -155,22 +155,22 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun stop(invoke: Invoke) {
-    // Either tunnel service may be the one running; stop whichever it is.
-    val stopIntent =
-      when (VpnState.aliveTunnel(activity)) {
-        UniRayVpnService::class.java ->
-          Intent(activity, UniRayVpnService::class.java).setAction(UniRayVpnService.ACTION_STOP)
-        StealthService::class.java ->
-          Intent(activity, StealthService::class.java).setAction(StealthService.ACTION_STOP)
-        else -> null
+    // Every tunnel service that is up, not just the first found: stopping
+    // the wrong one leaves the other carrying the traffic.
+    val stopIntents =
+      VpnState.aliveTunnels(activity).map { service ->
+        when (service) {
+          StealthService::class.java -> Intent(activity, service).setAction(StealthService.ACTION_STOP)
+          else -> Intent(activity, service).setAction(UniRayVpnService.ACTION_STOP)
+        }
       }
-    if (stopIntent == null) {
+    if (stopIntents.isEmpty()) {
       invoke.resolve()
       return
     }
     val request = UUID.randomUUID().toString()
     try {
-      activity.startService(stopIntent.putExtra(UniRayVpnService.EXTRA_REQUEST, request))
+      for (intent in stopIntents) activity.startService(intent.putExtra(UniRayVpnService.EXTRA_REQUEST, request))
     } catch (e: Exception) {
       invoke.reject("cannot reach the VPN service: ${e.message}")
       return
@@ -205,10 +205,20 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun updateNotification(invoke: Invoke) {
     val args = invoke.parseArgs(NotificationArgs::class.java)
-    if (VpnState.isRunning(activity)) {
+    // Only to the tunnel service that is running: startService would start
+    // the other one, and an idle VPN service left standing took the next
+    // disconnect for itself while the stealth tunnel kept running.
+    val action =
+      when (VpnState.aliveTunnel(activity)) {
+        UniRayVpnService::class.java -> UniRayVpnService::class.java to UniRayVpnService.ACTION_NOTIFY
+        StealthService::class.java -> StealthService::class.java to StealthService.ACTION_NOTIFY
+        else -> null
+      }
+    if (action != null) {
+      // Both services read the same extra names.
       val intent =
-        Intent(activity, UniRayVpnService::class.java)
-          .setAction(UniRayVpnService.ACTION_NOTIFY)
+        Intent(activity, action.first)
+          .setAction(action.second)
           .putExtra(UniRayVpnService.EXTRA_SERVER, args.server)
       args.ok?.let { intent.putExtra(UniRayVpnService.EXTRA_OK, it) }
       args.latencyMs?.let { intent.putExtra(UniRayVpnService.EXTRA_LATENCY, it) }
