@@ -63,8 +63,12 @@ jobs:
         timeout-minutes: 15
         run: |
           sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-            librsvg2-dev libxdo-dev patchelf libfuse2 iproute2 iptables python3
+          # Tauri's list for Debian and Ubuntu, which GitHub's runners carry
+          # already (linuxdeploy's plugins call `file`), and what the engine
+          # tests use.
+          sudo apt-get -o Acquire::Retries=3 install -y build-essential curl wget file libssl-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf libfuse2 \
+            desktop-file-utils xdg-utils iproute2 iptables python3
 
       - uses: pnpm/action-setup@v4
         with:
@@ -114,14 +118,11 @@ jobs:
           XRAY_LOCATION_ASSET=$PWD/src-tauri/resources \
           cargo test --workspace
 
+      # --verbose: when linuxdeploy fails, its output says why.
       - name: Build
-        env:
-          # linuxdeploy is an AppImage itself; without FUSE (as in a container)
-          # it unpacks itself instead of mounting.
-          APPIMAGE_EXTRACT_AND_RUN: 1
         run: |
           rm -rf target/release/bundle/appimage
-          pnpm tauri build --bundles appimage
+          pnpm tauri build --bundles appimage --verbose
 
       - uses: actions/upload-artifact@v4
         with:
