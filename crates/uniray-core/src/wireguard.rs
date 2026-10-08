@@ -63,8 +63,10 @@ pub struct WgPeer {
     /// `host:port`, `[v6]:port`; the host may be a name.
     pub endpoint: String,
     pub allowed_ips: Vec<String>,
-    #[serde(default)]
-    pub keepalive: Option<u16>,
+    /// Seconds between keepalives: `25`, or a range (`25-35`, AWG 2.0) from
+    /// which each interval is drawn. Older saves hold it as a number.
+    #[serde(default, deserialize_with = "keepalive_from_saved")]
+    pub keepalive: Option<String>,
 }
 
 impl WgConfig {
@@ -120,7 +122,7 @@ impl WgConfig {
                 uapi.push_str(&format!("preshared_key={}\n", key_hex(psk)?));
             }
             uapi.push_str(&format!("endpoint={endpoint}\n"));
-            if let Some(seconds) = peer.keepalive {
+            if let Some(seconds) = &peer.keepalive {
                 uapi.push_str(&format!("persistent_keepalive_interval={seconds}\n"));
             }
             uapi.push_str("replace_allowed_ips=true\n");
@@ -157,7 +159,7 @@ impl WgConfig {
             }
             conf.push_str(&format!("Endpoint = {}\n", peer.endpoint));
             conf.push_str(&format!("AllowedIPs = {}\n", peer.allowed_ips.join(", ")));
-            if let Some(seconds) = peer.keepalive {
+            if let Some(seconds) = &peer.keepalive {
                 conf.push_str(&format!("PersistentKeepalive = {seconds}\n"));
             }
         }
@@ -202,6 +204,45 @@ fn split_endpoint(endpoint: &str) -> Result<(String, u16)> {
     Ok((host.to_owned(), port))
 }
 
+/// `N` or `A-B` with A <= B, as amneziawg-go's ranges.
+fn parse_range(value: &str) -> Option<(u32, u32)> {
+    match value.split_once('-') {
+        Some((low, high)) => {
+            let (low, high) = (low.trim().parse().ok()?, high.trim().parse().ok()?);
+            (low <= high).then_some((low, high))
+        }
+        None => value.trim().parse().ok().map(|n| (n, n)),
+    }
+}
+
+/// A `PersistentKeepalive` value as kept: `None` when off, else `N` or `A-B`.
+fn parse_keepalive(value: &str) -> Result<Option<String>> {
+    if value.eq_ignore_ascii_case("off") {
+        return Ok(None);
+    }
+    match parse_range(value) {
+        Some((_, 0)) => Ok(None),
+        Some((low, high)) if high <= u32::from(u16::MAX) => {
+            Ok(Some(if low == high { low.to_string() } else { format!("{low}-{high}") }))
+        }
+        _ => Err(Error::InvalidConfig(format!("bad PersistentKeepalive {value:?}"))),
+    }
+}
+
+fn keepalive_from_saved<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Option<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Saved {
+        Seconds(u64),
+        Text(String),
+    }
+    Ok(match Option::<Saved>::deserialize(deserializer)? {
+        None | Some(Saved::Seconds(0)) => None,
+        Some(Saved::Seconds(seconds)) => Some(seconds.to_string()),
+        Some(Saved::Text(text)) => parse_keepalive(&text).map_err(serde::de::Error::custom)?,
+    })
+}
+
 fn validate_obfuscation(key: &str, value: &str) -> Result<()> {
     let bad = || Error::InvalidConfig(format!("bad AmneziaWG option {key} = {value:?}"));
     match key {
@@ -210,13 +251,7 @@ fn validate_obfuscation(key: &str, value: &str) -> Result<()> {
         }
         // A message type, or a range of them (AWG 2.0).
         "H1" | "H2" | "H3" | "H4" => {
-            let ok = match value.split_once('-') {
-                Some((low, high)) => matches!((low.trim().parse::<u32>(), high.trim().parse::<u32>()), (Ok(l), Ok(h)) if l <= h),
-                None => value.parse::<u32>().is_ok(),
-            };
-            if !ok {
-                return Err(bad());
-            }
+            parse_range(value).ok_or_else(bad)?;
         }
         // Signature packets in the CPS notation; one line each.
         _ => {
@@ -310,12 +345,7 @@ pub fn parse_conf(text: &str) -> Result<(WgConfig, Option<String>, Vec<String>)>
                 } else if key.eq_ignore_ascii_case("AllowedIPs") {
                     peer.allowed_ips.extend(list());
                 } else if key.eq_ignore_ascii_case("PersistentKeepalive") {
-                    peer.keepalive = match value.parse::<u16>() {
-                        Ok(0) => None,
-                        Ok(seconds) => Some(seconds),
-                        Err(_) if value.eq_ignore_ascii_case("off") => None,
-                        Err(_) => return Err(Error::InvalidConfig(format!("bad PersistentKeepalive {value:?}"))),
-                    };
+                    peer.keepalive = parse_keepalive(value)?;
                 } else {
                     warnings.push(format!("{key} is not supported and was ignored"));
                 }
@@ -463,7 +493,7 @@ pub fn server_from_link(link: &str) -> Result<Server> {
             preshared_key: params.get("presharedkey").or_else(|| params.get("psk")).map(str::to_owned),
             endpoint: format!("{host}:{port}"),
             allowed_ips,
-            keepalive: params.get("keepalive").and_then(|seconds| seconds.parse().ok()),
+            keepalive: params.get("keepalive").and_then(|seconds| parse_keepalive(seconds).ok().flatten()),
         }],
         obfuscation: BTreeMap::new(),
     };

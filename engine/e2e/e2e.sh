@@ -116,7 +116,7 @@ $options
 replace_peers=true
 public_key=$server_pub_hex
 endpoint=10.0.0.1:51820
-persistent_keepalive_interval=25
+persistent_keepalive_interval=25-35
 replace_allowed_ips=true
 allowed_ip=0.0.0.0/0
 "
@@ -267,6 +267,9 @@ while read -r line; do expect fail "$line"; done < <(client "$bad_port" s3cret-b
 chain() { # chain <proxy|tun>
   local mode=$1 dir="$work/chain-$1"
   mkdir -p "$dir"
+  # No PersistentKeepalive: with one the engine handshakes at once, before
+  # Xray has made the TUN, and keeps sending out that interface (sticky
+  # source), so the bypass rule this test checks would never be needed.
   printf '%s\n' "[Interface]" "PrivateKey = $client_priv" "Address = 10.8.0.2/32" "DNS = 10.8.0.1" \
     "Jc = 4" "Jmin = 10" "Jmax = 50" "S1 = 117" "S2 = 19" "S3 = 8" "S4 = 16" \
     "H1 = 100000-100500" "H2 = 200000-200500" "H3 = 300000-300500" "H4 = 400000-400500" \

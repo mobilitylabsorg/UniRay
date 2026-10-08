@@ -58,7 +58,7 @@ fn amneziawg_conf_is_parsed() {
     assert_eq!(config.obfuscation["Jc"], "4");
     assert_eq!(config.obfuscation["H4"], "1281489627");
     assert_eq!(config.peers[0].preshared_key.as_deref(), Some(PSK));
-    assert_eq!(config.peers[0].keepalive, Some(25));
+    assert_eq!(config.peers[0].keepalive.as_deref(), Some("25"));
     // It is not Xray's to run.
     assert!(!server.source.is_xray());
 }
@@ -253,4 +253,35 @@ fn endpoints_resolve_in_peer_order() {
     assert_eq!(resolved[1], "[2001:db8::5]:443".parse::<SocketAddr>().unwrap());
     config.peers[0].endpoint = "no-such-host.invalid:1".into();
     assert!(config.resolve_endpoints(false).is_err());
+}
+
+#[test]
+fn keepalive_takes_an_awg_2_range() {
+    let conf = awg_conf().replace("PersistentKeepalive = 25", "PersistentKeepalive = 25-35");
+    assert_ne!(conf, awg_conf(), "the fixture has PersistentKeepalive = 25");
+    let (config, _, _) = parse_conf(&conf).unwrap();
+    assert_eq!(config.peers[0].keepalive.as_deref(), Some("25-35"));
+    let uapi = config.to_uapi(&["203.0.113.7:51820".parse().unwrap()]).unwrap();
+    assert!(uapi.contains("persistent_keepalive_interval=25-35\n"), "{uapi}");
+    assert!(config.to_conf().contains("PersistentKeepalive = 25-35"));
+
+    for (value, kept) in [("0", None), ("off", None), ("10-10", Some("10")), ("0-0", None)] {
+        let (config, _, _) = parse_conf(&awg_conf().replace("PersistentKeepalive = 25", &format!("PersistentKeepalive = {value}"))).unwrap();
+        assert_eq!(config.peers[0].keepalive.as_deref(), kept, "{value}");
+    }
+    for value in ["35-25", "abc", "1-99999"] {
+        assert!(parse_conf(&awg_conf().replace("PersistentKeepalive = 25", &format!("PersistentKeepalive = {value}"))).is_err(), "{value}");
+    }
+}
+
+#[test]
+fn servers_saved_with_a_numeric_keepalive_still_load() {
+    let (config, _, _) = parse_conf(&awg_conf()).unwrap();
+    let mut saved = serde_json::to_value(&config).unwrap();
+    saved["peers"][0]["keepalive"] = json!(25);
+    let loaded: WgConfig = serde_json::from_value(saved.clone()).unwrap();
+    assert_eq!(loaded.peers[0].keepalive.as_deref(), Some("25"));
+    saved["peers"][0]["keepalive"] = serde_json::Value::Null;
+    let loaded: WgConfig = serde_json::from_value(saved).unwrap();
+    assert_eq!(loaded.peers[0].keepalive, None);
 }
