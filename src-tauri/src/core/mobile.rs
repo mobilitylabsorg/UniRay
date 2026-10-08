@@ -188,6 +188,13 @@ struct RunFiles {
     metrics: PathBuf,
 }
 
+/// The lock file Xray keeps next to a Unix socket it listens on.
+fn socket_lock(socket: &std::path::Path) -> PathBuf {
+    let mut lock = socket.as_os_str().to_owned();
+    lock.push(".lock");
+    PathBuf::from(lock)
+}
+
 fn run_files(app: &AppHandle) -> RunFiles {
     let dir = &app.state::<App>().paths.run_dir;
     RunFiles {
@@ -226,6 +233,10 @@ impl Running {
         }
         // A stale socket file would make the core fail to listen.
         let _ = std::fs::remove_file(&files.metrics);
+        // Xray guards the socket with "<socket>.lock". One left by an earlier
+        // run - the in-app core's, or the root one's - may not be openable by
+        // the next core ("permission denied"), so it goes as well.
+        let _ = std::fs::remove_file(socket_lock(&files.metrics));
         let name = {
             let name = settings.interface_name.trim();
             if name.is_empty() { config::DEFAULT_INTERFACE_NAME.to_owned() } else { name.to_owned() }

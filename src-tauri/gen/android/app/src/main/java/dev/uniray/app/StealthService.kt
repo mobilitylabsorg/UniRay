@@ -334,6 +334,9 @@ class StealthService : Service() {
     val sock = metricsSocket
     return """
       cd ${dir.absolutePath}
+      # A socket or lock left by an earlier core, maybe not openable by this
+      # one; root may remove it whoever made it.
+      rm -f "$sock" "$sock.lock"
       $env XRAY_LOCATION_ASSET=$geo setsid $xray run -c ${configFile.absolutePath} >$log 2>&1 &
       echo ${'$'}! > $pid
       for i in ${'$'}(seq 1 40); do [ -S "$sock" ] && chmod 666 "$sock" && break; sleep 0.1; done
