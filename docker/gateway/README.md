@@ -1,9 +1,19 @@
 # UniRay Gateway для MikroTik
 
-Контейнер для RouterOS: подключается к VPN через Xray, работает шлюзом для выбранных устройств сети и даёт SOCKS/HTTP-прокси. Сервер переключается в веб-интерфейсе, подписка обновляется сама.
+Контейнер для RouterOS: подключается к VPN, работает шлюзом для выбранных устройств сети и даёт SOCKS/HTTP-прокси. Сервер переключается в веб-интерфейсе, подписка обновляется сама.
 
-- Образ: `uniray-gateway-armv7.tar` (~15 МБ; на диске ~40 МБ, из них Xray 36 МБ).
-- Память: ~23 МБ в простое, ~26 МБ под нагрузкой. Рассчитан на лимит 64 МБ.
+Протоколы: всё, что умеет Xray (VLESS, VMess, Trojan, Shadowsocks, Hysteria2), а также WireGuard и AmneziaWG (до 3.1) через `uniray-engine` и NaiveProxy через официальный `naive`. Движок и `naive` работают за Xray, как в приложении: Xray пускает в них только свой трафик, а сервер отправляет мимо туннеля.
+
+Образы, оба для armv7 и arm64:
+
+| Файл | Для чего |
+| --- | --- |
+| `uniray-gateway-armv7-lowmem.tar` | **Для лимита 64 МБ.** Движок AmneziaWG/WireGuard с ограниченными буферами: под нагрузкой ждёт, а не растёт. Скорость та же. |
+| `uniray-gateway-armv7.tar` | amneziawg-go как есть. Под быстрой загрузкой движок может занять 50+ МБ: только при лимите от 128 МБ. |
+
+- Размер: ~25 МБ (на диске ~58 МБ: Xray 37 МБ, движок 9 МБ, `naive` 10 МБ и несколько библиотек glibc для него).
+- Память (замер в Docker с лимитом 64 МБ, AmneziaWG 3.1, `-lowmem`): ~12 МБ в простое, пик 40 МБ при четырёх параллельных загрузках ~30 МБ/с. Обычный образ в тех же условиях упирается в 64 МБ, и ядро убивает движок.
+- NaiveProxy тяжелее: сам `naive` (сетевой стек Chromium) занимает ~10 МБ в простое и больше под нагрузкой. Для Naive-серверов дайте контейнеру от 96–128 МБ (`ram-high`).
 - Раздельной маршрутизации нет: всё, что роутер отправит в контейнер, идёт через VPN. Если в подписке есть правила провайдера с прямым доступом к отдельным сайтам (например, RU-домены), в контейнере они отключаются. Блокировки провайдера (например, BitTorrent) остаются.
 
 ## Сборка
@@ -13,7 +23,9 @@ scripts/build-gateway.sh                 # linux/arm/v7 → build/uniray-gateway
 scripts/build-gateway.sh linux/arm64     # другие варианты: linux/arm64, linux/amd64
 ```
 
-Нужны Docker с buildx, [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) (`cargo install cargo-zigbuild`), Zig (`pip install ziglang` или пакет из дистрибутива) и цели Rust: `rustup target add armv7-unknown-linux-musleabihf aarch64-unknown-linux-musl`.
+Нужны Docker с buildx, Go 1.25+ (движок), [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) (`cargo install cargo-zigbuild`), Zig (`pip install ziglang` или пакет из дистрибутива), `readelf` (binutils) и цели Rust: `rustup target add armv7-unknown-linux-musleabihf aarch64-unknown-linux-musl`.
+
+Каждая платформа даёт два образа: `build/uniray-gateway-<arch>.tar` и `build/uniray-gateway-<arch>-lowmem.tar`. `NAIVE=0 scripts/build-gateway.sh` собирает без `naive` и glibc (меньше на ~11 МБ, без Naive-серверов). Ограничение буферов в `-lowmem` задаёт `ENGINE_MAX_BUFFERS` (по умолчанию 384, см. `scripts/build-engine.sh`).
 
 Готовые образы для armv7 и arm64 собирает CI (`.github/workflows/build.yml`): они лежат в артефакте `uniray-gateway` каждого запуска и в релизах.
 
@@ -36,8 +48,8 @@ scripts/build-gateway.sh linux/arm64     # другие варианты: linux/
 # Папка для выбранного сервера и копии подписки между перезапусками (по желанию)
 /container mounts add list=UNIRAY_DATA src=/usb1/uniray dst=/data
 
-# Загрузите uniray-gateway-armv7.tar на роутер (Files), затем:
-/container add file=usb1/uniray-gateway-armv7.tar interface=UNIRAY envlists=UNIRAY mountlists=UNIRAY_DATA \
+# Загрузите uniray-gateway-armv7-lowmem.tar на роутер (Files), затем:
+/container add file=usb1/uniray-gateway-armv7-lowmem.tar interface=UNIRAY envlists=UNIRAY mountlists=UNIRAY_DATA \
     root-dir=/usb1/docker/uniray dns=77.88.8.8,1.1.1.1 logging=yes start-on-boot=yes
 /container start [find interface=UNIRAY]
 ```
@@ -85,7 +97,7 @@ add chain=prerouting connection-mark=uniray src-address-list=via-uniray \
 | Переменная | По умолчанию | Что делает |
 | --- | --- | --- |
 | `SUB`, `SUB1`, `SUB_…` | — | URL подписок |
-| `SRV`, `SRV1`, `SRV_…` | — | Ссылки на серверы (`vless://`, `vmess://`, `trojan://`, `ss://`, `hysteria2://`) |
+| `SRV`, `SRV1`, `SRV_…` | — | Ссылки на серверы (`vless://`, `vmess://`, `trojan://`, `ss://`, `hysteria2://`, `wireguard://`, `vpn://` AmneziaVPN, `naive+https://`, `naive+quic://`). Конфиг AmneziaWG `.conf` можно отдать подпиской (`SUB`) |
 | `SERVER` | первый | Сервер при первом запуске: часть названия |
 | `WEB_PORT` | `9090` | Порт веб-интерфейса |
 | `WEB_PASSWORD` | — | Пароль веб-интерфейса (HTTP Basic, любое имя) |
@@ -99,3 +111,4 @@ add chain=prerouting connection-mark=uniray src-address-list=via-uniray \
 | `DIRECT_DNS` | `localhost` (= `dns=` контейнера) | DNS для адресов VPN-серверов |
 | `LOG_LEVEL` | `warning` | Уровень журнала Xray |
 | `DATA_DIR` | `/data` | Куда сохранять выбор и подписку |
+| `ENGINE_BIN`, `NAIVE_BIN` | `/usr/bin/uniray-engine`, `/usr/bin/naive` | Движок и `naive`; без них WireGuard/AmneziaWG и Naive-серверы пропускаются |

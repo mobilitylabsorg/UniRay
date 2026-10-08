@@ -101,7 +101,7 @@ XRAY_LOCATION_ASSET=$PWD/src-tauri/resources cargo test
 | `crates/uniray-core` | Вся логика без привязки к платформе: разбор ссылок и подписок, HWID, генерация конфига Xray. |
 | `crates/uniray-helper` | Привилегированный супервизор Xray для TUN-режима на десктопе. |
 | `engine` | `uniray-engine` (Go): WireGuard/AmneziaWG на `amneziawg-go` и NaiveProxy через официальный `naive`, за Xray; e2e-тест в `engine/e2e`. |
-| `crates/uniray-gateway` | Контейнер для роутеров (MikroTik): Xray-шлюз для сети и веб-интерфейс, см. [docker/gateway/README.md](docker/gateway/README.md). |
+| `crates/uniray-gateway` | Контейнер для роутеров (MikroTik): VPN-шлюз для сети (Xray, AmneziaWG/WireGuard и NaiveProxy через `uniray-engine`) и веб-интерфейс, см. [docker/gateway/README.md](docker/gateway/README.md). |
 | `src-tauri` | Приложение: запуск ядра, системный прокси, хранение состояния, команды для интерфейса. |
 | `src` | Интерфейс на Vue 3 (Pinia, vue-router, vue-i18n, Tailwind). |
 

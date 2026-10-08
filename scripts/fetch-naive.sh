@@ -11,7 +11,8 @@
 # lib/<abi>/libnaive.so is that same executable.
 #
 # The archive is checked against a pinned SHA-256 digest when pinned_sha256
-# has one for the asset; otherwise against the digest GitHub publishes for the
+# has one for the asset (and then downloaded straight away, without asking
+# GitHub's API); otherwise against the digest GitHub publishes for the
 # release asset, and the digest is printed so it can be pinned below. Pin
 # NAIVE_VERSION and the digests together.
 set -euo pipefail
@@ -24,6 +25,9 @@ pinned_sha256() {
   [[ "$NAIVE_VERSION" == v154.0.8037.49-4 ]] || return 0
   case "$1" in
     naiveproxy-v154.0.8037.49-4-win-x64.zip) echo 120b99474848d2f737515c1043249b0998e235fda750f61893d774b317bf1870 ;;
+    naiveproxy-v154.0.8037.49-4-linux-x64.tar.xz) echo 9d765620b90f7c60eb40c7c68b2f82537757cc52a8693dee7a00f8ba8b13dfd0 ;;
+    naiveproxy-v154.0.8037.49-4-linux-arm64.tar.xz) echo dfa99dc36dafa1ee7f97f48bde14e9ee96bc4011e5cc10c7881fa7883859a036 ;;
+    naiveproxy-v154.0.8037.49-4-linux-arm.tar.xz) echo e5637d35a0534af79aa17f69e1e3bbf59a41513104527e686f7650e180b139bb ;;
     *) echo "" ;;
   esac
 }
@@ -42,16 +46,21 @@ case "$target" in
   *) echo "fetch-naive.sh: no naive build for $target" >&2; exit 1 ;;
 esac
 
-api=(curl -fsSL -H "Accept: application/vnd.github+json")
-[[ -n "${GITHUB_TOKEN:-}" ]] && api+=(-H "Authorization: Bearer $GITHUB_TOKEN")
-release_url="https://api.github.com/repos/klzgrad/naiveproxy/releases/latest"
-[[ -n "$NAIVE_VERSION" ]] && release_url="https://api.github.com/repos/klzgrad/naiveproxy/releases/tags/$NAIVE_VERSION"
-
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-"${api[@]}" "$release_url" >"$work/release.json"
 
-read -r version asset url digest < <(python3 - "$work/release.json" "$pattern" <<'PY'
+# A pinned asset of a pinned version needs no lookup: its URL is known.
+version="$NAIVE_VERSION" asset="${pattern//\{v\}/$NAIVE_VERSION}"
+if [[ -n "$NAIVE_VERSION" && -n "$(pinned_sha256 "$asset")" ]]; then
+  url="https://github.com/klzgrad/naiveproxy/releases/download/$NAIVE_VERSION/$asset" digest="-"
+else
+  api=(curl -fsSL -H "Accept: application/vnd.github+json")
+  [[ -n "${GITHUB_TOKEN:-}" ]] && api+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+  release_url="https://api.github.com/repos/klzgrad/naiveproxy/releases/latest"
+  [[ -n "$NAIVE_VERSION" ]] && release_url="https://api.github.com/repos/klzgrad/naiveproxy/releases/tags/$NAIVE_VERSION"
+  "${api[@]}" "$release_url" >"$work/release.json"
+
+  read -r version asset url digest < <(python3 - "$work/release.json" "$pattern" <<'PY'
 import json, sys
 release, pattern = json.load(open(sys.argv[1])), sys.argv[2]
 version = release["tag_name"]
@@ -64,10 +73,11 @@ else:
     names = "\n  ".join(sorted(asset["name"] for asset in release["assets"]))
     sys.exit(f"fetch-naive.sh: {version} has no {name}; its assets:\n  {names}")
 PY
-)
-[[ -n "${url:-}" ]] || exit 1
-# Python on Windows ends its lines with CRLF.
-digest="${digest%$'\r'}"
+  )
+  [[ -n "${url:-}" ]] || exit 1
+  # Python on Windows ends its lines with CRLF.
+  digest="${digest%$'\r'}"
+fi
 
 want="$(pinned_sha256 "$asset")"
 pinned=true

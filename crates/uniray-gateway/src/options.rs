@@ -30,6 +30,11 @@ pub struct Options {
     /// across restarts.
     pub data_dir: PathBuf,
     pub xray: PathBuf,
+    /// `uniray-engine`, for WireGuard, AmneziaWG and Naive servers; such
+    /// servers are left out when it is missing.
+    pub engine: PathBuf,
+    /// NaiveProxy's `naive`, which the engine runs for a Naive server.
+    pub naive: PathBuf,
     pub remote_dns: String,
     pub direct_dns: String,
 }
@@ -73,6 +78,8 @@ impl Options {
             preferred_server: var("SERVER"),
             data_dir: PathBuf::from(var("DATA_DIR").unwrap_or_else(|| "/data".into())),
             xray: PathBuf::from(var("XRAY_BIN").unwrap_or_else(|| "/usr/bin/xray".into())),
+            engine: PathBuf::from(var("ENGINE_BIN").unwrap_or_else(|| "/usr/bin/uniray-engine".into())),
+            naive: PathBuf::from(var("NAIVE_BIN").unwrap_or_else(|| "/usr/bin/naive".into())),
             remote_dns: var("REMOTE_DNS").unwrap_or_else(|| "https://1.1.1.1/dns-query".into()),
             // The container's own resolvers (`dns=` of the RouterOS container):
             // on a mobile uplink those are the operator's, the only ones that
