@@ -89,8 +89,20 @@ ip -n cli addr add 10.0.0.2/24 dev v0 && ip -n cli link set v0 up && ip -n cli l
 ip -n srv addr add 10.0.0.1/24 dev v1 && ip -n srv link set v1 up && ip -n srv link set lo up
 
 # --- server: amneziawg-go with a kernel TUN, configured over its UAPI socket
+if [ ! -c /dev/net/tun ]; then
+  # A container (LXC, Docker) without the TUN device passed in, or no tun module.
+  echo "e2e.sh: no /dev/net/tun: the server (and Xray's TUN mode) needs it; try 'modprobe tun'" >&2
+  exit 1
+fi
+# Left over from an interrupted run, it would be taken for the new one.
+rm -f /var/run/amneziawg/awg0.sock
 ip netns exec srv env WG_PROCESS_FOREGROUND=1 "$server" awg0 >"$work/server.log" 2>&1 &
 for _ in $(seq 1 50); do [ -S /var/run/amneziawg/awg0.sock ] && break; sleep 0.1; done
+if [ ! -S /var/run/amneziawg/awg0.sock ]; then
+  echo "e2e.sh: amneziawg-go did not start; its log:" >&2
+  cat "$work/server.log" >&2
+  exit 1
+fi
 python3 - "$server_priv_hex" "$client_pub_hex" "$awg" <<'EOF'
 import socket, sys
 priv, peer, awg = sys.argv[1:]
