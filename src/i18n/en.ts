@@ -131,6 +131,9 @@ const en: typeof ru = {
     remoteDns: "DNS through VPN",
     directDns: "Direct DNS",
     directDnsHint: "Resolves the server address and the sites that bypass the VPN",
+    directDnsFromNetwork: "Provider's DNS",
+    directDnsFromNetworkHint:
+      "Instead of the address above, the current network's DNS, found when connecting. It is not encrypted, and the provider may tamper with the answers",
     ipv6: "IPv6",
     ipv6Hint: "Query AAAA records",
     interfaceName: "Network interface name",

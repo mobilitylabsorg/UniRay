@@ -185,6 +185,10 @@ pub struct Settings {
     /// or RKN's DNS spoofing - cannot substitute a fake address for the server
     /// and break (or misdirect) the connection before the tunnel is even up.
     pub direct_dns: String,
+    /// Use the current network's own DNS server (the provider's) as the
+    /// direct DNS, found when connecting; `direct_dns` is kept for when there
+    /// is none to be found.
+    pub direct_dns_from_network: bool,
     pub ipv6: bool,
     /// Send `x-hwid` and device headers when fetching subscriptions.
     pub send_hwid: bool,
@@ -228,6 +232,7 @@ impl Default for Settings {
             // this resolver's queries out directly while remote_dns's go
             // through the proxy (both are the 53-less DoH port 443).
             direct_dns: "https://8.8.8.8/dns-query".into(),
+            direct_dns_from_network: false,
             ipv6: false,
             send_hwid: true,
             log_level: "warning".into(),

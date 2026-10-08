@@ -102,6 +102,8 @@ fn settings_variants() -> Vec<Settings> {
             proxy_password: "pass".into(),
             ..Default::default()
         },
+        // The network's own DNS as the direct one (provider's DNS).
+        Settings { direct_dns: "192.168.1.1".into(), direct_dns_from_network: true, ..Default::default() },
         Settings {
             routing_preset: RoutingPreset::BypassRu,
             remote_dns: "https://dns.google/dns-query".into(),

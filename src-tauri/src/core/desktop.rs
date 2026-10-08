@@ -79,6 +79,7 @@ impl Running {
     }
 
     pub async fn start(app: &AppHandle, server: &Server, settings: &Settings, generation: u64) -> CmdResult<Self> {
+        let settings = &super::with_provider_dns(app, settings).await;
         let state = app.state::<App>();
         let tun = settings.mode == Mode::Tun;
         // TUN needs the elevated helper: pkexec on Linux, UAC on Windows, the
@@ -175,6 +176,59 @@ impl Running {
         let _ = std::fs::remove_file(run_dir.join(ENGINE_CONFIG));
         None
     }
+}
+
+/// The DNS servers the system uses now: the network's, as it gave them.
+pub(super) async fn system_dns() -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(read_system_dns).await.unwrap_or_default()
+}
+
+#[cfg(unix)]
+fn read_system_dns() -> Vec<String> {
+    use crate::network::{provider_dns, resolv_conf_servers};
+    // With systemd-resolved /etc/resolv.conf names only its local stub; the
+    // network's servers are in the other file. macOS keeps /etc/resolv.conf
+    // current itself.
+    for path in ["/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"] {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            let servers = resolv_conf_servers(&text);
+            if provider_dns(&servers).is_some() {
+                return servers;
+            }
+        }
+    }
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn read_system_dns() -> Vec<String> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{GetNetworkParams, FIXED_INFO_W2KSP1, IP_ADDR_STRING};
+
+    let mut size = 0u32;
+    // SAFETY: a size query with no buffer.
+    unsafe { GetNetworkParams(std::ptr::null_mut(), &mut size) };
+    if size == 0 {
+        return Vec::new();
+    }
+    // u64s, so that the structure (it holds pointers) is aligned.
+    let mut buffer = vec![0u64; (size as usize).div_ceil(8)];
+    // SAFETY: the buffer holds `size` bytes.
+    if unsafe { GetNetworkParams(buffer.as_mut_ptr().cast(), &mut size) } != 0 {
+        return Vec::new();
+    }
+    // SAFETY: GetNetworkParams filled the buffer with a FIXED_INFO, whose
+    // list of servers points into the same buffer.
+    let info = unsafe { &*buffer.as_ptr().cast::<FIXED_INFO_W2KSP1>() };
+    let mut servers = Vec::new();
+    let mut node: *const IP_ADDR_STRING = &info.DnsServerList;
+    while !node.is_null() {
+        // SAFETY: a node of the list GetNetworkParams wrote.
+        let entry = unsafe { &*node };
+        let text: Vec<u8> = entry.IpAddress.String.iter().map(|c| *c as u8).take_while(|c| *c != 0).collect();
+        servers.push(String::from_utf8_lossy(&text).into_owned());
+        node = entry.Next;
+    }
+    servers
 }
 
 /// The engine's config in the run directory, see `uniray_core::engine`.

@@ -69,6 +69,38 @@ pub(crate) fn free_port() -> CmdResult<u16> {
         .map_err(CmdError::io)
 }
 
+/// `settings` with the network's own DNS server as the direct DNS, when the
+/// user asked for it ([`Settings::direct_dns_from_network`]) and the network
+/// names one; as they are otherwise.
+pub(crate) async fn with_provider_dns(app: &AppHandle, settings: &Settings) -> Settings {
+    let mut settings = settings.clone();
+    if !settings.direct_dns_from_network {
+        return settings;
+    }
+    #[cfg(desktop)]
+    let servers = desktop::system_dns().await;
+    #[cfg(mobile)]
+    let servers = mobile::system_dns(app).await;
+    match crate::network::provider_dns(&servers) {
+        // One routing rule per DNS host sends its queries direct or through
+        // the proxy; the same host for both would send the VPN's queries
+        // around it.
+        Some(ip) if settings.remote_dns.contains(&ip.to_string()) => logs::push(
+            app,
+            &format!("[Warning] direct DNS: the network's ({ip}) is also the DNS through the VPN; using {}", settings.direct_dns),
+        ),
+        Some(ip) => {
+            logs::push(app, &format!("[Info] direct DNS: the network's own, {ip}"));
+            settings.direct_dns = ip.to_string();
+        }
+        None => logs::push(
+            app,
+            &format!("[Warning] direct DNS: the network names no DNS server; using {}", settings.direct_dns),
+        ),
+    }
+    settings
+}
+
 /// Engine servers probed at once: each is a process with a tunnel of its own.
 const ENGINE_PROBES_AT_ONCE: usize = 4;
 

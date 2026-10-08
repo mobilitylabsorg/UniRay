@@ -129,6 +129,9 @@ export default {
     remoteDns: "DNS через VPN",
     directDns: "DNS напрямую",
     directDnsHint: "Разрешает адрес сервера и сайты, идущие в обход VPN",
+    directDnsFromNetwork: "DNS провайдера",
+    directDnsFromNetworkHint:
+      "Вместо адреса выше — DNS текущей сети, найденный при подключении. Он не шифруется, и провайдер может подменять ответы",
     ipv6: "IPv6",
     ipv6Hint: "Запрашивать AAAA-записи",
     interfaceName: "Имя сетевого интерфейса",

@@ -347,7 +347,8 @@ onMounted(refreshPrivilege);
         <span class="mb-1.5 block font-medium">{{ t("settings.directDns") }}</span>
         <input
           v-model="draft.directDns"
-          class="field selectable font-mono text-xs"
+          class="field selectable font-mono text-xs transition-opacity disabled:opacity-50"
+          :disabled="store.settings.directDnsFromNetwork"
           spellcheck="false"
           autocapitalize="off"
           @blur="saveDns('directDns')"
@@ -355,6 +356,17 @@ onMounted(refreshPrivilege);
         />
         <span class="mt-1.5 block text-xs text-muted">{{ t("settings.directDnsHint") }}</span>
       </label>
+      <div class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.directDnsFromNetwork") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.directDnsFromNetworkHint") }}</div>
+        </div>
+        <ToggleSwitch
+          :model-value="store.settings.directDnsFromNetwork"
+          :label="t('settings.directDnsFromNetwork')"
+          @update:model-value="(directDnsFromNetwork: boolean) => save({ directDnsFromNetwork })"
+        />
+      </div>
     </div>
 
     <div class="section-title">{{ t("settings.subscriptions") }}</div>

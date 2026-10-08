@@ -67,6 +67,8 @@ export interface Settings {
   customRules: Rule[];
   remoteDns: string;
   directDns: string;
+  /** Use the network's own (the provider's) DNS as the direct DNS. */
+  directDnsFromNetwork: boolean;
   ipv6: boolean;
   sendHwid: boolean;
   logLevel: string;

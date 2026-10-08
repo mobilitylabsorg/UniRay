@@ -139,6 +139,11 @@ struct StopAnswer {
     error: Option<String>,
 }
 
+/// The DNS servers of the network beneath the VPN.
+pub(super) async fn system_dns(app: &AppHandle) -> Vec<String> {
+    network_info(app).await.map(|network| network.dns).unwrap_or_default()
+}
+
 async fn network_info(app: &AppHandle) -> Option<NetworkInfo> {
     call::<NetworkInfo>(app, "networkInfo", json!({})).await.ok()
 }
@@ -227,6 +232,7 @@ impl Running {
     }
 
     pub async fn start(app: &AppHandle, server: &Server, settings: &Settings, generation: u64) -> CmdResult<Self> {
+        let settings = &super::with_provider_dns(app, settings).await;
         let files = run_files(app);
         for log in [&files.error_log, &files.access_log] {
             write_private(log, b"").map_err(CmdError::io)?;
