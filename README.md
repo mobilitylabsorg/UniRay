@@ -5,27 +5,30 @@
 Состояние:
 - проверено вживую: Linux в режиме прокси, подписки (в том числе с балансировщиками), контейнер для MikroTik — в Docker с лимитом 64 МБ;
 - собирается, но вживую не проверено: TUN на Linux и Windows, Windows целиком (кросс-сборка с Linux), туннель на Android;
-- собирается в CI, вживую не проверено: macOS (только режим прокси, TUN пока нет);
+- собирается в CI, вживую не проверено: macOS (режим прокси и TUN);
+- WireGuard, AmneziaWG и NaiveProxy: цепочка «Xray → движок → сервер AmneziaWG» проверяется в CI (network namespaces, режимы прокси и TUN), с настоящими серверами вживую ещё не проверено;
 - iOS: интерфейс собирается, но туннеля ещё нет — подключение не работает (см. «iOS» ниже).
 
 ## Возможности
 
 - Импорт `vless://`, `vmess://`, `trojan://`, `ss://`, `hysteria2://` — текстом, из буфера или QR-кодом с картинки.
+- WireGuard и AmneziaWG (в том числе AWG 2.0): файлы `.conf`, ключи AmneziaVPN `vpn://`, ссылки `wireguard://`.
+- NaiveProxy: ссылки `naive+https://` и `naive+quic://`.
 - Подписки: base64/текст/JSON-конфиги, трафик и срок действия, автообновление, заголовок `x-hwid` для панелей с лимитом устройств (Remnawave).
 - Маршрутизация: «всё через VPN», «локальная сеть напрямую», «RU напрямую» и свои правила по доменам и IP.
 - Проверка задержки, скорость и трафик в реальном времени, журнал ядра.
 
 ## Разработка
 
-Нужны Rust, Node.js с pnpm и [системные зависимости Tauri](https://tauri.app/start/prerequisites/).
+Нужны Rust, Go 1.25+ (для движка `engine/`), Node.js с pnpm и [системные зависимости Tauri](https://tauri.app/start/prerequisites/).
 
 ```sh
 pnpm install
-pnpm app:dev     # скачивает Xray, собирает helper и запускает приложение
+pnpm app:dev     # скачивает Xray и naive, собирает helper и движок, запускает приложение
 pnpm app:build   # релизная сборка и пакеты
 ```
 
-`scripts/fetch-xray.sh` скачивает закреплённую версию Xray-core и сверяет SHA-256; при обновлении версии меняйте её вместе с хэшами.
+`scripts/fetch-xray.sh` скачивает закреплённую версию Xray-core и сверяет SHA-256; при обновлении версии меняйте её вместе с хэшами. Так же `scripts/fetch-naive.sh` скачивает NaiveProxy, а `scripts/build-engine.sh` собирает движок.
 
 ### Windows (кросс-сборка с Linux)
 
@@ -36,7 +39,7 @@ bash scripts/prepare-sidecars.sh --release x86_64-pc-windows-msvc
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
 ```
 
-Установщик появится в `target/x86_64-pc-windows-msvc/release/bundle/nsis/`. Для портативной версии достаточно содержимого `target/x86_64-pc-windows-msvc/release/`: `uniray.exe`, `uniray-xray.exe`, `uniray-helper.exe`, `wintun.dll` и папка `resources`. Нужна Windows 10 или новее.
+Установщик появится в `target/x86_64-pc-windows-msvc/release/bundle/nsis/`. Для портативной версии достаточно содержимого `target/x86_64-pc-windows-msvc/release/`: `uniray.exe`, `uniray-xray.exe`, `uniray-helper.exe`, `uniray-engine.exe`, `uniray-naive.exe`, `wintun.dll` и папка `resources`. Нужна Windows 10 или новее.
 
 ### CI
 
@@ -97,10 +100,13 @@ XRAY_LOCATION_ASSET=$PWD/src-tauri/resources cargo test
 | --- | --- |
 | `crates/uniray-core` | Вся логика без привязки к платформе: разбор ссылок и подписок, HWID, генерация конфига Xray. |
 | `crates/uniray-helper` | Привилегированный супервизор Xray для TUN-режима на десктопе. |
+| `engine` | `uniray-engine` (Go): WireGuard/AmneziaWG на `amneziawg-go` и NaiveProxy через официальный `naive`, за Xray; e2e-тест в `engine/e2e`. |
 | `crates/uniray-gateway` | Контейнер для роутеров (MikroTik): Xray-шлюз для сети и веб-интерфейс, см. [docker/gateway/README.md](docker/gateway/README.md). |
 | `src-tauri` | Приложение: запуск ядра, системный прокси, хранение состояния, команды для интерфейса. |
 | `src` | Интерфейс на Vue 3 (Pinia, vue-router, vue-i18n, Tailwind). |
 
-На десктопе Xray работает отдельным процессом. В TUN-режиме его запускает `uniray-helper` с правами администратора: на Linux через `pkexec` (нужен запущенный polkit-агент), на Windows через запрос UAC. Helper останавливает Xray, когда приложение просит об этом или завершается.
+На десктопе Xray работает отдельным процессом. В TUN-режиме его запускает `uniray-helper` с правами администратора: на Linux через `pkexec` (нужен запущенный polkit-агент), на Windows через запрос UAC, на macOS через системный запрос пароля администратора. Helper останавливает Xray, когда приложение просит об этом или завершается.
+
+Серверы, которых Xray не умеет (WireGuard, AmneziaWG, NaiveProxy), работают через `uniray-engine`: Xray остаётся впереди (TUN, маршрутизация, DNS, счётчики), а его исходящий `proxy` — SOCKS5 к движку на 127.0.0.1. Порт движка закрыт трижды: пароль, новый на каждое подключение (секреты передаются только файлами, которые движок удаляет, и никогда — аргументами); проверка, что подключился именно процесс Xray (по таблицам сокетов ОС, на Android — по uid через `getConnectionOwnerUid`); в stealth-режиме — ещё и правило iptables. Свои пакеты движка к серверу уходят мимо туннеля по правилу `direct`, так что в TUN-режиме петли нет.
 
 Системный прокси на Linux выставляется через `gsettings` (GNOME-настройки, которым следуют GTK-приложения и Chromium). В окружениях без них используйте TUN-режим или укажите приложениям локальный прокси вручную.

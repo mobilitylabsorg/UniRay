@@ -200,6 +200,7 @@ class StealthService : Service() {
     // Whatever an earlier run left behind (a crash, a lost teardown) would
     // otherwise sit in front of the new rules.
     PrivilegedShell.execPrivileged(level, downScript())
+    rules(level)?.let { rulesBeforeFile().writeText(it.joinToString("\n")) }
 
     val up =
       if (mode == MODE_ROOT_TUN) rootTunUpScript(dir, configFile, tunName, ipv6, engine)
@@ -240,7 +241,10 @@ class StealthService : Service() {
       if (!result.ok) Log.w(TAG, "stealth down reported: ${result.errText()}")
       val check = PrivilegedShell.execPrivileged(lvl, leftoversScript())
       left = if (check.ok) check.outText().trim() else "unknown (${check.errText().take(100)})"
-      if (left.isEmpty()) return null
+      if (left.isEmpty()) {
+        logRuleChanges(lvl, spec)
+        return null
+      }
       Log.w(TAG, "stealth teardown left: $left (attempt $attempt)")
       Thread.sleep(500)
     }
@@ -491,20 +495,22 @@ class StealthService : Service() {
     val enginePid = File(stealthDir(this), "engine.pid").absolutePath
     val dir = stealthDir(this).absolutePath
     val savedRpFilter = File(stealthDir(this), "rp_filter.saved").absolutePath
+    // Order matters: the rules go first, so that traffic is the system's again
+    // before anything else can go wrong; then the processes.
+    //
+    // Every delete names what is ours exactly. A rule is matched by its table
+    // too, never by its priority alone: the system or the ROM may have rules
+    // of its own at the same priority, and deleting those cut the phone off
+    // the network until a reboot.
+    //
+    // A pid file is trusted only when the process is still ours: an old one
+    // may name a pid the system has since given to something else.
+    //
     // The `[y]` keeps pkill from matching this very script: Shizuku runs it as
     // `sh -c <script>`, so the script's text is the shell's command line, and
-    // a plain "…/xray run" would make pkill kill the shell running it - after
-    // the core is gone but before any rule is removed, which cut the device
-    // off the network. The bracket matches "xray", not its own spelling.
+    // a plain "…/xray run" would make pkill kill the shell running it. The
+    // bracket matches "xray", not its own spelling.
     return """
-      [ -f $pid ] && kill ${'$'}(cat $pid) 2>/dev/null || true
-      pkill -f "$dir/xra[y] run" 2>/dev/null || true
-      pkill -f "$dir/xra[y]-tun run" 2>/dev/null || true
-      rm -f $pid 2>/dev/null || true
-      [ -f $enginePid ] && kill ${'$'}(cat $enginePid) 2>/dev/null || true
-      pkill -f "libuniray_engin[e].so" 2>/dev/null || true
-      pkill -f "libnaiv[e].so" 2>/dev/null || true
-      rm -f $enginePid $dir/engine.json $dir/engine.out 2>/dev/null || true
       while iptables -w -t mangle -D OUTPUT -j $CHAIN_OUT 2>/dev/null; do :; done
       while iptables -w -t mangle -D PREROUTING -j $CHAIN_PRE 2>/dev/null; do :; done
       iptables -w -t mangle -F $CHAIN_OUT 2>/dev/null || true
@@ -519,13 +525,68 @@ class StealthService : Service() {
       ip6tables -w -t filter -X $CHAIN_OUT 2>/dev/null || true
       while ip rule del fwmark $MARK lookup $TABLE 2>/dev/null; do :; done
       ip route flush table $TABLE 2>/dev/null || true
-      while ip rule del pref $TUN_RULE_PREF 2>/dev/null; do :; done
-      while ip -6 rule del pref $TUN_RULE_PREF 2>/dev/null; do :; done
+      while ip rule del pref $TUN_RULE_PREF lookup $TUN_TABLE 2>/dev/null; do :; done
+      while ip -6 rule del pref $TUN_RULE_PREF lookup $TUN_TABLE 2>/dev/null; do :; done
       ip route flush table $TUN_TABLE 2>/dev/null || true
       ip -6 route flush table $TUN_TABLE 2>/dev/null || true
       if [ -f $savedRpFilter ]; then cat $savedRpFilter > /proc/sys/net/ipv4/conf/all/rp_filter; rm -f $savedRpFilter; fi
+
+      ours() { [ -n "${'$'}1" ] && tr '\0' ' ' < /proc/${'$'}1/cmdline 2>/dev/null | grep -qE "${'$'}2"; }
+      for file in $pid $enginePid; do
+        p=${'$'}(cat ${'$'}file 2>/dev/null)
+        ours "${'$'}p" "$dir/xra[y]|libuniray_engin[e]" && kill ${'$'}p 2>/dev/null
+        rm -f ${'$'}file
+      done
+      pkill -f "$dir/xra[y] run" 2>/dev/null || true
+      pkill -f "$dir/xra[y]-tun run" 2>/dev/null || true
+      pkill -f "libuniray_engin[e].so" 2>/dev/null || true
+      pkill -f "libnaiv[e].so" 2>/dev/null || true
+      rm -f $dir/engine.json $dir/engine.out 2>/dev/null || true
       true
     """.trimIndent()
+  }
+
+  /** The routing rules, both families, for [logRuleChanges]. */
+  private fun rules(level: Privilege): List<String>? {
+    val result = PrivilegedShell.execPrivileged(level, "ip rule 2>/dev/null; ip -6 rule 2>/dev/null | sed 's/^/v6 /'")
+    return if (result.ok) result.out.map { it.trim().replace(Regex("\\s+"), " ") }.filter { it.isNotEmpty() } else null
+  }
+
+  private fun rulesBeforeFile() = File(stealthDir(this), "rules.before")
+
+  /**
+   * Compares the routing rules after a teardown with those from before the
+   * connection and reports what changed in the app's log, with whether the
+   * internet is reachable now. Nothing of ours may be left, and nothing of
+   * the system's may be missing; when the phone has no internet after a
+   * disconnect, this says why. (A change of network while connected also
+   * changes the system's rules; that shows here too.)
+   */
+  private fun logRuleChanges(level: Privilege, spec: JSONObject?) {
+    val before = try {
+      rulesBeforeFile().readLines().filter { it.isNotEmpty() }
+    } catch (e: Exception) {
+      return
+    }
+    val after = rules(level) ?: return
+    val ours = Regex("lookup ($TABLE|$TUN_TABLE)\\b")
+    val missing = before.filter { it !in after && !ours.containsMatchIn(it) }
+    val left = after.filter { ours.containsMatchIn(it) }
+    val log = spec?.optString("config")?.let { Engine.logFile(it, File(stealthDir(this), "teardown.log")) }
+    val lines = mutableListOf<String>()
+    if (missing.isNotEmpty()) lines += "[Warning] stealth: routing rules gone since connecting: ${missing.joinToString(" | ")}"
+    if (left.isNotEmpty()) lines += "[Warning] stealth: routing rules of ours left: ${left.joinToString(" | ")}"
+    val probe = PrivilegedShell.execPrivileged(level, "ip route get 1.1.1.1 2>&1 | head -1; ping -c 1 -W 3 1.1.1.1 >/dev/null 2>&1 && echo reachable || echo unreachable")
+    val reach = probe.out.map { it.trim() }.filter { it.isNotEmpty() }
+    val reachable = reach.lastOrNull() == "reachable"
+    lines += "[${if (reachable) "Info" else "Warning"}] stealth: after teardown 1.1.1.1 is ${reach.lastOrNull() ?: "unknown"} (${reach.firstOrNull().orEmpty()})"
+    Log.i(TAG, lines.joinToString("\n"))
+    try {
+      log?.appendText(lines.joinToString("\n", postfix = "\n"))
+    } catch (e: Exception) {
+      // The log is a convenience.
+    }
+    rulesBeforeFile().delete()
   }
 
   /** Prints what of the setup is still in place; nothing when all is gone. */
@@ -534,8 +595,8 @@ class StealthService : Service() {
     iptables -w -t mangle -S 2>/dev/null | grep -q -e $CHAIN_OUT -e $CHAIN_PRE && echo "iptables rules"
     iptables -w -t filter -S 2>/dev/null | grep -q $CHAIN_GUARD && echo "iptables guard"
     ip6tables -w -t filter -S 2>/dev/null | grep -q $CHAIN_OUT && echo "ip6tables rules"
-    ip rule 2>/dev/null | grep -q -e "lookup $TABLE" -e "lookup $TUN_TABLE" && echo "routing rules"
-    ip -6 rule 2>/dev/null | grep -q "lookup $TUN_TABLE" && echo "IPv6 routing rules"
+    ip rule 2>/dev/null | grep -qE "lookup ($TABLE|$TUN_TABLE)( |${'$'})" && echo "routing rules"
+    ip -6 rule 2>/dev/null | grep -qE "lookup $TUN_TABLE( |${'$'})" && echo "IPv6 routing rules"
     pgrep -f "libuniray_engin[e].so" >/dev/null 2>&1 && echo "the engine"
     pgrep -f "libnaiv[e].so" >/dev/null 2>&1 && echo "naive"
     true
