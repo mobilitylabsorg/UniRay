@@ -3,7 +3,10 @@
 // loopback. Xray stays in front (TUN, routing, DNS, stats); for such a server
 // its proxy outbound is SOCKS to this engine.
 //
-// Usage: uniray-engine awg|naive --config <file>
+// Usage: uniray-engine awg|naive --config <file> [--probe <url> [--timeout <duration>]]
+//
+// With --probe it serves nothing: it fetches the URL through the server,
+// prints "delay <ms>" (-1 on failure) and exits - the app's delay test.
 //
 // awg runs WireGuard/AmneziaWG itself (amneziawg-go, userspace); naive starts
 // the official NaiveProxy client as its child and passes connections on.
@@ -30,6 +33,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config is what the app writes for one run.
@@ -63,6 +67,8 @@ func main() {
 	mode := os.Args[1]
 	flags := flag.NewFlagSet(mode, flag.ExitOnError)
 	configPath := flags.String("config", "", "config file, removed once read")
+	probeURL := flags.String("probe", "", "measure the delay of one request to this URL, then exit")
+	probeTimeout := flags.Duration("timeout", 8*time.Second, "how long the probe may take")
 	_ = flags.Parse(os.Args[2:])
 	if *configPath == "" {
 		fatalf("--config is required")
@@ -99,9 +105,18 @@ func main() {
 		fatalf("unknown mode %q", mode)
 	}
 	if err != nil {
+		if *probeURL != "" {
+			printDelay(-1)
+		}
 		fatalf("cannot start the tunnel: %v", err)
 	}
 	defer upstream.Close()
+
+	if *probeURL != "" {
+		printDelay(probe(upstream, *probeURL, *probeTimeout))
+		upstream.Close()
+		return
+	}
 
 	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(config.Port)))
 	if err != nil {

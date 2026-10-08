@@ -16,6 +16,11 @@ const { t } = useI18n();
 const text = ref("");
 const busy = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
+const confInput = ref<HTMLInputElement | null>(null);
+
+function append(value: string) {
+  text.value = text.value.trim() ? `${text.value.trim()}\n${value}` : value;
+}
 
 async function paste() {
   // An empty or non-text clipboard is not worth an error message.
@@ -30,9 +35,20 @@ async function onImage(event: Event) {
   if (!file) return;
   const decoded = await decodeQrImage(file).catch(() => null);
   if (decoded) {
-    text.value = text.value.trim() ? `${text.value.trim()}\n${decoded}` : decoded;
+    append(decoded);
   } else {
     store.toast(t("servers.noQr"), "error");
+  }
+}
+
+/** A WireGuard/AmneziaWG `.conf`, or any text file of links. */
+async function onFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = "";
+  for (const file of files) {
+    const content = await file.text().catch(() => "");
+    if (content.trim()) append(content.trim());
   }
 }
 
@@ -66,7 +82,11 @@ async function submit() {
       <button class="btn btn-quiet flex-1" @click="fileInput?.click()">
         <AppIcon name="image" :size="18" />{{ t("servers.fromImage") }}
       </button>
+      <button class="btn btn-quiet flex-1" @click="confInput?.click()">
+        <AppIcon name="file" :size="18" />{{ t("servers.fromFile") }}
+      </button>
       <input ref="fileInput" type="file" accept="image/*" class="hidden" @change="onImage" />
+      <input ref="confInput" type="file" accept=".conf,.txt,.json,text/plain,application/json" multiple class="hidden" @change="onFile" />
     </div>
     <button class="btn btn-primary mt-3 w-full" :disabled="busy || !text.trim()" @click="submit">
       {{ t("common.add") }}

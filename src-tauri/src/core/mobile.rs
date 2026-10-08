@@ -395,6 +395,29 @@ async fn start_stealth(
     Ok(built.proxy_tags)
 }
 
+#[derive(Deserialize)]
+struct ProbeAnswer {
+    delay: i64,
+}
+
+/// One engine delay probe, see [`super::probe_engines`]: the service side
+/// runs it, since only it knows where the engine was extracted.
+pub(super) async fn run_engine_probe(app: &AppHandle, run: &EngineRun) -> i64 {
+    let args = json!({
+        "mode": run.mode,
+        "config": String::from_utf8_lossy(&run.config_for(&Peers::Pids(Vec::new()), false)),
+        "url": PROBE_URL,
+        "timeout": PROBE_TIMEOUT.as_secs(),
+    });
+    match call::<ProbeAnswer>(app, "probeEngine", args).await {
+        Ok(answer) => answer.delay,
+        Err(err) => {
+            logs::push(app, &format!("[Warning] delay test failed: {}", err.message));
+            -1
+        }
+    }
+}
+
 /// The app's uid: Xray's in VPN mode, where it runs inside the app.
 fn own_uid() -> u32 {
     // SAFETY: getuid has no preconditions and cannot fail.
@@ -520,6 +543,9 @@ pub async fn measure_delays(
     if app.state::<App>().connection.lock().unwrap().status != Status::Disconnected {
         return Err(CmdError::new("delayWhileConnected", "disconnect to test delays"));
     }
+    let (servers, engine_servers): (Vec<Server>, Vec<Server>) =
+        servers.into_iter().partition(|server| server.source.is_xray());
+    super::probe_engines(app, &engine_servers, &on_result).await;
     for batch in servers.chunks(PROBE_BATCH) {
         let configs: Vec<String> = batch
             .iter()

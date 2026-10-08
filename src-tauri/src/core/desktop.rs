@@ -586,6 +586,9 @@ pub async fn measure_delays(
     servers: Vec<Server>,
     on_result: impl Fn(&str, i64) + Sync,
 ) -> CmdResult<()> {
+    let (servers, engine_servers): (Vec<Server>, Vec<Server>) =
+        servers.into_iter().partition(|server| server.source.is_xray());
+    super::probe_engines(app, &engine_servers, &on_result).await;
     for batch in servers.chunks(PROBE_BATCH) {
         if let Err(err) = probe_batch(app, batch, &on_result).await {
             logs::push(app, &format!("[Warning] delay test failed: {}", err.message));
@@ -624,6 +627,39 @@ async fn probe_batch(app: &AppHandle, servers: &[Server], on_result: &(impl Fn(&
     };
     let _ = std::fs::remove_file(config_path);
     result
+}
+
+/// One engine delay probe, see [`super::probe_engines`].
+pub(super) async fn run_engine_probe(app: &AppHandle, run: &EngineRun) -> i64 {
+    let state = app.state::<App>();
+    let config = state.paths.run_dir.join(format!("probe-engine-{}.json", run.runtime.port));
+    if write_private(&config, &run.config_for(&Peers::Pids(Vec::new()), false)).is_err() {
+        return -1;
+    }
+    let mut command = Command::new(&state.paths.engine);
+    command
+        .arg(run.mode)
+        .arg("--config")
+        .arg(&config)
+        .arg("--probe")
+        .arg(PROBE_URL)
+        .arg("--timeout")
+        .arg(format!("{}s", PROBE_TIMEOUT.as_secs()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    // The engine's own timeout covers the request; this, a tunnel that never
+    // comes up.
+    let output = tokio::time::timeout(PROBE_TIMEOUT + Duration::from_secs(10), command.output()).await;
+    // The engine removes it once read; not if it failed to start.
+    let _ = std::fs::remove_file(&config);
+    match output {
+        Ok(Ok(output)) => super::parse_probe(&String::from_utf8_lossy(&output.stdout)),
+        _ => -1,
+    }
 }
 
 async fn probe_delay(port: u16) -> i64 {

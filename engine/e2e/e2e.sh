@@ -109,9 +109,8 @@ stop_engines() {
   engine_pids=()
 }
 
-run_engine() { # run_engine <name> <awg options> [extra config, as JSON members]
+engine_config() { # engine_config <name> <awg options> [extra config, as JSON members]
   local name=$1 options=$2 extra=${3:-}
-  stop_engines
   local uapi="private_key=$client_priv_hex
 $options
 replace_peers=true
@@ -127,6 +126,12 @@ name, uapi, extra = sys.argv[1:]
 config = {"user": "uniray", "pass": "s3cret-" + name, **json.loads("{" + extra + "}"),
           "awg": {"addresses": ["10.8.0.2/32"], "mtu": 1420, "uapi": uapi}}
 print(json.dumps(config))' "$name" "$uapi" "$extra" >"$work/$name.json"
+}
+
+run_engine() { # run_engine <name> <awg options> [extra config, as JSON members]
+  local name=$1
+  stop_engines
+  engine_config "$@"
   mkfifo "$work/$name.in"
   ip netns exec cli "$engine" awg --config "$work/$name.json" <"$work/$name.in" >"$work/$name.out" 2>"$work/$name.err" &
   engine_pids+=($!)
@@ -242,6 +247,18 @@ print(json.dumps({"user": "uniray", "pass": "s3cret-real", "naive": {"binary": s
   fi
   exec {real_fd}>&-
 fi
+
+echo "--- delay probe (no SOCKS port: the engine fetches through the tunnel itself)"
+stop_engines
+probe() { # probe <name> <awg options> <timeout>: the delay printed
+  engine_config "$1" "$2"
+  ip netns exec cli "$engine" awg --config "$work/$1.json" --probe http://10.8.0.1:8080/ --timeout "$3" \
+    </dev/null 2>"$work/$1.err" | sed -n 's/^delay //p'
+}
+delay=$(probe probe "$awg" 10s)
+if [ -n "$delay" ] && [ "$delay" -ge 0 ]; then echo "PASS  probe: $delay ms"; else echo "FAIL  probe: '$delay' $(tail -2 "$work/probe.err")"; failures=$((failures + 1)); fi
+delay=$(probe probebad "${awg/h1=100000-100500/h1=999}" 3s)
+if [ "$delay" = -1 ]; then echo "PASS  probe through a mismatched H1: -1"; else echo "FAIL  probe through a mismatched H1: '$delay'"; failures=$((failures + 1)); fi
 
 echo "--- obfuscation mismatch (H1 outside the server's range)"
 run_engine bad "${awg/h1=100000-100500/h1=999}"

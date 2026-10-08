@@ -52,6 +52,50 @@ object Engine {
     } ?: fallback
 
   /**
+   * The delay of one server: the engine fetches [url] through it itself and
+   * prints `delay <ms>`; it serves nothing meanwhile, so no port is open.
+   * Blocks for up to [timeoutSeconds] and then some.
+   */
+  fun probe(context: Context, mode: String, config: String, url: String, timeoutSeconds: Int): Long {
+    val file = File(context.cacheDir, "probe-${java.util.UUID.randomUUID()}.json")
+    file.writeText(withNaive(context, config))
+    try {
+      val process =
+        ProcessBuilder(
+            binary(context).absolutePath, mode, "--config", file.absolutePath,
+            "--probe", url, "--timeout", "${timeoutSeconds}s",
+          )
+          .start()
+      val done = CountDownLatch(1)
+      // Read in the background, so a tunnel that never comes up cannot hang us.
+      var delay = -1L
+      thread(name = "engine-probe", isDaemon = true) {
+        process.inputStream.bufferedReader().useLines { lines ->
+          for (line in lines) {
+            if (line.startsWith("delay ")) {
+              delay = line.removePrefix("delay ").trim().toLongOrNull() ?: -1L
+              break
+            }
+          }
+        }
+        done.countDown()
+      }
+      thread(name = "engine-probe-err", isDaemon = true) {
+        // Drained, or a chatty engine would block on a full pipe.
+        process.errorStream.use { stream ->
+          val buffer = ByteArray(4096)
+          while (stream.read(buffer) >= 0) {}
+        }
+      }
+      if (!done.await(timeoutSeconds + 10L, TimeUnit.SECONDS)) process.destroy()
+      return delay
+    } finally {
+      // The engine removes it once read; not if it failed to start.
+      file.delete()
+    }
+  }
+
+  /**
    * The engine of the VPN mode: a child of the service, as the app's user.
    * Xray runs inside the app, so the engine accepts the app's uid, which this
    * class vouches for through [OwnerServer].

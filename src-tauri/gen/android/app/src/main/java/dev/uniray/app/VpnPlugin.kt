@@ -63,6 +63,14 @@ class DelayArgs {
 }
 
 @InvokeArg
+class ProbeArgs {
+  var mode: String = ""
+  var config: String = ""
+  var url: String = ""
+  var timeout: Int = 8
+}
+
+@InvokeArg
 class StealthArgs {
   var config: String = ""
   /** "tproxy" (iptables) or "roottun" (a root-owned TUN). */
@@ -323,6 +331,21 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
       } catch (e: Exception) {
         invoke.reject(e.message ?: e.toString())
       }
+    }
+  }
+
+  /** The delay of a WireGuard/AmneziaWG or Naive server, see [Engine.probe]. */
+  @Command
+  fun probeEngine(invoke: Invoke) {
+    val args = invoke.parseArgs(ProbeArgs::class.java)
+    thread {
+      val delay =
+        try {
+          Engine.probe(activity, args.mode, args.config, args.url, args.timeout)
+        } catch (e: Exception) {
+          -1L
+        }
+      invoke.resolve(JSObject().put("delay", delay))
     }
   }
 

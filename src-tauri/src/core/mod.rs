@@ -69,6 +69,41 @@ pub(crate) fn free_port() -> CmdResult<u16> {
         .map_err(CmdError::io)
 }
 
+/// Engine servers probed at once: each is a process with a tunnel of its own.
+const ENGINE_PROBES_AT_ONCE: usize = 4;
+
+/// The delays of servers Xray does not run (WireGuard, AmneziaWG, Naive):
+/// for each, the engine fetches [`PROBE_URL`] through the server itself and
+/// reports the time, serving nothing meanwhile.
+pub(crate) async fn probe_engines(app: &AppHandle, servers: &[Server], on_result: &(impl Fn(&str, i64) + Sync)) {
+    let settings = app.state::<App>().store.lock().unwrap().data.settings.clone();
+    for batch in servers.chunks(ENGINE_PROBES_AT_ONCE) {
+        futures_util::future::join_all(batch.iter().map(|server| async {
+            let delay = match prepare_engine(app, server, &settings).await {
+                Ok(Some(run)) => run_engine_probe(app, &run).await,
+                Ok(None) => -1,
+                Err(err) => {
+                    logs::push(app, &format!("[Warning] delay test of {}: {}", server.name, err.message));
+                    -1
+                }
+            };
+            on_result(&server.id, delay);
+        }))
+        .await;
+    }
+}
+
+/// The delay an engine probe printed (`delay <ms>`), -1 without one.
+#[cfg(desktop)]
+pub(crate) fn parse_probe(stdout: &str) -> i64 {
+    stdout.lines().find_map(|line| line.strip_prefix("delay ")?.trim().parse().ok()).unwrap_or(-1)
+}
+
+#[cfg(desktop)]
+use desktop::run_engine_probe;
+#[cfg(mobile)]
+use mobile::run_engine_probe;
+
 /// The engine run for `server`, if Xray cannot run it (see
 /// `uniray_core::engine`), on a free port. Resolving the server's name
 /// blocks, so it happens off the async runtime.
@@ -219,4 +254,15 @@ pub(crate) async fn on_run_end(app: &AppHandle, generation: u64, end: RunEnd) {
         }
     };
     set_connection(app, |info| *info = ConnectionInfo { error, ..Default::default() });
+}
+
+#[cfg(all(test, desktop))]
+mod probe_tests {
+    #[test]
+    fn engine_probe_output_is_read() {
+        assert_eq!(super::parse_probe("delay 42\n"), 42);
+        assert_eq!(super::parse_probe("delay -1\n"), -1);
+        assert_eq!(super::parse_probe(""), -1);
+        assert_eq!(super::parse_probe("garbage\ndelay 7"), 7);
+    }
 }
