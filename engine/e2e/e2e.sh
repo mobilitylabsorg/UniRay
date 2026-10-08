@@ -97,11 +97,21 @@ sleep 0.5
 # --- client: the engine, as the app would start it
 run_engine() { # run_engine <name> <awg options> [extra config, as JSON members]
   local name=$1 options=$2 extra=${3:-}
-  cat >"$work/$name.json" <<EOF
-{"user": "uniray", "pass": "s3cret-$name", ${extra:+$extra,} "awg": {
-  "addresses": ["10.8.0.2/32"], "mtu": 1420,
-  "uapi": "private_key=$client_priv_hex\n${options//$'\n'/\\n}\nreplace_peers=true\npublic_key=$server_pub_hex\nendpoint=10.0.0.1:51820\npersistent_keepalive_interval=25\nreplace_allowed_ips=true\nallowed_ip=0.0.0.0/0\n"}}
-EOF
+  local uapi="private_key=$client_priv_hex
+$options
+replace_peers=true
+public_key=$server_pub_hex
+endpoint=10.0.0.1:51820
+persistent_keepalive_interval=25
+replace_allowed_ips=true
+allowed_ip=0.0.0.0/0
+"
+  python3 -c '
+import json, sys
+name, uapi, extra = sys.argv[1:]
+config = {"user": "uniray", "pass": "s3cret-" + name, **json.loads("{" + extra + "}"),
+          "awg": {"addresses": ["10.8.0.2/32"], "mtu": 1420, "uapi": uapi}}
+print(json.dumps(config))' "$name" "$uapi" "$extra" >"$work/$name.json"
   mkfifo "$work/$name.in"
   ip netns exec cli "$engine" awg --config "$work/$name.json" <"$work/$name.in" >"$work/$name.out" 2>"$work/$name.err" &
   exec {fd}>"$work/$name.in"
