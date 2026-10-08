@@ -125,6 +125,8 @@ for platform in "${platforms[@]}"; do
       -t "uniray-gateway:$tag" \
       -o "type=docker,dest=$out" \
       "$root/docker/gateway"
-    echo "build-gateway: $out ($(du -h "$out" | cut -f1))"
+    # The file's size: du shows the blocks it takes, which a compressing
+    # filesystem (ZFS, as on the CI runner) makes far smaller.
+    echo "build-gateway: $out ($(ls -lh "$out" | awk '{print $5}'))"
   done
 done
