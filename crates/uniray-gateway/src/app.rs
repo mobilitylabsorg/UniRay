@@ -114,6 +114,16 @@ impl App {
         logs.push_back(line);
     }
 
+    /// The gateway runs Xray only: WireGuard/AmneziaWG servers, which the app
+    /// runs on its own engine, are left out with a note.
+    fn xray_only(&self, servers: Vec<Server>) -> Vec<Server> {
+        let (xray, other): (Vec<Server>, Vec<Server>) = servers.into_iter().partition(|server| server.source.is_xray());
+        for server in &other {
+            self.log(format!("uniray: skipped {} ({}): WireGuard/AmneziaWG is not supported here", server.name, server.protocol));
+        }
+        xray
+    }
+
     /// Share links from `SRV*`, kept apart from the subscriptions.
     fn load_links(&self) {
         let text = self.options.links.join("\n");
@@ -121,10 +131,11 @@ impl App {
         for error in &imported.errors {
             self.log(format!("uniray: skipped a link: {error}"));
         }
+        let servers = self.xray_only(imported.servers);
         let mut state = self.state.lock().unwrap();
         state.servers.retain(|server| server.subscription_id.is_some());
         let position = 0;
-        state.servers.splice(position..position, imported.servers);
+        state.servers.splice(position..position, servers);
     }
 
     // ---- subscriptions -------------------------------------------------
@@ -198,7 +209,7 @@ impl App {
             .unwrap_or(state.servers.len());
         state.servers.retain(|server| server.subscription_id.as_deref() != Some(&id));
         let position = position.min(state.servers.len());
-        let new = subscription::reconcile(&old, parsed.servers, &id);
+        let new = subscription::reconcile(&old, self.xray_only(parsed.servers), &id);
         let count = new.len();
         state.servers.splice(position..position, new);
         drop(state);

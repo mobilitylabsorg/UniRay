@@ -4,7 +4,7 @@
 use std::sync::atomic::Ordering;
 
 use tauri::{AppHandle, Manager};
-use uniray_core::model::Settings;
+use uniray_core::model::{Server, Settings};
 use uniray_core::subscription;
 
 use crate::app::{emit_state, snapshot, App, Snapshot};
@@ -178,11 +178,15 @@ pub async fn test_delays(app: AppHandle, ids: Option<Vec<String>>) -> CmdResult<
     }
     let servers = {
         let mut store = state.store.lock().unwrap();
-        let wanted = |id: &String| ids.as_ref().is_none_or(|ids| ids.contains(id));
-        for server in store.data.servers.iter_mut().filter(|server| wanted(&server.id)) {
+        // Through Xray only: WireGuard/AmneziaWG servers run on their own
+        // engine and would fail a whole probe batch.
+        let wanted = |server: &Server| {
+            server.source.is_xray() && ids.as_ref().is_none_or(|ids| ids.contains(&server.id))
+        };
+        for server in store.data.servers.iter_mut().filter(|server| wanted(server)) {
             server.delay_ms = None;
         }
-        store.data.servers.iter().filter(|server| wanted(&server.id)).cloned().collect::<Vec<_>>()
+        store.data.servers.iter().filter(|server| wanted(server)).cloned().collect::<Vec<_>>()
     };
     emit_state(&app);
 

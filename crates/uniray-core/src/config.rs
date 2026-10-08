@@ -99,6 +99,7 @@ pub fn build(server: &Server, settings: &Settings, runtime: &Runtime) -> Result<
     match &server.source {
         ServerSource::Outbound(outbound) => Ok(from_outbound(outbound, settings, runtime)),
         ServerSource::Config(config) => from_config(config, settings, runtime),
+        ServerSource::WireGuard(_) => Err(not_xray()),
     }
 }
 
@@ -610,6 +611,12 @@ pub fn exit_server<'a>(servers: &'a [Server], connected: &Server, tag: &str) -> 
         .find(|server| server.id != connected.id && server.address == address && server.port == port)
 }
 
+/// WireGuard and AmneziaWG servers run on their own engine; asking for an
+/// Xray config of one is a mistake of the caller.
+fn not_xray() -> Error {
+    Error::InvalidConfig("this is a WireGuard/AmneziaWG server, which does not run on Xray".into())
+}
+
 /// The outbound a delay probe should go through, tagged `tag`.
 pub fn probe_outbound(server: &Server, tag: &str) -> Result<Value> {
     let mut outbound = match &server.source {
@@ -619,6 +626,7 @@ pub fn probe_outbound(server: &Server, tag: &str) -> Result<Value> {
             .and_then(|outbounds| outbounds.first())
             .cloned()
             .ok_or_else(|| Error::InvalidConfig("no outbounds".into()))?,
+        ServerSource::WireGuard(_) => return Err(not_xray()),
     };
     outbound["tag"] = tag.into();
     Ok(outbound)

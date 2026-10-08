@@ -7,7 +7,7 @@ use super::*;
 fn outbound(server: &Server) -> &Value {
     match &server.source {
         ServerSource::Outbound(outbound) => outbound,
-        ServerSource::Config(_) => panic!("expected an outbound"),
+        ServerSource::Config(_) | ServerSource::WireGuard(_) => panic!("expected an outbound"),
     }
 }
 
@@ -191,7 +191,7 @@ fn hysteria2_with_obfs_and_port_hopping() {
 
 #[test]
 fn invalid_links_report_why() {
-    assert_eq!(parse_link("wireguard://x@h:1").unwrap_err(), Error::UnsupportedScheme("wireguard".into()));
+    assert_eq!(parse_link("tuic://x@h:1").unwrap_err(), Error::UnsupportedScheme("tuic".into()));
     assert!(matches!(parse_link("not a link"), Err(Error::InvalidLink(_))));
     assert!(matches!(parse_link(&format!("vless://{UUID}@host")), Err(Error::InvalidLink(_))));
     assert!(matches!(parse_link("vless://@host:443"), Err(Error::InvalidLink(_))));

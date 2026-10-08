@@ -1,5 +1,7 @@
 //! Share link parsing: `vless://`, `vmess://`, `trojan://`, `ss://`,
-//! `hysteria2://` -> [`Server`] holding a ready Xray outbound.
+//! `hysteria2://` -> [`Server`] holding a ready Xray outbound; and the
+//! WireGuard/AmneziaWG forms - `vpn://` keys, `wireguard://` links and
+//! pasted `.conf` blocks - see [`crate::wireguard`].
 
 mod stream;
 mod url;
@@ -10,10 +12,10 @@ use crate::error::{Error, Result};
 use crate::model::{new_id, Server, ServerSource};
 use url::{Params, RawUrl};
 
-pub(crate) use url::decode_base64_str;
+pub(crate) use url::{decode_base64, decode_base64_str, parse as parse_url};
 
 /// Schemes [`parse_link`] understands.
-pub const SCHEMES: [&str; 6] = ["vless", "vmess", "trojan", "ss", "hysteria2", "hy2"];
+pub const SCHEMES: [&str; 9] = ["vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "vpn", "wireguard", "wg"];
 
 pub fn is_link(line: &str) -> bool {
     line.split_once("://")
@@ -27,6 +29,8 @@ pub fn parse_link(link: &str) -> Result<Server> {
         .map(|(scheme, _)| scheme.to_ascii_lowercase())
         .ok_or_else(|| Error::InvalidLink("missing scheme".into()))?;
     let parsed = match scheme.as_str() {
+        "vpn" => return crate::wireguard::server_from_amnezia_key(link),
+        "wireguard" | "wg" => return crate::wireguard::server_from_link(link),
         "vless" => vless(link),
         "vmess" => vmess(link),
         "trojan" => trojan(link),
@@ -37,7 +41,8 @@ pub fn parse_link(link: &str) -> Result<Server> {
     Ok(parsed.into_server(link))
 }
 
-/// Outcome of importing a block of text with one link per line.
+/// Outcome of importing a block of text: one link per line, and any
+/// WireGuard/AmneziaWG `.conf` pasted whole.
 #[derive(Debug, Default)]
 pub struct Imported {
     pub servers: Vec<Server>,
@@ -47,7 +52,14 @@ pub struct Imported {
 
 pub fn parse_many(text: &str) -> Imported {
     let mut imported = Imported::default();
-    for line in text.lines().map(str::trim).filter(|line| is_link(line)) {
+    let (blocks, rest) = crate::wireguard::split_conf_blocks(text);
+    for block in blocks {
+        match crate::wireguard::server_from_conf(&block) {
+            Ok(server) => imported.servers.push(server),
+            Err(err) => imported.errors.push(err.to_string()),
+        }
+    }
+    for line in rest.lines().map(str::trim).filter(|line| is_link(line)) {
         match parse_link(line) {
             Ok(server) => imported.servers.push(server),
             Err(err) => imported.errors.push(err.to_string()),
