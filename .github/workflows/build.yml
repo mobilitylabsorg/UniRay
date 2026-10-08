@@ -115,6 +115,10 @@ jobs:
           cargo test --workspace
 
       - name: Build
+        env:
+          # linuxdeploy is an AppImage itself; without FUSE (as in a container)
+          # it unpacks itself instead of mounting.
+          APPIMAGE_EXTRACT_AND_RUN: 1
         run: |
           rm -rf target/release/bundle/appimage
           pnpm tauri build --bundles appimage
@@ -265,7 +269,9 @@ jobs:
       # that covers practically every phone in use.
       - name: Build
         run: |
-          rm -rf src-tauri/gen/android/app/build/outputs/apk
+          # Gradle's own part takes a minute or two; what an interrupted run
+          # left of it is not worth trusting. Rust's output (target/) stays.
+          rm -rf src-tauri/gen/android/app/build src-tauri/gen/android/build
           pnpm tauri android build --apk --target aarch64
 
       - name: Collect
