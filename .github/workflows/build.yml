@@ -3,6 +3,16 @@
 # gateway container (armv7, arm64). Every run uploads the packages as workflow
 # artifacts; a pushed `v*` tag also publishes them as a GitHub release.
 #
+# Runners: everything but macOS runs on our own Linux runner (labels
+# self-hosted + uniray), one job at a time, Windows cross-compiled with
+# cargo-xwin. Its workspace and caches stay between runs, so the checkout
+# keeps the build outputs and no GitHub cache is used. The runner needs
+# passwordless sudo (system packages, the engine's network-namespace tests)
+# and Docker with buildx (the gateway image); its .env limits parallelism for
+# a small machine (CARGO_BUILD_JOBS, GRADLE_OPTS). macOS needs a Mac:
+# GitHub's macOS runner, only for tags and manual runs, as its minutes are
+# costly.
+#
 # macOS signing: without secrets the app is signed ad-hoc, which macOS opens
 # only after the user allows it (see README). To sign and notarize, add
 # APPLE_CERTIFICATE (the .p12, base64), APPLE_CERTIFICATE_PASSWORD,
@@ -25,11 +35,11 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A new push to a pull request replaces its running build; builds of main and
-# of tags always finish.
+# A new push replaces the running build of the same branch or pull request,
+# which would otherwise hold the one runner; builds of tags always finish.
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 permissions:
   contents: read
@@ -40,29 +50,21 @@ env:
 jobs:
   linux:
     name: Linux (AppImage)
-    # The oldest supported runner: an AppImage runs on systems at least as new
-    # as the glibc it was built against.
-    runs-on: ubuntu-22.04
+    # An AppImage runs on systems at least as new as the glibc it was built
+    # against, so the runner should be an older system (Ubuntu 22.04).
+    runs-on: [self-hosted, uniray]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Keeps target/ and the downloaded sidecars from earlier runs.
+          clean: false
 
       - name: System libraries
-        # A stalled mirror fails the job in minutes instead of hanging it.
         timeout-minutes: 15
         run: |
-          # The runner asks azure.archive.ubuntu.com first; when that mirror
-          # stalls, apt waits out a timeout for every package before falling
-          # back (138 packages: the job hung for half an hour). Use the main
-          # archive instead, and give up on a slow server quickly.
-          mirrors=/etc/apt/apt-mirrors.txt
-          if [ -f "$mirrors" ]; then
-            sudo sed -i '/azure\.archive\.ubuntu\.com/d' "$mirrors"
-            grep -q . "$mirrors" || printf 'http://archive.ubuntu.com/ubuntu/\tpriority:1\n' | sudo tee "$mirrors"
-            cat "$mirrors"
-          fi
-          apt_opts="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
-          sudo apt-get $apt_opts update
-          sudo apt-get $apt_opts install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf libfuse2
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev patchelf libfuse2 iproute2 iptables python3
 
       - uses: pnpm/action-setup@v4
         with:
@@ -70,16 +72,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-go@v5
         with:
           go-version-file: engine/go.mod
-          cache-dependency-path: engine/go.sum
+          cache: false
 
       - run: pnpm install --frozen-lockfile
-      - name: Sidecars (Xray, helper, engine)
+      - name: Sidecars (Xray, helper, engine, naive)
         run: bash scripts/prepare-sidecars.sh --release
         env:
           # fetch-naive.sh reads the naiveproxy release through the API.
@@ -104,6 +104,7 @@ jobs:
             CHAIN_CONFIGS="$GITHUB_WORKSPACE/target/release/examples/engine_configs" \
             NAIVE_BIN="$GITHUB_WORKSPACE/src-tauri/binaries/uniray-naive-$triple" \
             bash e2e/e2e.sh "$bin/uniray-engine" "$bin/amneziawg-go" "$bin/keygen"
+          rm -rf "$bin"
 
       # Includes the tests that run generated configs through the real Xray.
       - name: Tests
@@ -114,19 +115,34 @@ jobs:
           cargo test --workspace
 
       - name: Build
-        run: pnpm tauri build --bundles appimage
+        run: |
+          rm -rf target/release/bundle/appimage
+          pnpm tauri build --bundles appimage
 
       - uses: actions/upload-artifact@v4
         with:
           name: uniray-linux
           path: target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
+          retention-days: 7
 
   windows:
     name: Windows
-    runs-on: windows-latest
+    # Cross-compiled on the Linux runner: cargo-xwin brings the Windows SDK
+    # and CRT, NSIS makes the installer.
+    runs-on: [self-hosted, uniray]
+    env:
+      TARGET: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: System tools
+        timeout-minutes: 15
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y nsis clang lld llvm zip
 
       - uses: pnpm/action-setup@v4
         with:
@@ -134,49 +150,54 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-xwin
       - uses: actions/setup-go@v5
         with:
           go-version-file: engine/go.mod
-          cache-dependency-path: engine/go.sum
+          cache: false
 
       - run: pnpm install --frozen-lockfile
-      - name: Sidecars (Xray, Wintun, helper, engine)
-        shell: bash
-        run: bash scripts/prepare-sidecars.sh --release
+      - name: Sidecars (Xray, Wintun, helper, engine, naive)
+        run: bash scripts/prepare-sidecars.sh --release "$TARGET"
         env:
-          # fetch-naive.sh reads the naiveproxy release through the API.
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Build
-        run: pnpm tauri build --bundles nsis
+        run: |
+          rm -rf "target/$TARGET/release/bundle/nsis"
+          pnpm tauri build --runner cargo-xwin --target "$TARGET" --bundles nsis
 
       # The same files the installer puts down, for running without installing.
       - name: Portable zip
-        shell: pwsh
         run: |
-          $release = "target/release"
-          $out = "portable/UniRay"
-          New-Item -ItemType Directory -Force -Path $out | Out-Null
-          Copy-Item "$release/uniray.exe", "$release/uniray-xray.exe", "$release/uniray-helper.exe", "$release/uniray-engine.exe", "$release/uniray-naive.exe", "$release/wintun.dll", "$release/LICENSE-Wintun" $out
-          Copy-Item -Recurse "$release/resources" $out
-          Compress-Archive -Path $out -DestinationPath "portable/UniRay-windows-x64-portable.zip"
+          release="target/$TARGET/release"
+          rm -rf portable && mkdir -p portable/UniRay
+          cp "$release"/{uniray,uniray-xray,uniray-helper,uniray-engine,uniray-naive}.exe \
+            "$release/wintun.dll" "$release/LICENSE-Wintun" portable/UniRay/
+          cp -r "$release/resources" portable/UniRay/
+          (cd portable && zip -qr UniRay-windows-x64-portable.zip UniRay)
 
       - uses: actions/upload-artifact@v4
         with:
           name: uniray-windows
           path: |
-            target/release/bundle/nsis/*.exe
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             portable/*.zip
           if-no-files-found: error
+          retention-days: 7
 
   android:
     name: Android (APK)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, uniray]
     steps:
       - uses: actions/checkout@v4
+        with:
+          clean: false
 
       - uses: actions/setup-java@v4
         with:
@@ -198,15 +219,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
-      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-go@v5
         with:
           go-version-file: engine/go.mod
-          cache-dependency-path: engine/go.sum
+          cache: false
 
       - run: pnpm install --frozen-lockfile
       - name: Xray for Android (libXray, stealth binary, geo files) and the engine
@@ -226,11 +245,13 @@ jobs:
           PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
+          android=src-tauri/gen/android
+          # The workspace stays between runs: no key from an earlier one.
+          rm -f "$android/keystore.properties"
           if [ -z "$KEYSTORE" ]; then
             echo "No ANDROID_KEYSTORE secret: the APK is signed with a debug key."
             exit 0
           fi
-          android=src-tauri/gen/android
           echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.jks"
           {
             echo "storeFile=$RUNNER_TEMP/release.jks"
@@ -241,22 +262,28 @@ jobs:
       # arm64 only: the stealth mode's standalone Xray is an arm64 binary, and
       # that covers practically every phone in use.
       - name: Build
-        run: pnpm tauri android build --apk --target aarch64
+        run: |
+          rm -rf src-tauri/gen/android/app/build/outputs/apk
+          pnpm tauri android build --apk --target aarch64
 
       - name: Collect
         run: |
-          mkdir -p apk
+          rm -rf apk && mkdir -p apk
           cp src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk apk/UniRay-android-arm64.apk
           ls -l apk
+          # Not left for the next run on this machine.
+          rm -f src-tauri/gen/android/keystore.properties "$RUNNER_TEMP/release.jks"
 
       - uses: actions/upload-artifact@v4
         with:
           name: uniray-android
           path: apk/*.apk
           if-no-files-found: error
+          retention-days: 7
 
   macos:
     name: macOS (${{ matrix.arch }})
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -290,7 +317,7 @@ jobs:
           cache-dependency-path: engine/go.sum
 
       - run: pnpm install --frozen-lockfile
-      - name: Sidecars (Xray, helper, engine)
+      - name: Sidecars (Xray, helper, engine, naive)
         run: bash scripts/prepare-sidecars.sh --release ${{ matrix.target }}
         env:
           # fetch-naive.sh reads the naiveproxy release through the API.
@@ -337,22 +364,30 @@ jobs:
           name: uniray-macos-${{ matrix.arch }}
           path: dmg/*.dmg
           if-no-files-found: error
+          retention-days: 7
 
   gateway:
     name: MikroTik gateway
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, uniray]
     steps:
       - uses: actions/checkout@v4
+        with:
+          clean: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: armv7-unknown-linux-musleabihf,aarch64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@v2
       # Zig cross-compiles the C in the dependencies (ring) for musl; cargo-zigbuild
-      # finds it as `python3 -m ziglang`.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install ziglang==0.16.0
+      # finds it as `python3 -m ziglang`. In a venv kept on the runner: the
+      # system Python refuses pip installs (PEP 668).
+      - name: Zig
+        timeout-minutes: 15
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y python3-venv
+          venv="$HOME/.cache/uniray-ci/zig"
+          [ -x "$venv/bin/python3" ] || python3 -m venv "$venv"
+          "$venv/bin/pip" install -q ziglang==0.16.0
+          echo "$venv/bin" >> "$GITHUB_PATH"
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild
@@ -360,22 +395,30 @@ jobs:
 
       # Images RouterOS imports as files: build/uniray-gateway-<arch>.tar.
       - name: Build
-        run: bash scripts/build-gateway.sh linux/arm/v7 linux/arm64
+        run: |
+          rm -f build/uniray-gateway-*.tar
+          bash scripts/build-gateway.sh linux/arm/v7 linux/arm64
 
       - uses: actions/upload-artifact@v4
         with:
           name: uniray-gateway
           path: build/uniray-gateway-*.tar
           if-no-files-found: error
+          retention-days: 7
 
   release:
     name: Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Without macOS when its runner could not build it.
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') && !cancelled() &&
+      needs.linux.result == 'success' && needs.windows.result == 'success' &&
+      needs.android.result == 'success' && needs.gateway.result == 'success'
     needs: [linux, windows, macos, android, gateway]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, uniray]
     permissions:
       contents: write
     steps:
+      - run: rm -rf dist
       - uses: actions/download-artifact@v4
         with:
           path: dist
