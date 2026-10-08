@@ -15,10 +15,11 @@ use tauri::async_runtime::JoinHandle;
 use tauri::plugin::{PluginHandle, TauriPlugin};
 use tauri::{AppHandle, Manager, Wry};
 use uniray_core::config::{self, LogSink, Runtime, Tun};
+use uniray_core::engine::{self, EngineRun, Peers};
 use uniray_core::hwid::derive_hwid;
 use uniray_core::model::{PerAppMode, Server, Settings};
 
-use super::{ConnectionInfo, RunEnd, Status, PROBE_TIMEOUT, PROBE_URL};
+use super::{prepare_engine, ConnectionInfo, RunEnd, Status, PROBE_TIMEOUT, PROBE_URL};
 use crate::app::{emit_state, App};
 use crate::network::NetworkInfo;
 use crate::error::{CmdError, CmdResult};
@@ -94,6 +95,30 @@ struct StartArgs {
     server_name: String,
     metrics_socket: String,
     proxy_tags: Vec<String>,
+    #[serde(flatten)]
+    engine: EngineArgs,
+}
+
+/// The engine for a server Xray cannot run (WireGuard, AmneziaWG), started by
+/// the service before Xray; empty when there is none.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct EngineArgs {
+    engine_mode: String,
+    /// The engine's config (secrets included); the service writes it to a
+    /// private file the engine removes once read.
+    engine_config: String,
+    engine_port: u16,
+}
+
+impl EngineArgs {
+    fn new(run: Option<&EngineRun>, peers: &Peers, detached: bool) -> Self {
+        run.map_or_else(Self::default, |run| Self {
+            engine_mode: run.mode.to_owned(),
+            engine_config: String::from_utf8(run.config_for(peers, detached)).expect("JSON is UTF-8"),
+            engine_port: run.runtime.port,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -283,13 +308,14 @@ async fn start_vpn_service(
     metrics: &str,
     log: &LogSink,
 ) -> CmdResult<Vec<String>> {
+    let engine_run = prepare_engine(app, server, settings).await?;
     let runtime = Runtime {
         tun: Some(Tun::External { name: name.to_owned() }),
         mixed_port: None,
         metrics_port: None,
         metrics_socket: Some(metrics.to_owned()),
         log: log.clone(),
-        engine: None,
+        engine: engine_run.as_ref().map(|run| run.runtime.clone()),
     };
     let built = config::build(server, settings, &runtime)?;
     // Xray's built-in DNS resolves the servers over the configured DoH, straight
@@ -307,6 +333,14 @@ async fn start_vpn_service(
         server_name: server.name.clone(),
         metrics_socket: metrics.to_owned(),
         proxy_tags: built.proxy_tags.clone(),
+        // Xray runs inside the app: the engine accepts the app's own uid,
+        // which the service vouches for over a socket only it and the engine
+        // know (the name is random, the abstract namespace is shared).
+        engine: EngineArgs::new(
+            engine_run.as_ref(),
+            &Peers::Uid { uid: own_uid(), socket: Some(format!("@uniray-{}", &engine::secret()[..24])) },
+            false,
+        ),
     };
     call::<Value>(app, "start", args).await?;
     Ok(built.proxy_tags)
@@ -330,15 +364,20 @@ async fn start_stealth(
     } else {
         Tun::Transparent { port: STEALTH_TPROXY_PORT }
     };
+    let engine_run = prepare_engine(app, server, settings).await?;
     let runtime = Runtime {
         tun: Some(tun),
         mixed_port: None,
         metrics_port: None,
         metrics_socket: Some(metrics.to_owned()),
         log: log.clone(),
-        engine: None,
+        engine: engine_run.as_ref().map(|run| run.runtime.clone()),
     };
     let built = config::build(server, settings, &runtime)?;
+    // Xray runs as root, so the engine does too, accepting root's connections
+    // (from /proc/net, which root reads). The setup script starts it and the
+    // teardown kills it, so it must not stop with the script's stdin.
+    let engine = EngineArgs::new(engine_run.as_ref(), &Peers::Uid { uid: 0, socket: None }, true);
     let args = json!({
         "config": built.config.to_string(),
         "mode": if settings.stealth_root_tun { "roottun" } else { "tproxy" },
@@ -348,9 +387,18 @@ async fn start_stealth(
         "serverName": server.name,
         "metricsSocket": metrics,
         "proxyTags": built.proxy_tags,
+        "engineMode": engine.engine_mode,
+        "engineConfig": engine.engine_config,
+        "enginePort": engine.engine_port,
     });
     call::<Value>(app, "startStealth", args).await?;
     Ok(built.proxy_tags)
+}
+
+/// The app's uid: Xray's in VPN mode, where it runs inside the app.
+fn own_uid() -> u32 {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    unsafe { libc::getuid() }
 }
 
 /// What elevated access the device offers, for the settings UI.

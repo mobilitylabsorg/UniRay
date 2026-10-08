@@ -3,6 +3,11 @@
 #
 #   scripts/build-engine.sh <target triple> <output file>
 #
+# Desktop builds are sidecars (prepare-sidecars.sh). The Android one goes to
+#   src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libuniray_engine.so
+# where Android extracts it as a native library, the only place an app may
+# run a program from.
+#
 # Linux, Windows and Android builds are static (no cgo) and cross-compile
 # from anywhere. macOS needs cgo (libproc, to check which process connects),
 # so it is built on a Mac; CC can point at a cross toolchain otherwise.

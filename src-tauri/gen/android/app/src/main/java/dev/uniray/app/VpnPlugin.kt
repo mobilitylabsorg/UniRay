@@ -40,6 +40,10 @@ class StartArgs {
   var serverName: String = ""
   var metricsSocket: String = ""
   var proxyTags: Array<String> = arrayOf()
+  /** The engine for a WireGuard/AmneziaWG server; empty for the others. */
+  var engineMode: String = ""
+  var engineConfig: String = ""
+  var enginePort: Int = 0
 }
 
 @InvokeArg
@@ -70,6 +74,9 @@ class StealthArgs {
   var serverName: String = ""
   var metricsSocket: String = ""
   var proxyTags: Array<String> = arrayOf()
+  var engineMode: String = ""
+  var engineConfig: String = ""
+  var enginePort: Int = 0
 }
 
 /**
@@ -128,6 +135,8 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         .put("serverName", args.serverName)
         .put("metricsSocket", args.metricsSocket)
         .put("proxyTags", JSONArray(args.proxyTags))
+        .put("engineMode", args.engineMode)
+        .put("engineConfig", args.engineConfig)
     val file = UniRayVpnService.specFile(activity)
     file.parentFile?.mkdirs()
     file.writeText(spec.toString())
@@ -382,6 +391,9 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
           .put("serverName", args.serverName)
           .put("metricsSocket", args.metricsSocket)
           .put("proxyTags", JSONArray(args.proxyTags))
+          .put("engineMode", args.engineMode)
+          .put("engineConfig", args.engineConfig)
+          .put("enginePort", args.enginePort)
       val file = StealthService.specFile(activity)
       file.parentFile?.mkdirs()
       file.writeText(spec.toString())

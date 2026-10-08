@@ -95,10 +95,10 @@ while True:
 sleep 0.5
 
 # --- client: the engine, as the app would start it
-run_engine() { # run_engine <name> <awg options>
-  local name=$1 options=$2
+run_engine() { # run_engine <name> <awg options> [extra config, as JSON members]
+  local name=$1 options=$2 extra=${3:-}
   cat >"$work/$name.json" <<EOF
-{"user": "uniray", "pass": "s3cret-$name", "awg": {
+{"user": "uniray", "pass": "s3cret-$name", ${extra:+$extra,} "awg": {
   "addresses": ["10.8.0.2/32"], "mtu": 1420,
   "uapi": "private_key=$client_priv_hex\n${options//$'\n'/\\n}\nreplace_peers=true\npublic_key=$server_pub_hex\nendpoint=10.0.0.1:51820\npersistent_keepalive_interval=25\nreplace_allowed_ips=true\nallowed_ip=0.0.0.0/0\n"}}
 EOF
@@ -132,6 +132,30 @@ while read -r line; do expect fail "$line"; done < <(client "$good_port" wrong "
 echo "--- right password, but not the process the engine was told about"
 while read -r line; do expect fail "$line"; done < <(client "$good_port" s3cret-good none http:10.8.0.1:8080)
 grep -q "not Xray" "$work/good.err" && echo "PASS  the engine logged the refusal" || { echo "FAIL  no refusal logged"; failures=$((failures + 1)); }
+
+echo "--- Android: the owner's uid, from /proc/net (stealth, Android 9)"
+run_engine uid0 "$awg" '"ownerUid": 0, "detached": true'
+while read -r line; do expect ok "uid 0: $line"; done < <(client "$uid0_port" s3cret-uid0 none http:10.8.0.1:8080 udp:10.8.0.1:9999)
+run_engine uid1 "$awg" '"ownerUid": 4242'
+while read -r line; do expect fail "uid 4242: $line"; done < <(client "$uid1_port" s3cret-uid1 none http:10.8.0.1:8080)
+exec {uid0_fd}>&-
+sleep 0.5
+if ip netns pids cli | xargs -r -n1 sh -c 'tr "\0" " " < /proc/$0/cmdline' 2>/dev/null | grep -q "$work/uid0.json"; then
+  echo "PASS  detached: still running with stdin closed"
+else
+  echo "FAIL  detached: exited when stdin closed"; failures=$((failures + 1))
+fi
+
+echo "--- Android VPN mode: the owner's uid, from the VPN service's socket"
+ip netns exec cli python3 "$here/owner.py" uniray-e2e-yes 0 "$work/questions" &
+ip netns exec cli python3 "$here/owner.py" uniray-e2e-no 10123 "$work/questions" &
+sleep 0.3
+run_engine yes "$awg" '"ownerUid": 0, "ownerSocket": "@uniray-e2e-yes"'
+while read -r line; do expect ok "owner says 0: $line"; done < <(client "$yes_port" s3cret-yes none http:10.8.0.1:8080 udp:10.8.0.1:9999)
+run_engine no "$awg" '"ownerUid": 0, "ownerSocket": "@uniray-e2e-no"'
+while read -r line; do expect fail "owner says 10123: $line"; done < <(client "$no_port" s3cret-no none http:10.8.0.1:8080)
+grep -qE '^tcp 127\.0\.0\.1:[0-9]+ 127\.0\.0\.1:[0-9]+$' "$work/questions" && grep -qE '^udp 127\.0\.0\.1:[0-9]+ 127\.0\.0\.1:[0-9]+$' "$work/questions" \
+  && echo "PASS  the questions name both ends" || { echo "FAIL  unexpected questions: $(head -3 "$work/questions")"; failures=$((failures + 1)); }
 
 echo "--- obfuscation mismatch (H1 outside the server's range)"
 run_engine bad "${awg/h1=100000-100500/h1=999}"

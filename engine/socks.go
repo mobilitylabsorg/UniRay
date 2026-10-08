@@ -287,7 +287,7 @@ func (a *association) run() {
 		}
 		from = netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
 		if !a.sender.IsValid() {
-			if !a.server.Verifier.AllowUDP(from) {
+			if !a.server.Verifier.AllowUDP(from, addrPort(a.socket.LocalAddr())) {
 				logf("Warning", "dropped a datagram from %v: not Xray", from)
 				continue
 			}

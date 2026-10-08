@@ -83,6 +83,8 @@ class UniRayVpnService : VpnService() {
   // after it has been removed (which would leave it stuck, with us gone).
   @Volatile private var stopped = false
   private var tun: ParcelFileDescriptor? = null
+  // For a WireGuard/AmneziaWG server: the engine Xray hands its traffic to.
+  private var engine: Engine.Child? = null
   private var notification: NotificationCompat.Builder? = null
 
   // Notification content.
@@ -217,7 +219,22 @@ class UniRayVpnService : VpnService() {
 
     val error = XrayCore.run(config.toString())
     running = error == null
-    return error
+    if (error != null) return error
+
+    // After Xray, so the first handshake can already leave: the engine's
+    // packets enter the tunnel like the app's own and Xray sends them out
+    // past it (the config routes the server's endpoint direct).
+    val engineMode = spec.optString("engineMode")
+    if (engineMode.isNotEmpty()) {
+      val log = Engine.logFile(spec.getString("config"), File(filesDir, "run/engine.log"))
+      val child =
+        Engine.Child(this, engineMode, spec.getString("engineConfig"), log) { reason ->
+          worker.execute { if (running) shutdown(null, reason) }
+        }
+      engine = child
+      child.start()?.let { return it }
+    }
+    return null
   }
 
   private fun stopCore() {
@@ -227,6 +244,9 @@ class UniRayVpnService : VpnService() {
     } catch (e: Exception) {
       Log.w(TAG, "stopping the core failed", e)
     }
+    // After Xray, which has nothing to send it any more.
+    engine?.stop()
+    engine = null
     // Closing the descriptor is what takes the interface down.
     try {
       tun?.close()

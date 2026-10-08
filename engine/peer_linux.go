@@ -17,31 +17,53 @@ import (
 // whether the process holds a descriptor for it. Reading another process's
 // /proc/<pid>/fd needs its uid or root, so the engine runs as Xray does.
 
+var (
+	tcpTables = []string{"/proc/net/tcp", "/proc/net/tcp6"}
+	udpTables = []string{"/proc/net/udp", "/proc/net/udp6"}
+)
+
 func tcpSocketOwnedBy(pid int, client, server netip.AddrPort) (bool, error) {
-	inode, err := findInode([]string{"/proc/net/tcp", "/proc/net/tcp6"}, client, server)
-	if err != nil || inode == "" {
+	socket, err := findSocket(tcpTables, client, server)
+	if err != nil || socket.inode == "" {
 		return false, err
 	}
-	return holdsSocket(pid, inode)
+	return holdsSocket(pid, socket.inode)
 }
 
 func udpSocketOwnedBy(pid int, client netip.AddrPort) (bool, error) {
-	inode, err := findInode([]string{"/proc/net/udp", "/proc/net/udp6"}, client, netip.AddrPort{})
-	if err != nil || inode == "" {
+	socket, err := findSocket(udpTables, client, netip.AddrPort{})
+	if err != nil || socket.inode == "" {
 		return false, err
 	}
-	return holdsSocket(pid, inode)
+	return holdsSocket(pid, socket.inode)
 }
 
-// findInode returns the inode of the socket bound to `local` (and connected
-// to `remote`, when given), or "" when there is none. An unconnected UDP
-// socket is listed with the wildcard address it is bound to, though its
-// datagrams arrive from 127.0.0.1, so a wildcard socket on the same port
-// counts when no exact match exists.
-func findInode(tables []string, local, remote netip.AddrPort) (string, error) {
+// tcpSocketUID and udpSocketUID return the uid owning the socket, -1 when
+// there is none.
+func tcpSocketUID(client, server netip.AddrPort) (int, error) {
+	socket, err := findSocket(tcpTables, client, server)
+	return socket.uid, err
+}
+
+func udpSocketUID(client netip.AddrPort) (int, error) {
+	socket, err := findSocket(udpTables, client, netip.AddrPort{})
+	return socket.uid, err
+}
+
+type procSocket struct {
+	inode string // "" when not found
+	uid   int    // -1 when not found
+}
+
+// findSocket returns the socket bound to `local` (and connected to `remote`,
+// when given). An unconnected UDP socket is listed with the wildcard address
+// it is bound to, though its datagrams arrive from 127.0.0.1, so a wildcard
+// socket on the same port counts when no exact match exists.
+func findSocket(tables []string, local, remote netip.AddrPort) (procSocket, error) {
 	var lastErr error
 	read := 0
-	wildcard := ""
+	none := procSocket{uid: -1}
+	wildcard := none
 	for _, table := range tables {
 		file, err := os.Open(table)
 		if err != nil {
@@ -57,10 +79,15 @@ func findInode(tables []string, local, remote netip.AddrPort) (string, error) {
 			if len(fields) < 10 {
 				continue
 			}
+			uid, err := strconv.Atoi(fields[7])
+			if err != nil {
+				continue
+			}
+			row := procSocket{inode: fields[9], uid: uid}
 			bound := parseProcAddr(fields[1])
 			if bound != local {
-				if !remote.IsValid() && wildcard == "" && bound.Port() == local.Port() && bound.Addr().IsUnspecified() {
-					wildcard = fields[9]
+				if !remote.IsValid() && wildcard.inode == "" && bound.Port() == local.Port() && bound.Addr().IsUnspecified() {
+					wildcard = row
 				}
 				continue
 			}
@@ -68,12 +95,12 @@ func findInode(tables []string, local, remote netip.AddrPort) (string, error) {
 				continue
 			}
 			file.Close()
-			return fields[9], nil
+			return row, nil
 		}
 		file.Close()
 	}
 	if read == 0 {
-		return "", lastErr
+		return none, lastErr
 	}
 	return wildcard, nil
 }

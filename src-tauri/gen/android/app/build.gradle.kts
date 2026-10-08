@@ -27,6 +27,12 @@ android {
     }
     // geoip.dat and geosite.dat, shared with the desktop build (scripts/fetch-xray.sh).
     sourceSets["main"].assets.srcDir("../../../resources")
+    // uniray-engine ships as libuniray_engine.so (scripts/build-engine.sh) and
+    // is run as a program, which Android allows only from the extracted
+    // native library directory: extract native libraries at install.
+    packaging {
+        jniLibs.useLegacyPackaging = true
+    }
     // Until a release keystore is configured (keystore.properties), release
     // builds are signed with the debug key so that they can be installed.
     val keystoreFile = rootProject.file("keystore.properties")

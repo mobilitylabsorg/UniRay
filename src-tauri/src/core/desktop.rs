@@ -23,10 +23,10 @@ use tokio::net::TcpStream;
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, watch};
 use uniray_core::config::{self, LogSink, Runtime, Tun};
-use uniray_core::engine::{self, EngineRun, Peers};
+use uniray_core::engine::{EngineRun, Peers};
 use uniray_core::model::{Mode, Server, Settings};
 
-use super::{free_port, PROBE_TIMEOUT, PROBE_URL};
+use super::{free_port, prepare_engine, PROBE_TIMEOUT, PROBE_URL};
 use crate::app::App;
 use crate::error::{CmdError, CmdResult};
 use crate::state::write_private;
@@ -88,12 +88,7 @@ impl Running {
             return Err(CmdError::new("portBusy", format!("port {mixed_port} is already in use")));
         }
         let metrics_port = free_port()?;
-        let engine_run = prepare_engine(server, settings).await?;
-        if let Some(run) = &engine_run {
-            for warning in &run.warnings {
-                logs::push(app, warning);
-            }
-        }
+        let engine_run = prepare_engine(app, server, settings).await?;
 
         let runtime = Runtime {
             tun: tun.then(|| Tun::Managed { name: interface_name(&settings.interface_name) }),
@@ -182,19 +177,6 @@ impl Running {
 /// The engine's config in the run directory, see `uniray_core::engine`.
 const ENGINE_CONFIG: &str = "engine.json";
 
-/// The engine run for `server`, if it needs one. Resolving the server's name
-/// blocks, so it happens off the async runtime.
-async fn prepare_engine(server: &Server, settings: &Settings) -> CmdResult<Option<EngineRun>> {
-    if server.source.is_xray() {
-        return Ok(None);
-    }
-    let (server, ipv6, port) = (server.clone(), settings.ipv6, free_port()?);
-    let prepared = tauri::async_runtime::spawn_blocking(move || engine::prepare(&server, port, ipv6))
-        .await
-        .map_err(|err| CmdError::core(err.to_string()))?;
-    Ok(prepared?)
-}
-
 async fn stop_engine(engine: Option<Supervised>) {
     if let Some((stop, supervisor)) = engine {
         let _ = stop.send(());
@@ -224,7 +206,7 @@ async fn launch(
     if tun {
         // The helper tells the engine Xray's pid once it has started it.
         if let Some(run) = engine {
-            write_private(&engine_config, &run.config_for(&Peers::Pids(Vec::new()))).map_err(CmdError::io)?;
+            write_private(&engine_config, &run.config_for(&Peers::Pids(Vec::new()), false)).map_err(CmdError::io)?;
         }
         #[cfg(windows)]
         return spawn_elevated(app, config_path, engine.map(|run| (run.mode, engine_config.as_path())), generation).await;
@@ -253,7 +235,7 @@ async fn launch(
     };
     // Started after Xray, so that its config names Xray's process. Xray
     // only connects to it for traffic, which waits for `wait_ready`.
-    let spawned = write_private(&engine_config, &run.config_for(&Peers::Pids(xray_pid.into_iter().collect())))
+    let spawned = write_private(&engine_config, &run.config_for(&Peers::Pids(xray_pid.into_iter().collect()), false))
         .map_err(CmdError::io)
         .and_then(|()| {
             let mut command = Command::new(&state.paths.engine);

@@ -19,9 +19,11 @@ pub enum Peers {
     /// Xray's process ids: given now, or later over the engine's stdin
     /// (`peer <pid>`) when Xray starts after the engine.
     Pids(Vec<u32>),
-    /// Android VPN mode: the app answers who owns a connection over this unix
-    /// socket, and only `uid` (the app's own, Xray runs inside it) passes.
-    Owner { socket: String, uid: u32 },
+    /// Android: the connections of `uid` - the app's own in VPN mode, where
+    /// Xray runs inside the app, root's in stealth mode. Their owner comes
+    /// from `socket`, where the VPN service answers (Android 10+ hides
+    /// /proc/net from apps), or from /proc/net.
+    Uid { uid: u32, socket: Option<String> },
 }
 
 #[derive(Clone, Debug)]
@@ -75,15 +77,21 @@ pub fn prepare(server: &Server, port: u16, ipv6: bool) -> Result<Option<EngineRu
 }
 
 impl EngineRun {
-    /// The engine's config file, telling it who may connect.
-    pub fn config_for(&self, peers: &Peers) -> Vec<u8> {
+    /// The engine's config file, telling it who may connect. A `detached`
+    /// engine keeps running when its stdin closes (it is stopped by a kill).
+    pub fn config_for(&self, peers: &Peers, detached: bool) -> Vec<u8> {
         let mut engine = self.config.clone();
         match peers {
             Peers::Pids(pids) => engine["peers"] = json!(pids),
-            Peers::Owner { socket, uid } => {
-                engine["ownerSocket"] = socket.as_str().into();
+            Peers::Uid { uid, socket } => {
                 engine["ownerUid"] = (*uid).into();
+                if let Some(socket) = socket {
+                    engine["ownerSocket"] = socket.as_str().into();
+                }
             }
+        }
+        if detached {
+            engine["detached"] = true.into();
         }
         serde_json::to_vec(&engine).expect("a JSON value serializes")
     }
@@ -116,7 +124,7 @@ mod tests {
     fn wireguard_run_carries_credentials_tunnel_and_bypass() {
         let server = server_from_conf(CONF).unwrap();
         let run = prepare(&server, 40123, false).unwrap().unwrap();
-        let engine: Value = serde_json::from_slice(&run.config_for(&Peers::Pids(vec![77]))).unwrap();
+        let engine: Value = serde_json::from_slice(&run.config_for(&Peers::Pids(vec![77]), false)).unwrap();
         assert_eq!(run.mode, "awg");
         assert_eq!(engine["port"], 40123);
         assert_eq!(engine["peers"], json!([77]));
@@ -128,10 +136,16 @@ mod tests {
         assert_eq!(run.runtime.bypass, [Bypass { addr: "203.0.113.9:51820".parse().unwrap(), network: "udp" }]);
         assert_eq!(run.warnings.len(), 1);
 
-        let owner = Peers::Owner { socket: "/data/app/run/owner.sock".into(), uid: 10123 };
-        let engine: Value = serde_json::from_slice(&run.config_for(&owner)).unwrap();
-        assert_eq!((engine["ownerSocket"].as_str(), engine["ownerUid"].as_u64()), (Some("/data/app/run/owner.sock"), Some(10123)));
-        assert!(engine.get("peers").is_none());
+        let owner = Peers::Uid { uid: 10123, socket: Some("@uniray-owner".into()) };
+        let engine: Value = serde_json::from_slice(&run.config_for(&owner, false)).unwrap();
+        assert_eq!((engine["ownerSocket"].as_str(), engine["ownerUid"].as_u64()), (Some("@uniray-owner"), Some(10123)));
+        assert!(engine.get("peers").is_none() && engine.get("detached").is_none());
+
+        // Stealth: root's connections, told by /proc/net; outlives the script.
+        let root = Peers::Uid { uid: 0, socket: None };
+        let engine: Value = serde_json::from_slice(&run.config_for(&root, true)).unwrap();
+        assert_eq!((engine["ownerUid"].as_u64(), engine.get("ownerSocket")), (Some(0), None));
+        assert_eq!(engine["detached"], true);
     }
 
     #[test]

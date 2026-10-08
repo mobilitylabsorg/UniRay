@@ -195,14 +195,15 @@ class StealthService : Service() {
     val port = spec.optInt("port", 12345)
     val ipv6 = spec.optBoolean("ipv6", false)
     val tunName = spec.optString("tunName").ifEmpty { "uniray0" }
+    val engine = engineScript(dir, spec, config)
 
     // Whatever an earlier run left behind (a crash, a lost teardown) would
     // otherwise sit in front of the new rules.
     PrivilegedShell.execPrivileged(level, downScript())
 
     val up =
-      if (mode == MODE_ROOT_TUN) rootTunUpScript(dir, configFile, tunName, ipv6)
-      else tproxyUpScript(dir, configFile, port, ipv6)
+      if (mode == MODE_ROOT_TUN) rootTunUpScript(dir, configFile, tunName, ipv6, engine)
+      else tproxyUpScript(dir, configFile, port, ipv6, engine)
     val result = PrivilegedShell.execPrivileged(level, up)
     if (!result.ok) {
       Log.e(TAG, "stealth up failed: ${result.errText()}")
@@ -335,6 +336,36 @@ class StealthService : Service() {
     """.trimIndent()
   }
 
+  /**
+   * For a WireGuard/AmneziaWG server: starts the engine as root, detached
+   * (the teardown kills it), and lets only root - Xray - reach its port; the
+   * engine itself also accepts only root's connections. Runs before Xray.
+   * Empty for the other servers.
+   */
+  private fun engineScript(dir: File, spec: JSONObject, config: String): String {
+    val mode = spec.optString("engineMode")
+    if (mode.isEmpty()) return ""
+    val port = spec.optInt("enginePort")
+    val configFile = File(dir, "engine.json").apply { writeText(spec.getString("engineConfig")) }
+    val out = File(dir, "engine.out").absolutePath
+    val log = Engine.logFile(config, File(dir, "engine.log")).absolutePath
+    val pid = File(dir, "engine.pid").absolutePath
+    val engine = Engine.binary(this).absolutePath
+    return """
+      iptables -w -t filter -N $CHAIN_GUARD 2>/dev/null || true
+      iptables -w -t filter -C OUTPUT -j $CHAIN_GUARD 2>/dev/null || iptables -w -t filter -A OUTPUT -j $CHAIN_GUARD
+      iptables -w -t filter -A $CHAIN_GUARD -d 127.0.0.0/8 -p tcp --dport $port -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset
+      setsid $engine $mode --config ${configFile.absolutePath} </dev/null >$out 2>>$log &
+      echo ${'$'}! > $pid
+      for i in ${'$'}(seq 1 100); do grep -q '^ready ' $out 2>/dev/null && break; sleep 0.1; done
+      if ! grep -q '^ready ' $out 2>/dev/null; then
+        echo "the WireGuard engine did not start:" >&2
+        tail -n 5 $log >&2
+        exit 1
+      fi
+    """.trimIndent()
+  }
+
   private val privateNets =
     listOf("0.0.0.0/8", "10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4", "240.0.0.0/4")
 
@@ -352,7 +383,7 @@ class StealthService : Service() {
       ip6tables -w -t filter -A OUTPUT -j $CHAIN_OUT
       """.trimIndent()
 
-  private fun tproxyUpScript(dir: File, configFile: File, port: Int, ipv6: Boolean): String {
+  private fun tproxyUpScript(dir: File, configFile: File, port: Int, ipv6: Boolean, engine: String): String {
     val returns = privateNets.joinToString("\n") { "iptables -w -t mangle -A $CHAIN_PRE -d $it -j RETURN" }
     val returnsOut = privateNets.joinToString("\n") { "iptables -w -t mangle -A $CHAIN_OUT -d $it -j RETURN" }
     val v6 = blockIpv6Script(ipv6)
@@ -385,6 +416,8 @@ class StealthService : Service() {
 
       $v6
 
+      $engine
+
       ${launch(dir, configFile)}
     """.trimIndent()
   }
@@ -398,7 +431,7 @@ class StealthService : Service() {
    * TUN. The core runs as root, so its own connections keep using Android's
    * routing and do not loop back in, the same exemption the tproxy mode makes.
    */
-  private fun rootTunUpScript(dir: File, configFile: File, tun: String, ipv6: Boolean): String {
+  private fun rootTunUpScript(dir: File, configFile: File, tun: String, ipv6: Boolean, engine: String): String {
     val log = File(dir, "xray.log").absolutePath
     val savedRpFilter = File(dir, "rp_filter.saved").absolutePath
     val throws = privateNets.joinToString("\n") { "ip route add throw $it table $TUN_TABLE" }
@@ -418,6 +451,8 @@ class StealthService : Service() {
         exit 1
       fi
       [ -e /dev/net/tun ] || { mkdir -p /dev/net; mknod /dev/net/tun c 10 200; }
+
+      $engine
 
       ${launch(dir, configFile, XRAY_TUN, "SSL_CERT_DIR=$ANDROID_CA_DIRS TMPDIR=${dir.absolutePath}")}
 
@@ -453,6 +488,7 @@ class StealthService : Service() {
    */
   private fun downScript(): String {
     val pid = File(stealthDir(this), "xray.pid").absolutePath
+    val enginePid = File(stealthDir(this), "engine.pid").absolutePath
     val dir = stealthDir(this).absolutePath
     val savedRpFilter = File(stealthDir(this), "rp_filter.saved").absolutePath
     // The `[y]` keeps pkill from matching this very script: Shizuku runs it as
@@ -465,6 +501,9 @@ class StealthService : Service() {
       pkill -f "$dir/xra[y] run" 2>/dev/null || true
       pkill -f "$dir/xra[y]-tun run" 2>/dev/null || true
       rm -f $pid 2>/dev/null || true
+      [ -f $enginePid ] && kill ${'$'}(cat $enginePid) 2>/dev/null || true
+      pkill -f "libuniray_engin[e].so" 2>/dev/null || true
+      rm -f $enginePid $dir/engine.json $dir/engine.out 2>/dev/null || true
       while iptables -w -t mangle -D OUTPUT -j $CHAIN_OUT 2>/dev/null; do :; done
       while iptables -w -t mangle -D PREROUTING -j $CHAIN_PRE 2>/dev/null; do :; done
       iptables -w -t mangle -F $CHAIN_OUT 2>/dev/null || true
@@ -496,6 +535,7 @@ class StealthService : Service() {
     ip6tables -w -t filter -S 2>/dev/null | grep -q $CHAIN_OUT && echo "ip6tables rules"
     ip rule 2>/dev/null | grep -q -e "lookup $TABLE" -e "lookup $TUN_TABLE" && echo "routing rules"
     ip -6 rule 2>/dev/null | grep -q "lookup $TUN_TABLE" && echo "IPv6 routing rules"
+    pgrep -f "libuniray_engin[e].so" >/dev/null 2>&1 && echo "the WireGuard engine"
     true
     """.trimIndent()
 

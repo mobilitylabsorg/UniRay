@@ -17,13 +17,13 @@ pub use mobile::{
     update_notification, InstalledApp, Running,
 };
 
-#[cfg(desktop)]
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::atomic::Ordering;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
-use uniray_core::model::Mode;
+use uniray_core::engine::{self, EngineRun};
+use uniray_core::model::{Mode, Server, Settings};
 
 use crate::app::{emit_state, App};
 use crate::error::{CmdError, CmdResult};
@@ -62,12 +62,28 @@ pub(crate) const PROBE_URL: &str = "https://www.gstatic.com/generate_204";
 pub(crate) const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// A loopback port that is free right now.
-#[cfg(desktop)]
 pub(crate) fn free_port() -> CmdResult<u16> {
     TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .and_then(|listener| listener.local_addr())
         .map(|addr| addr.port())
         .map_err(CmdError::io)
+}
+
+/// The engine run for `server`, if Xray cannot run it (see
+/// `uniray_core::engine`), on a free port. Resolving the server's name
+/// blocks, so it happens off the async runtime.
+pub(crate) async fn prepare_engine(app: &AppHandle, server: &Server, settings: &Settings) -> CmdResult<Option<EngineRun>> {
+    if server.source.is_xray() {
+        return Ok(None);
+    }
+    let (server, ipv6, port) = (server.clone(), settings.ipv6, free_port()?);
+    let run = tauri::async_runtime::spawn_blocking(move || engine::prepare(&server, port, ipv6))
+        .await
+        .map_err(|err| CmdError::core(err.to_string()))??;
+    for warning in run.iter().flat_map(|run| &run.warnings) {
+        logs::push(app, warning);
+    }
+    Ok(run)
 }
 
 fn set_connection(app: &AppHandle, update: impl FnOnce(&mut ConnectionInfo)) {

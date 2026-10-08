@@ -202,10 +202,12 @@ jobs:
           cache-dependency-path: engine/go.sum
 
       - run: pnpm install --frozen-lockfile
-      - name: Xray for Android (libXray, stealth binary, geo files)
+      - name: Xray for Android (libXray, stealth binary, geo files) and the engine
         run: |
           bash scripts/fetch-libxray-android.sh
           bash scripts/fetch-xray-android.sh
+          bash scripts/build-engine.sh aarch64-linux-android \
+            src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libuniray_engine.so
 
       - name: Signing key
         env:

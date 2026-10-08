@@ -132,3 +132,9 @@ func udpSocketOwnedBy(pid int, client netip.AddrPort) (bool, error) {
 	}
 	return false, nil
 }
+
+// Owner uids are an Android matter; there Xray's process is not ours to look
+// into, here it is.
+func tcpSocketUID(netip.AddrPort, netip.AddrPort) (int, error) { return -1, errNoOwnerUID }
+
+func udpSocketUID(netip.AddrPort) (int, error) { return -1, errNoOwnerUID }

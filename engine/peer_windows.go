@@ -135,3 +135,9 @@ func parseRow(row []byte, family uint32, tcp bool) socketRow {
 		return socketRow{local: netip.AddrPortFrom(v6(0), port(20)), pid: pid(24)}
 	}
 }
+
+// Owner uids are an Android matter; there Xray's process is not ours to look
+// into, here it is.
+func tcpSocketUID(netip.AddrPort, netip.AddrPort) (int, error) { return -1, errNoOwnerUID }
+
+func udpSocketUID(netip.AddrPort) (int, error) { return -1, errNoOwnerUID }

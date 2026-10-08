@@ -38,5 +38,5 @@ fn main() {
     let built = build(&server, &settings, &runtime).expect("build the Xray config");
     let out = Path::new(out);
     std::fs::write(out.join("xray.json"), serde_json::to_vec_pretty(&built.config).unwrap()).unwrap();
-    std::fs::write(out.join("engine.json"), run.config_for(&Peers::Pids(Vec::new()))).unwrap();
+    std::fs::write(out.join("engine.json"), run.config_for(&Peers::Pids(Vec::new()), false)).unwrap();
 }

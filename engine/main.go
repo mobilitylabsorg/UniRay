@@ -12,7 +12,9 @@
 //
 //	peer <pid>    accept connections from this process (Xray) from now on
 //
-// It exits when stdin closes: the app that started it is gone.
+// It exits when stdin closes: the app that started it is gone - unless the
+// config says "detached" (Android stealth mode, where a script started it as
+// root and the teardown kills it).
 package main
 
 import (
@@ -35,11 +37,16 @@ type Config struct {
 	Port int `json:"port"`
 	// Processes allowed to connect from the start (more come over stdin).
 	Peers []int `json:"peers"`
-	// Android in VPN mode: an app may not read /proc/net, so the VPN service
-	// answers who owns a connection over this socket (see owner_android.go).
+	// Accept the connections of this uid instead of given processes: Android,
+	// where Xray runs inside the app (VPN mode) or as root (stealth mode).
+	OwnerUID *int `json:"ownerUid"`
+	// Android in VPN mode: an app may not read /proc/net (Android 10+), so
+	// the VPN service answers who owns a connection over this unix socket
+	// ("@name" for the abstract namespace). Without one, or when it does not
+	// answer, the owner comes from /proc/net.
 	OwnerSocket string `json:"ownerSocket"`
-	// Uid the owner of a connection must have when OwnerSocket is used.
-	OwnerUID int `json:"ownerUid"`
+	// Keep running when stdin closes.
+	Detached bool `json:"detached"`
 
 	AWG *AWGConfig `json:"awg"`
 }
@@ -93,6 +100,9 @@ func main() {
 
 	go func() {
 		readCommands(verifier)
+		if config.Detached {
+			return
+		}
 		// The app is gone; take the tunnel down with it.
 		upstream.Close()
 		os.Exit(0)
