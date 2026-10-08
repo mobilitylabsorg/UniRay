@@ -126,9 +126,9 @@ fn strip_timestamp(raw: &str) -> &str {
 }
 
 /// Follows log files of a core whose output we do not get on a pipe (the
-/// in-process core on mobile, the elevated one on Windows), feeding new lines
-/// to [`push`] until the returned task is aborted.
-#[cfg(any(mobile, windows))]
+/// in-process core on mobile, the elevated one on Windows and macOS), feeding
+/// new lines to [`push`] until the returned task is aborted.
+#[cfg(any(mobile, windows, target_os = "macos"))]
 pub fn tail(app: AppHandle, paths: Vec<std::path::PathBuf>) -> tauri::async_runtime::JoinHandle<()> {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
 

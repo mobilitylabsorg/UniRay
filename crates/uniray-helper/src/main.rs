@@ -12,11 +12,12 @@
 //! asked for it or died - or on SIGTERM/SIGINT. Xray's output is inherited,
 //! so the GUI reads the core's log from the helper's stdout.
 //!
-//! On Windows the GUI starts the helper through UAC, which allows neither a
-//! pipe nor signals between the two:
+//! On Windows the GUI starts the helper through UAC, and on macOS through
+//! osascript's administrator prompt; neither allows a pipe between the two,
+//! nor signals to a process of another user:
 //!
 //! ```text
-//! uniray-helper.exe <xray> <config.json> <asset dir> <GUI pid> <stop file> <log file>
+//! uniray-helper <xray> <config.json> <asset dir> <GUI pid> <stop file> <log file>
 //! ```
 //!
 //! There the helper writes Xray's output to the log file and stops Xray when
@@ -79,6 +80,7 @@ fn register_peer(engine: &mut std::process::Child, xray: &std::process::Child) {
 mod unix {
     use std::ffi::OsString;
     use std::io::Read;
+    use std::path::PathBuf;
     use std::process::{Child, Command, ExitCode, Stdio};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
@@ -94,12 +96,45 @@ mod unix {
         STOP.store(true, Ordering::SeqCst);
     }
 
+    /// The GUI could not keep a pipe to us (macOS): it is watched instead.
+    struct Detached {
+        gui: libc::pid_t,
+        stop_file: PathBuf,
+    }
+
+    impl Detached {
+        fn should_stop(&self) -> bool {
+            // SAFETY: kill with signal 0 only checks for the process. A GUI
+            // running as another user answers EPERM, which means it is there.
+            let gui_alive = unsafe { libc::kill(self.gui, 0) } == 0
+                || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+            !gui_alive || self.stop_file.exists()
+        }
+    }
+
     pub fn run() -> ExitCode {
         let args: Vec<OsString> = std::env::args_os().skip(1).collect();
         let (args, engine) = super::split_engine(&args);
-        let [xray, config, assets] = args else {
-            eprintln!("usage: uniray-helper <xray> <config.json> <asset dir> [--engine <engine> <mode> <config>]");
-            return ExitCode::from(2);
+        let (xray, config, assets, detached) = match args {
+            [xray, config, assets] => (xray, config, assets, None),
+            [xray, config, assets, gui, stop_file, log_file] => {
+                let Ok(gui) = gui.to_string_lossy().parse::<libc::pid_t>() else {
+                    eprintln!("uniray-helper: bad GUI pid");
+                    return ExitCode::from(2);
+                };
+                if let Err(err) = log_to(log_file) {
+                    eprintln!("uniray-helper: cannot open the log file: {err}");
+                    return ExitCode::FAILURE;
+                }
+                (xray, config, assets, Some(Detached { gui, stop_file: PathBuf::from(stop_file) }))
+            }
+            _ => {
+                eprintln!(
+                    "usage: uniray-helper <xray> <config.json> <asset dir> [<GUI pid> <stop file> <log file>] \
+                     [--engine <engine> <mode> <config>]"
+                );
+                return ExitCode::from(2);
+            }
         };
 
         // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
@@ -107,13 +142,15 @@ mod unix {
             libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
             libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
         }
-        thread::spawn(|| {
-            let mut sink = [0u8; 64];
-            let mut stdin = std::io::stdin();
-            // Anything but more data - EOF or an error - means the GUI is gone.
-            while matches!(stdin.read(&mut sink), Ok(read) if read > 0) {}
-            STOP.store(true, Ordering::SeqCst);
-        });
+        if detached.is_none() {
+            thread::spawn(|| {
+                let mut sink = [0u8; 64];
+                let mut stdin = std::io::stdin();
+                // Anything but more data - EOF or an error - means the GUI is gone.
+                while matches!(stdin.read(&mut sink), Ok(read) if read > 0) {}
+                STOP.store(true, Ordering::SeqCst);
+            });
+        }
 
         let mut engine = match engine.map(|engine| spawn(super::engine_command(engine))).transpose() {
             Ok(engine) => engine,
@@ -159,7 +196,7 @@ mod unix {
                     break ExitCode::FAILURE;
                 }
             }
-            if STOP.load(Ordering::SeqCst) {
+            if STOP.load(Ordering::SeqCst) || detached.as_ref().is_some_and(Detached::should_stop) {
                 stop(&mut child);
                 break ExitCode::SUCCESS;
             }
@@ -168,7 +205,23 @@ mod unix {
         if let Some(engine) = engine.as_mut() {
             stop_engine(engine);
         }
+        if let Some(detached) = &detached {
+            let _ = std::fs::remove_file(&detached.stop_file);
+        }
         code
+    }
+
+    /// Sends our output, and so Xray's and the engine's, to `path`.
+    fn log_to(path: &OsString) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd;
+        let log = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+        for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            // SAFETY: dup2 onto the standard descriptors, from a file we hold open.
+            if unsafe { libc::dup2(log.as_raw_fd(), fd) } < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(())
     }
 
     fn spawn(mut command: Command) -> std::io::Result<Child> {

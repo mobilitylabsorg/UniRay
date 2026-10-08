@@ -1,8 +1,10 @@
 //! Desktop: Xray runs as a child process.
 //!
 //! In proxy mode it is a plain child of the app. TUN mode needs root, so the
-//! app starts `uniray-helper` elevated and the helper runs Xray; the helper
-//! stops Xray when the pipe to its stdin closes.
+//! app starts `uniray-helper` elevated and the helper runs Xray. On Linux
+//! (pkexec) the helper stops Xray when the pipe to its stdin closes; on
+//! Windows (UAC) and macOS (the administrator prompt) there is no pipe, and a
+//! stop file and the helper's watch on this process take its place.
 //!
 //! A server Xray cannot run (WireGuard, AmneziaWG) also gets `uniray-engine`,
 //! which Xray reaches as a SOCKS proxy (see `uniray_core::engine`): our child
@@ -10,7 +12,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::Path;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -79,8 +81,9 @@ impl Running {
     pub async fn start(app: &AppHandle, server: &Server, settings: &Settings, generation: u64) -> CmdResult<Self> {
         let state = app.state::<App>();
         let tun = settings.mode == Mode::Tun;
-        // TUN needs the elevated helper: pkexec on Linux, UAC on Windows.
-        if tun && !cfg!(any(target_os = "linux", windows)) {
+        // TUN needs the elevated helper: pkexec on Linux, UAC on Windows, the
+        // administrator prompt on macOS.
+        if tun && !cfg!(any(target_os = "linux", windows, target_os = "macos")) {
             return Err(CmdError::new("unsupported", "TUN mode is not available on this platform yet"));
         }
         let mixed_port = settings.mixed_port;
@@ -204,11 +207,11 @@ async fn launch(
     let state = app.state::<App>();
     let engine_config = state.paths.run_dir.join(ENGINE_CONFIG);
     if tun {
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let staged = root_readable(app)?;
         // The helper tells the engine Xray's pid once it has started it.
         if let Some(run) = engine {
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "macos")))]
             let run = {
                 let mut run = run.clone();
                 run.set_naive_binary(&staged.naive);
@@ -216,9 +219,9 @@ async fn launch(
             };
             write_private(&engine_config, &run.config_for(&Peers::Pids(Vec::new()), false)).map_err(CmdError::io)?;
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         return spawn_elevated(app, config_path, engine.map(|run| (run.mode, engine_config.as_path())), generation).await;
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             let mut command = Command::new("pkexec");
             command
@@ -264,7 +267,7 @@ async fn launch(
 }
 
 /// What root runs in TUN mode, from where root can read it.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 struct RootReadable {
     helper: PathBuf,
     xray: PathBuf,
@@ -278,7 +281,7 @@ struct RootReadable {
 /// may read - root included - so pkexec could not even open the helper there
 /// ("Permission denied"). From an AppImage they are copied out to the app's
 /// data directory first; an installed package needs nothing of the kind.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn root_readable(app: &AppHandle) -> CmdResult<RootReadable> {
     let paths = &app.state::<App>().paths;
     if std::env::var_os("APPIMAGE").is_none() {
@@ -299,7 +302,7 @@ fn root_readable(app: &AppHandle) -> CmdResult<RootReadable> {
 
 /// Copies the binaries (under their own names) and the files of the asset
 /// directory into `dir`, which only the user can write to.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn stage_for_root(dir: &Path, binaries: &[&Path], assets: &Path) -> std::io::Result<(Vec<PathBuf>, PathBuf)> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -329,10 +332,11 @@ fn stage_for_root(dir: &Path, binaries: &[&Path], assets: &Path) -> std::io::Res
     Ok((binaries, staged_assets))
 }
 
-/// Windows TUN: the helper runs as administrator after a UAC prompt. It
-/// cannot share pipes with us, so it logs to a file we follow, and stops when
-/// the stop file appears or this process is gone.
-#[cfg(windows)]
+/// TUN on Windows and macOS: the helper runs as administrator after the
+/// system's prompt (UAC, or osascript's). It cannot share pipes with us, so it
+/// logs to a file we follow, and stops when the stop file appears or this
+/// process is gone.
+#[cfg(any(windows, target_os = "macos"))]
 async fn spawn_elevated(
     app: &AppHandle,
     config_path: &Path,
@@ -637,7 +641,7 @@ async fn probe_delay(port: u16) -> i64 {
         .unwrap_or(-1)
 }
 
-#[cfg(all(test, not(windows)))]
+#[cfg(all(test, not(any(windows, target_os = "macos"))))]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
