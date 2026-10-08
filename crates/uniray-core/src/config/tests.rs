@@ -13,6 +13,7 @@ fn proxy_runtime() -> Runtime {
         mixed_port: Some(10808),
         metrics_port: Some(10809), metrics_socket: None,
         log: LogSink::Files { error: "/tmp/error.log".into(), access: "/tmp/access.log".into() },
+        engine: None,
     }
 }
 
@@ -483,6 +484,7 @@ fn metrics_can_live_on_a_unix_socket() {
         metrics_port: Some(10809),
         metrics_socket: Some("/data/user/0/app/files/run/m.sock".into()),
         log: LogSink::Stdout,
+        engine: None,
     };
     let config = build(&server, &Settings::default(), &runtime).unwrap().config;
     // No port anywhere: the metrics service is reached through the socket.
@@ -491,4 +493,54 @@ fn metrics_can_live_on_a_unix_socket() {
     assert_eq!(config["inbounds"][1]["listen"], "/data/user/0/app/files/run/m.sock");
     assert_eq!(config["routing"]["rules"][0], json!({ "inboundTag": ["uniray-metrics"], "outboundTag": "metrics" }));
     assert_eq!(config["policy"]["system"]["statsOutboundUplink"], true);
+}
+
+fn engine_server() -> Server {
+    let conf = "[Interface]\nPrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\nAddress = 10.8.0.2/32\nJc = 4\n\
+                [Peer]\nPublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\nEndpoint = 203.0.113.9:51820\nAllowedIPs = 0.0.0.0/0\n";
+    crate::wireguard::server_from_conf(conf).unwrap()
+}
+
+fn engine(block_udp: bool) -> Engine {
+    Engine {
+        port: 40123,
+        user: "u".into(),
+        pass: "p".into(),
+        bypass: vec![Bypass { addr: "203.0.113.9:51820".parse().unwrap(), network: "udp" }],
+        block_udp,
+    }
+}
+
+#[test]
+fn engine_servers_go_through_a_socks_outbound() {
+    let server = engine_server();
+    // Without its engine there is nothing to build.
+    assert!(build(&server, &Settings::default(), &proxy_runtime()).is_err());
+
+    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into() }), engine: Some(engine(false)), ..proxy_runtime() };
+    let built = build(&server, &Settings::default(), &runtime).unwrap();
+    let config = built.config;
+    assert_eq!(built.proxy_tags, ["proxy"]);
+    assert_eq!(
+        config["outbounds"][0],
+        json!({ "tag": "proxy", "protocol": "socks", "sendThrough": "127.0.0.1",
+                "settings": { "address": "127.0.0.1", "port": 40123, "user": "u", "pass": "p" } })
+    );
+    let rules = config["routing"]["rules"].as_array().unwrap();
+    // The engine's own packets to the server leave directly, right after the
+    // DNS hijack, ahead of every user rule.
+    assert_eq!(rules[0]["port"], "53");
+    assert_eq!(
+        rules[1],
+        json!({ "ip": ["203.0.113.9/32"], "port": "51820", "network": "udp", "outboundTag": "direct" })
+    );
+    assert!(!rules.iter().any(|rule| rule["outboundTag"] == "block" && rule["network"] == "udp"));
+}
+
+#[test]
+fn engine_without_udp_blocks_it_last() {
+    let runtime = Runtime { engine: Some(engine(true)), ..proxy_runtime() };
+    let config = build(&engine_server(), &Settings::default(), &runtime).unwrap().config;
+    let rules = config["routing"]["rules"].as_array().unwrap();
+    assert_eq!(rules.last().unwrap(), &json!({ "network": "udp", "outboundTag": "block" }));
 }

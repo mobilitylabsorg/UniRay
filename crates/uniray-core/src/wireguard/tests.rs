@@ -229,3 +229,28 @@ fn stored_servers_keep_their_config() {
     let loaded: Server = serde_json::from_str(&stored).unwrap();
     assert_eq!(loaded, server);
 }
+
+#[test]
+fn awg_1_5_extras_stay_out_of_the_uapi() {
+    let conf = awg_conf().replace("[Peer]", "J1 = <b 0xaa>\nItime = 120\n[Peer]");
+    let (config, _, _) = parse_conf(&conf).unwrap();
+    assert_eq!(config.unsupported_options(), ["J1", "Itime"]);
+    let uapi = config.to_uapi(&["203.0.113.7:51820".parse().unwrap()]).unwrap();
+    assert!(!uapi.contains("j1=") && !uapi.contains("itime="), "{uapi}");
+    // The export keeps them.
+    assert!(config.to_conf().contains("Itime = 120"));
+}
+
+#[test]
+fn endpoints_resolve_in_peer_order() {
+    let (mut config, _, _) = parse_conf(&awg_conf()).unwrap();
+    let mut second = config.peers[0].clone();
+    second.endpoint = "[2001:db8::5]:443".into();
+    config.peers.push(second);
+    config.peers[0].endpoint = "localhost:51820".into();
+    let resolved = config.resolve_endpoints(false).unwrap();
+    assert_eq!(resolved[0], "127.0.0.1:51820".parse::<SocketAddr>().unwrap());
+    assert_eq!(resolved[1], "[2001:db8::5]:443".parse::<SocketAddr>().unwrap());
+    config.peers[0].endpoint = "no-such-host.invalid:1".into();
+    assert!(config.resolve_endpoints(false).is_err());
+}

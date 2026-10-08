@@ -3,7 +3,7 @@
 //! The emitted format targets Xray-core 26.9: `streamSettings.method`, flat
 //! outbound `settings`, the built-in `tun` inbound and `metrics.listen`.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use serde_json::{json, Map, Value};
 
@@ -86,6 +86,46 @@ pub struct Runtime {
     /// connect. Takes precedence over `metrics_port`.
     pub metrics_socket: Option<String>,
     pub log: LogSink,
+    /// The engine running the server when Xray cannot (WireGuard, AmneziaWG).
+    pub engine: Option<Engine>,
+}
+
+/// A local engine (`engine/` in the repository) that runs a server Xray does
+/// not speak. Xray stays in front - capture, routing, DNS, counters - and its
+/// `proxy` outbound is SOCKS5 to the engine on loopback, with a password made
+/// for this run. The engine also accepts only Xray's own process.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Engine {
+    pub port: u16,
+    pub user: String,
+    pub pass: String,
+    /// Where the engine itself connects: the server. Sent `direct`, so that
+    /// its packets, when the TUN captures them, do not loop back into it.
+    pub bypass: Vec<Bypass>,
+    /// The engine carries no UDP (NaiveProxy): refuse it up front rather than
+    /// let every datagram fail inside the engine.
+    pub block_udp: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bypass {
+    pub addr: SocketAddr,
+    /// `"udp"`, `"tcp"` or `"tcp,udp"`.
+    pub network: &'static str,
+}
+
+impl Engine {
+    fn outbound(&self) -> Value {
+        json!({
+            "protocol": "socks",
+            // In TUN mode Xray binds its sockets to the physical interface,
+            // except those whose source is loopback. A UDP socket's source is
+            // the wildcard unless given, and bound so, its datagrams to the
+            // engine on 127.0.0.1 would never arrive.
+            "sendThrough": "127.0.0.1",
+            "settings": { "address": "127.0.0.1", "port": self.port, "user": self.user, "pass": self.pass },
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -97,13 +137,16 @@ pub struct Built {
 
 pub fn build(server: &Server, settings: &Settings, runtime: &Runtime) -> Result<Built> {
     match &server.source {
-        ServerSource::Outbound(outbound) => Ok(from_outbound(outbound, settings, runtime)),
+        ServerSource::Outbound(outbound) => Ok(from_outbound(outbound, settings, runtime, None)),
         ServerSource::Config(config) => from_config(config, settings, runtime),
-        ServerSource::WireGuard(_) => Err(not_xray()),
+        ServerSource::WireGuard(_) => {
+            let engine = runtime.engine.as_ref().ok_or_else(no_engine)?;
+            Ok(from_outbound(&engine.outbound(), settings, runtime, Some(engine)))
+        }
     }
 }
 
-fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime) -> Built {
+fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime, engine: Option<&Engine>) -> Built {
     let ip_strategy = if settings.ipv6 { "UseIP" } else { "UseIPv4" };
 
     let mut proxy = outbound.clone();
@@ -133,9 +176,16 @@ fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime) -> Bu
         outbounds.push(json!({ "tag": TAG_DNS_OUT, "protocol": "dns" }));
         rules.push(dns_hijack_rule(TAG_DNS_OUT));
     }
+    if let Some(engine) = engine {
+        rules.extend(engine.bypass.iter().map(bypass_rule));
+    }
     rules.push(dns_server_rule(&settings.direct_dns, TAG_DIRECT));
     rules.push(dns_server_rule(&settings.remote_dns, TAG_PROXY));
     rules.extend(routing::rules(settings));
+    if engine.is_some_and(|engine| engine.block_udp) {
+        // Last, so that UDP the user routes `direct` still goes there.
+        rules.push(json!({ "network": "udp", "outboundTag": TAG_BLOCK }));
+    }
 
     let mut direct_domains = routing::direct_domains(settings);
     direct_domains.extend(server_domain.map(|domain| format!("full:{domain}")));
@@ -477,6 +527,18 @@ fn dns_hijack_rule(dns_outbound: &str) -> Value {
     json!({ "inboundTag": [TAG_TUN], "port": "53", "outboundTag": dns_outbound })
 }
 
+/// Lets the engine's own connections to `bypass` out past the tunnel.
+fn bypass_rule(bypass: &Bypass) -> Value {
+    let ip = bypass.addr.ip();
+    let prefix = if ip.is_ipv4() { 32 } else { 128 };
+    json!({
+        "ip": [format!("{ip}/{prefix}")],
+        "port": bypass.addr.port().to_string(),
+        "network": bypass.network,
+        "outboundTag": TAG_DIRECT,
+    })
+}
+
 /// Sends the built-in DNS client's own queries to `server` through `outbound`.
 fn dns_server_rule(server: &str, outbound: &str) -> Value {
     let host = dns_host(server);
@@ -609,6 +671,11 @@ pub fn exit_server<'a>(servers: &'a [Server], connected: &Server, tag: &str) -> 
     servers
         .iter()
         .find(|server| server.id != connected.id && server.address == address && server.port == port)
+}
+
+/// A WireGuard/AmneziaWG server was built without its engine running.
+fn no_engine() -> Error {
+    Error::InvalidConfig("the WireGuard/AmneziaWG engine is not running".into())
 }
 
 /// WireGuard and AmneziaWG servers run on their own engine; asking for an

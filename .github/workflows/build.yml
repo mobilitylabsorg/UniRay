@@ -73,10 +73,33 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+          cache-dependency-path: engine/go.sum
 
       - run: pnpm install --frozen-lockfile
-      - name: Sidecars (Xray, helper)
+      - name: Sidecars (Xray, helper, engine)
         run: bash scripts/prepare-sidecars.sh --release
+
+      # The engine against the real amneziawg-go server, in network namespaces,
+      # alone and behind Xray and the helper as the app runs them.
+      - name: Engine tests
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          cargo build --release -p uniray-core --example engine_configs
+          cd engine
+          go vet ./...
+          go test ./...
+          bin=$(mktemp -d)
+          go build -o "$bin/uniray-engine" .
+          go build -o "$bin/amneziawg-go" github.com/amnezia-vpn/amneziawg-go
+          go build -o "$bin/keygen" ./e2e/keygen
+          sudo CHAIN_XRAY="$GITHUB_WORKSPACE/src-tauri/binaries/uniray-xray-$triple" \
+            CHAIN_HELPER="$GITHUB_WORKSPACE/target/release/uniray-helper" \
+            CHAIN_ASSETS="$GITHUB_WORKSPACE/src-tauri/resources" \
+            CHAIN_CONFIGS="$GITHUB_WORKSPACE/target/release/examples/engine_configs" \
+            bash e2e/e2e.sh "$bin/uniray-engine" "$bin/amneziawg-go" "$bin/keygen"
 
       # Includes the tests that run generated configs through the real Xray.
       - name: Tests
@@ -110,9 +133,13 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+          cache-dependency-path: engine/go.sum
 
       - run: pnpm install --frozen-lockfile
-      - name: Sidecars (Xray, Wintun, helper)
+      - name: Sidecars (Xray, Wintun, helper, engine)
         shell: bash
         run: bash scripts/prepare-sidecars.sh --release
 
@@ -126,7 +153,7 @@ jobs:
           $release = "target/release"
           $out = "portable/UniRay"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          Copy-Item "$release/uniray.exe", "$release/uniray-xray.exe", "$release/uniray-helper.exe", "$release/wintun.dll", "$release/LICENSE-Wintun" $out
+          Copy-Item "$release/uniray.exe", "$release/uniray-xray.exe", "$release/uniray-helper.exe", "$release/uniray-engine.exe", "$release/wintun.dll", "$release/LICENSE-Wintun" $out
           Copy-Item -Recurse "$release/resources" $out
           Compress-Archive -Path $out -DestinationPath "portable/UniRay-windows-x64-portable.zip"
 
@@ -169,6 +196,10 @@ jobs:
         with:
           targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+          cache-dependency-path: engine/go.sum
 
       - run: pnpm install --frozen-lockfile
       - name: Xray for Android (libXray, stealth binary, geo files)
@@ -240,9 +271,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+          cache-dependency-path: engine/go.sum
 
       - run: pnpm install --frozen-lockfile
-      - name: Sidecars (Xray, helper)
+      - name: Sidecars (Xray, helper, engine)
         run: bash scripts/prepare-sidecars.sh --release ${{ matrix.target }}
 
       # Tauri signs and notarizes when these are set; an empty one would make

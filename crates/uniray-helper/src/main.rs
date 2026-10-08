@@ -21,6 +21,13 @@
 //!
 //! There the helper writes Xray's output to the log file and stops Xray when
 //! the stop file appears or the GUI process is gone.
+//!
+//! For a server Xray cannot run (WireGuard, AmneziaWG) the arguments end with
+//! `--engine <uniray-engine> <mode> <engine config>`. The helper then starts
+//! the engine before Xray, as root too - the engine only serves the process
+//! it is told is Xray, and checking another root process needs root - tells
+//! it Xray's pid over its stdin, and stops it after Xray. The engine exiting
+//! ends the run like Xray exiting does.
 
 // Started hidden through UAC on Windows: no console window.
 #![cfg_attr(windows, windows_subsystem = "windows")]
@@ -39,6 +46,33 @@ fn main() -> std::process::ExitCode {
 fn main() -> std::process::ExitCode {
     eprintln!("uniray-helper: this platform is not supported");
     std::process::ExitCode::FAILURE
+}
+
+/// Splits off a trailing `--engine <binary> <mode> <config>`.
+#[cfg(any(unix, windows))]
+fn split_engine(args: &[std::ffi::OsString]) -> (&[std::ffi::OsString], Option<&[std::ffi::OsString]>) {
+    match args.len().checked_sub(4) {
+        Some(at) if args[at] == "--engine" => (&args[..at], Some(&args[at + 1..])),
+        _ => (args, None),
+    }
+}
+
+/// Starts the engine, its stdin a pipe that the helper holds: the engine
+/// exits when it closes.
+#[cfg(any(unix, windows))]
+fn engine_command(engine: &[std::ffi::OsString]) -> std::process::Command {
+    let mut command = std::process::Command::new(&engine[0]);
+    command.arg(&engine[1]).arg("--config").arg(&engine[2]).stdin(std::process::Stdio::piped());
+    command
+}
+
+/// Tells the engine which process is Xray.
+#[cfg(any(unix, windows))]
+fn register_peer(engine: &mut std::process::Child, xray: &std::process::Child) {
+    use std::io::Write;
+    if let Some(stdin) = engine.stdin.as_mut() {
+        let _ = writeln!(stdin, "peer {}", xray.id());
+    }
 }
 
 #[cfg(unix)]
@@ -62,8 +96,9 @@ mod unix {
 
     pub fn run() -> ExitCode {
         let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-        let [xray, config, assets] = args.as_slice() else {
-            eprintln!("usage: uniray-helper <xray> <config.json> <asset dir>");
+        let (args, engine) = super::split_engine(&args);
+        let [xray, config, assets] = args else {
+            eprintln!("usage: uniray-helper <xray> <config.json> <asset dir> [--engine <engine> <mode> <config>]");
             return ExitCode::from(2);
         };
 
@@ -80,6 +115,13 @@ mod unix {
             STOP.store(true, Ordering::SeqCst);
         });
 
+        let mut engine = match engine.map(|engine| spawn(super::engine_command(engine))).transpose() {
+            Ok(engine) => engine,
+            Err(err) => {
+                eprintln!("uniray-helper: cannot start the engine: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
         let mut command = Command::new(xray);
         command
             .arg("run")
@@ -87,41 +129,76 @@ mod unix {
             .arg(config)
             .env("XRAY_LOCATION_ASSET", assets)
             .stdin(Stdio::null());
+        let mut child = match spawn(command) {
+            Ok(child) => child,
+            Err(err) => {
+                eprintln!("uniray-helper: cannot start {}: {err}", xray.to_string_lossy());
+                if let Some(engine) = engine.as_mut() {
+                    stop_engine(engine);
+                }
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Some(engine) = engine.as_mut() {
+            super::register_peer(engine, &child);
+        }
+
+        let code = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break exit_code(status.code()),
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!("uniray-helper: waiting for xray failed: {err}");
+                    break ExitCode::FAILURE;
+                }
+            }
+            if let Some(engine) = engine.as_mut() {
+                if !matches!(engine.try_wait(), Ok(None)) {
+                    eprintln!("uniray-helper: the engine exited");
+                    stop(&mut child);
+                    break ExitCode::FAILURE;
+                }
+            }
+            if STOP.load(Ordering::SeqCst) {
+                stop(&mut child);
+                break ExitCode::SUCCESS;
+            }
+            thread::sleep(POLL);
+        };
+        if let Some(engine) = engine.as_mut() {
+            stop_engine(engine);
+        }
+        code
+    }
+
+    fn spawn(mut command: Command) -> std::io::Result<Child> {
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::process::CommandExt;
             // SAFETY: prctl is async-signal-safe and touches no shared state.
             unsafe {
                 command.pre_exec(|| {
-                    // Do not let Xray outlive a helper that was killed outright.
+                    // Do not let it outlive a helper that was killed outright.
                     libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
                     Ok(())
                 });
             }
         }
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(err) => {
-                eprintln!("uniray-helper: cannot start {}: {err}", xray.to_string_lossy());
-                return ExitCode::FAILURE;
-            }
-        };
+        command.spawn()
+    }
 
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => return exit_code(status.code()),
-                Ok(None) => {}
-                Err(err) => {
-                    eprintln!("uniray-helper: waiting for xray failed: {err}");
-                    return ExitCode::FAILURE;
-                }
-            }
-            if STOP.load(Ordering::SeqCst) {
-                stop(&mut child);
-                return ExitCode::SUCCESS;
+    /// Closes the engine's stdin, which makes it exit, and waits for that.
+    fn stop_engine(engine: &mut Child) {
+        drop(engine.stdin.take());
+        let deadline = Instant::now() + GRACE;
+        while Instant::now() < deadline {
+            if !matches!(engine.try_wait(), Ok(None)) {
+                return;
             }
             thread::sleep(POLL);
         }
+        let _ = engine.kill();
+        let _ = engine.wait();
     }
 
     fn stop(child: &mut Child) {
@@ -153,6 +230,7 @@ mod unix {
 mod windows {
     use std::ffi::OsString;
     use std::fs::File;
+    use std::io::Write;
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
     use std::path::PathBuf;
@@ -172,8 +250,12 @@ mod windows {
 
     pub fn run() -> ExitCode {
         let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-        let [xray, config, assets, gui_pid, stop_file, log_file] = args.as_slice() else {
-            eprintln!("usage: uniray-helper <xray> <config.json> <asset dir> <GUI pid> <stop file> <log file>");
+        let (args, engine) = super::split_engine(&args);
+        let [xray, config, assets, gui_pid, stop_file, log_file] = args else {
+            eprintln!(
+                "usage: uniray-helper <xray> <config.json> <asset dir> <GUI pid> <stop file> <log file> \
+                 [--engine <engine> <mode> <config>]"
+            );
             return ExitCode::from(2);
         };
         let stop_file = PathBuf::from(stop_file);
@@ -192,6 +274,13 @@ mod windows {
             Ok(file) => file,
             Err(_) => return ExitCode::FAILURE,
         };
+        let mut engine = match engine.map(|engine| spawn_engine(engine, &output)).transpose() {
+            Ok(engine) => engine,
+            Err(err) => {
+                let _ = writeln!(&output, "uniray-helper: cannot start the engine: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
 
         let mut child = match Command::new(xray)
             .arg("run")
@@ -207,10 +296,16 @@ mod windows {
             Ok(child) => child,
             Err(err) => {
                 eprintln!("uniray-helper: cannot start {}: {err}", xray.to_string_lossy());
+                if let Some(engine) = engine.as_mut() {
+                    stop_engine(engine);
+                }
                 return ExitCode::FAILURE;
             }
         };
         bind_to_self(&child);
+        if let Some(engine) = engine.as_mut() {
+            super::register_peer(engine, &child);
+        }
 
         // SAFETY: OpenProcess with a plain pid; a null handle is handled below.
         let gui = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, gui_pid) };
@@ -226,15 +321,19 @@ mod windows {
                 Ok(None) => {}
                 Err(_) => break 1,
             }
-            if stop_file.exists() || !gui_alive() {
+            let engine_gone = engine.as_mut().is_some_and(|engine| !matches!(engine.try_wait(), Ok(None)));
+            if engine_gone || stop_file.exists() || !gui_alive() {
                 // Xray has no console to receive Ctrl+Break; Windows removes
                 // the Wintun adapter and its routes when the process ends.
                 let _ = child.kill();
                 let _ = child.wait();
-                break 0;
+                break u8::from(engine_gone);
             }
             thread::sleep(POLL);
         };
+        if let Some(engine) = engine.as_mut() {
+            stop_engine(engine);
+        }
         let _ = std::fs::remove_file(&stop_file);
         if !gui.is_null() {
             // SAFETY: the handle came from OpenProcess above.
@@ -243,7 +342,28 @@ mod windows {
         ExitCode::from(code)
     }
 
-    /// Takes Xray down with the helper, should the helper itself be killed.
+    fn spawn_engine(engine: &[OsString], log: &File) -> std::io::Result<Child> {
+        let mut command = super::engine_command(engine);
+        command.stdout(log.try_clone()?).stderr(log.try_clone()?).creation_flags(CREATE_NO_WINDOW);
+        let child = command.spawn()?;
+        bind_to_self(&child);
+        Ok(child)
+    }
+
+    /// Closes the engine's stdin, which makes it exit, and waits for that.
+    fn stop_engine(engine: &mut Child) {
+        drop(engine.stdin.take());
+        for _ in 0..25 {
+            if !matches!(engine.try_wait(), Ok(None)) {
+                return;
+            }
+            thread::sleep(POLL);
+        }
+        let _ = engine.kill();
+        let _ = engine.wait();
+    }
+
+    /// Takes a child down with the helper, should the helper itself be killed.
     fn bind_to_self(child: &Child) {
         // SAFETY: plain Win32 calls; the job handle stays open for the life of
         // the helper and closes with it, which kills the job's processes.

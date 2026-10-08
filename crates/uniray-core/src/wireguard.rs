@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,6 +27,11 @@ pub const OBFUSCATION_KEYS: [&str; 20] = [
     "Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5", "J1", "J2",
     "J3", "Itime",
 ];
+
+/// AWG 1.5 options the engine's amneziawg-go (AWG 2.0) no longer has: kept
+/// in the server (and its `.conf` export) but left out of the UAPI, which
+/// would refuse them. See [`WgConfig::unsupported_options`].
+pub const ENGINE_UNSUPPORTED_KEYS: [&str; 4] = ["J1", "J2", "J3", "Itime"];
 
 /// Keys a `.conf` may carry that mean nothing to us; dropped without a word.
 const IGNORED_KEYS: [&str; 3] = ["ListenPort", "Table", "SaveConfig"];
@@ -73,6 +78,39 @@ impl WgConfig {
         split_endpoint(&peer.endpoint)
     }
 
+    /// The options of this server the engine ignores, for a warning.
+    pub fn unsupported_options(&self) -> Vec<&'static str> {
+        ENGINE_UNSUPPORTED_KEYS.into_iter().filter(|key| self.obfuscation.contains_key(*key)).collect()
+    }
+
+    /// Resolves every peer's endpoint to the address the engine dials, in
+    /// the order of `peers` (what [`Self::to_uapi`] takes). Blocking. Names
+    /// prefer IPv4 unless `ipv6` allows either.
+    pub fn resolve_endpoints(&self, ipv6: bool) -> Result<Vec<SocketAddr>> {
+        if self.peers.is_empty() {
+            return Err(Error::InvalidConfig("no [Peer]".into()));
+        }
+        self.peers
+            .iter()
+            .map(|peer| {
+                let (host, port) = split_endpoint(&peer.endpoint)?;
+                if let Ok(ip) = host.parse::<IpAddr>() {
+                    return Ok(SocketAddr::new(ip, port));
+                }
+                let found: Vec<SocketAddr> = (host.as_str(), port)
+                    .to_socket_addrs()
+                    .map_err(|err| Error::InvalidConfig(format!("cannot resolve {host}: {err}")))?
+                    .collect();
+                found
+                    .iter()
+                    .find(|addr| addr.is_ipv4())
+                    .or_else(|| found.iter().find(|_| ipv6))
+                    .copied()
+                    .ok_or_else(|| Error::InvalidConfig(format!("{host} has no usable address")))
+            })
+            .collect()
+    }
+
     /// The configuration in the UAPI format the engine takes, with the peers'
     /// endpoints already resolved (`resolved[i]` belongs to `peers[i]`): UAPI
     /// accepts only addresses. Keys go hex-encoded; the device options,
@@ -82,7 +120,7 @@ impl WgConfig {
             return Err(Error::InvalidConfig("an endpoint was not resolved".into()));
         }
         let mut uapi = format!("private_key={}\n", key_hex(&self.private_key)?);
-        for key in OBFUSCATION_KEYS {
+        for key in OBFUSCATION_KEYS.into_iter().filter(|key| !ENGINE_UNSUPPORTED_KEYS.contains(key)) {
             if let Some(value) = self.obfuscation.get(key) {
                 uapi.push_str(&format!("{}={value}\n", key.to_ascii_lowercase()));
             }

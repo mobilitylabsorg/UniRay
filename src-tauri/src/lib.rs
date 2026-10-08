@@ -56,6 +56,8 @@ pub fn run() {
                 xray: sidecar("uniray-xray")?,
                 #[cfg(desktop)]
                 helper: sidecar("uniray-helper")?,
+                #[cfg(desktop)]
+                engine: sidecar("uniray-engine")?,
             };
             app.manage(App::new(store, device, paths));
 

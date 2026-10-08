@@ -118,12 +118,11 @@ func (t *awgTunnel) Close() error {
 	return nil
 }
 
-// reportHandshakes prints the last handshake of the first peer whenever it
-// changes, so the app (and its log) can tell a live tunnel from a dead one.
+// reportHandshakes logs the first handshake, so the log tells a tunnel
+// that came up from one that never did.
 func (t *awgTunnel) reportHandshakes() {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	last := ""
 	for {
 		select {
 		case <-t.stop:
@@ -135,12 +134,9 @@ func (t *awgTunnel) reportHandshakes() {
 			continue
 		}
 		for _, line := range strings.Split(state, "\n") {
-			if value, ok := strings.CutPrefix(line, "last_handshake_time_sec="); ok {
-				if value != last && value != "0" {
-					fmt.Printf("handshake %s\n", value)
-					last = value
-				}
-				break
+			if value, ok := strings.CutPrefix(line, "last_handshake_time_sec="); ok && value != "0" {
+				logf("Info", "handshake with the server done")
+				return
 			}
 		}
 	}

@@ -29,6 +29,9 @@ pub struct Paths {
     pub xray: PathBuf,
     #[cfg(desktop)]
     pub helper: PathBuf,
+    /// Runs the servers Xray cannot (WireGuard, AmneziaWG), see `core::engine`.
+    #[cfg(desktop)]
+    pub engine: PathBuf,
 }
 
 pub struct App {

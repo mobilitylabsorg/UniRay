@@ -7,7 +7,8 @@
 //
 // The config file holds secrets, so it is read once and removed. Nothing
 // secret goes on the command line, which other users can read. The engine
-// prints "ready <port>" once it listens, then takes commands on stdin:
+// prints "ready <port>" once it listens (its only line on stdout; the log
+// goes to stderr), then takes commands on stdin:
 //
 //	peer <pid>    accept connections from this process (Xray) from now on
 //
@@ -30,6 +31,8 @@ type Config struct {
 	// SOCKS5 credentials Xray uses; random per run.
 	User string `json:"user"`
 	Pass string `json:"pass"`
+	// Loopback port to listen on; 0 picks a free one (see "ready").
+	Port int `json:"port"`
 	// Processes allowed to connect from the start (more come over stdin).
 	Peers []int `json:"peers"`
 	// Android in VPN mode: an app may not read /proc/net, so the VPN service
@@ -81,7 +84,7 @@ func main() {
 	}
 	defer upstream.Close()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(config.Port)))
 	if err != nil {
 		fatalf("cannot listen: %v", err)
 	}

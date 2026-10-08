@@ -2,7 +2,8 @@
 
 Usage: client.py <port> <user> <pass> <ready-file> <go-file> <check>...
 
-Writes its pid to <ready-file>, waits for <go-file> (the test registers the
+A <pass> of "-" connects without a password (Xray's own SOCKS inbound in the
+chain test). Writes its pid to <ready-file>, waits for <go-file> (the test registers the
 pid with the engine in between), then runs the checks and prints one
 "<check> ok|fail <detail>" line each:
 
@@ -19,6 +20,11 @@ import time
 
 def handshake(port, user, password):
     sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+    if password == b"-":
+        sock.sendall(b"\x05\x01\x00")
+        if sock.recv(2) != b"\x05\x00":
+            raise RuntimeError("no-password method refused")
+        return sock
     sock.sendall(b"\x05\x01\x02")
     if sock.recv(2) != b"\x05\x02":
         raise RuntimeError("password method refused")

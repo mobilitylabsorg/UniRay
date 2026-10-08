@@ -11,6 +11,16 @@
 #
 # Usage: e2e.sh <uniray-engine> <amneziawg-go> <keygen>
 #   keygen prints "<priv b64> <pub b64> <priv hex> <pub hex>".
+#
+# With CHAIN_XRAY, CHAIN_HELPER, CHAIN_ASSETS (geo files) and CHAIN_CONFIGS
+# (the engine_configs example of uniray-core) set, it also runs the whole
+# chain as the app does - uniray-helper starting the engine and Xray with the
+# configs the app generates - in proxy and in TUN mode:
+#
+#   [cli] curl --> Xray (mixed or TUN) --SOCKS5--> uniray-engine ==AWG==> [srv]
+#
+# In TUN mode the engine's own packets to the server are captured too, and
+# must leave through Xray's bypass rule rather than loop back into the tunnel.
 set -euo pipefail
 
 engine=$1 server=$2 keygen=$3
@@ -25,6 +35,11 @@ cleanup() {
 }
 trap cleanup EXIT
 failures=0
+http_get() { # http_get <curl args...>: "ok 200", or "fail <code> <error>"
+  local code
+  code=$(ip netns exec cli curl --noproxy '' -sS -m 10 -o /dev/null -w '%{http_code}' "$@" 2>"$work/curl.err") || true
+  if [ "$code" = 200 ]; then echo "ok 200"; else echo "fail $code $(head -c 200 "$work/curl.err")"; fi
+}
 expect() { # expect <ok|fail> <line>
   local want=$1 line=$2
   if [[ "$line" == *" $want "* || "$line" == *" $want" ]]; then
@@ -35,8 +50,8 @@ expect() { # expect <ok|fail> <line>
   fi
 }
 
-read -r server_priv _ server_priv_hex server_pub_hex < <("$keygen")
-read -r client_priv _ client_priv_hex client_pub_hex < <("$keygen")
+read -r server_priv server_pub server_priv_hex server_pub_hex < <("$keygen")
+read -r client_priv client_pub client_priv_hex client_pub_hex < <("$keygen")
 
 # AmneziaWG 2.0 options: junk, paddings (S3/S4 are 2.0), header ranges.
 awg="jc=4
@@ -122,7 +137,83 @@ echo "--- obfuscation mismatch (H1 outside the server's range)"
 run_engine bad "${awg/h1=100000-100500/h1=999}"
 while read -r line; do expect fail "$line"; done < <(client "$bad_port" s3cret-bad "$bad_fd" http:10.8.0.1:8080)
 
-grep -q '^handshake ' "$work/good.out" && echo "PASS  the engine reported a handshake" || echo "note  no handshake line yet (reported every 5 s)"
+chain() { # chain <proxy|tun>
+  local mode=$1 dir="$work/chain-$1"
+  mkdir -p "$dir"
+  printf '%s\n' "[Interface]" "PrivateKey = $client_priv" "Address = 10.8.0.2/32" "DNS = 10.8.0.1" \
+    "Jc = 4" "Jmin = 10" "Jmax = 50" "S1 = 117" "S2 = 19" "S3 = 8" "S4 = 16" \
+    "H1 = 100000-100500" "H2 = 200000-200500" "H3 = 300000-300500" "H4 = 400000-400500" \
+    "[Peer]" "PublicKey = $server_pub" "Endpoint = 198.51.100.1:51820" "AllowedIPs = 0.0.0.0/0" >"$dir/server.conf"
+  "$CHAIN_CONFIGS" "$dir/server.conf" "$dir" 18080 18090 $([ "$mode" = tun ] && echo tun)
+  if [ ! -e /proc/net/if_inet6 ]; then
+    # A kernel without IPv6 (some containers) refuses the TUN's IPv6 side.
+    python3 - "$dir/xray.json" <<'PY'
+import json, sys
+config = json.load(open(sys.argv[1]))
+for inbound in config["inbounds"]:
+    settings = inbound.get("settings", {})
+    for key in ("gateway", "autoSystemRoutingTable"):
+        if key in settings:
+            settings[key] = [item for item in settings[key] if ":" not in item]
+json.dump(config, open(sys.argv[1], "w"))
+PY
+  fi
+  mkfifo "$dir/in"
+  ip netns exec cli "$CHAIN_HELPER" "$CHAIN_XRAY" "$dir/xray.json" "$CHAIN_ASSETS" \
+    --engine "$engine" awg "$dir/engine.json" <"$dir/in" >"$dir/log" 2>&1 &
+  local helper=$!
+  exec {chain_fd}>"$dir/in"
+  for _ in $(seq 1 100); do
+    ip netns exec cli python3 -c 'import socket; [socket.create_connection(("127.0.0.1", p), 1).close() for p in (18080, 18090)]' 2>/dev/null && break
+    sleep 0.1
+  done
+  if [ "$mode" = tun ]; then
+    for _ in $(seq 1 50); do ip -n cli link show uniray0 >/dev/null 2>&1 && break; sleep 0.1; done
+    sleep 1
+    expect ok "tun http $(http_get http://10.8.0.1:8080/)"
+    expect ok "tun udp $(ip netns exec cli python3 "$here/udp_echo.py" 10.8.0.1 9999 2>/dev/null || echo fail)"
+    if grep -q "accepted udp:198.51.100.1:51820 \[tun -> direct\]" "$dir/log"; then
+      echo "PASS  the engine's packets left through the bypass rule"
+    else
+      echo "FAIL  the engine's packets did not go through the bypass rule"; failures=$((failures + 1))
+    fi
+  else
+    expect ok "proxy http $(http_get -x socks5h://127.0.0.1:18080 http://10.8.0.1:8080/)"
+    while read -r line; do expect ok "proxy $line"; done < <(client 18080 - none udp:10.8.0.1:9999)
+  fi
+  exec {chain_fd}>&-
+  for _ in $(seq 1 100); do kill -0 "$helper" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$helper" 2>/dev/null; then
+    echo "FAIL  the helper did not stop"; failures=$((failures + 1))
+  else
+    echo "PASS  the helper stopped"
+  fi
+  if pgrep -f "$dir/engine.json" >/dev/null; then
+    echo "FAIL  the engine outlived the helper"; failures=$((failures + 1))
+  fi
+  if [ "$mode" = tun ] && ip -n cli link show uniray0 >/dev/null 2>&1; then
+    echo "FAIL  the TUN outlived the helper"; failures=$((failures + 1))
+  fi
+  [ "$failures" -eq 0 ] || { echo "--- chain log ($mode)"; tail -30 "$dir/log"; }
+}
+
+if [ -n "${CHAIN_XRAY:-}" ]; then
+  # Xray's TUN routes need a default route to find the way out. The server
+  # gets an address only that route leads to, as on the internet, so that in
+  # TUN mode the engine's own packets enter the TUN. The tunnel's addresses
+  # are reachable only through the tunnel, not over the veth.
+  ip -n cli route add default via 10.0.0.1 metric 100 # as DHCP would
+  ip -n srv addr add 198.51.100.1/32 dev lo
+  ip netns exec srv iptables -A INPUT -i v1 -d 10.8.0.0/24 -j DROP
+  expect fail "around the tunnel $(http_get -m 3 http://10.8.0.1:8080/)"
+  echo "--- chain, proxy mode"
+  chain proxy
+  echo "--- chain, TUN mode"
+  chain tun
+fi
+
+grep -q 'handshake with the server done' "$work/good.err" && echo "PASS  the engine logged the handshake" || { echo "FAIL  no handshake logged"; failures=$((failures + 1)); }
+grep -q 'handshake with the server done' "$work/bad.err" && { echo "FAIL  a handshake with mismatched H1"; failures=$((failures + 1)); } || echo "PASS  no handshake with mismatched H1"
 if [ "$failures" -ne 0 ]; then
   echo "== $failures check(s) failed"; echo "--- engine log"; cat "$work/good.err"; echo "--- server log"; tail -20 "$work/server.log"
   exit 1

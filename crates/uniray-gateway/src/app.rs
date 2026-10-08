@@ -341,6 +341,7 @@ impl App {
             mixed_port: Some(self.options.mixed_port),
             metrics_port: Some(metrics_port), metrics_socket: None,
             log: LogSink::Stdout,
+            engine: None,
         };
         let built = config::build(&server, &settings, &runtime).map_err(|err| err.to_string())?;
 

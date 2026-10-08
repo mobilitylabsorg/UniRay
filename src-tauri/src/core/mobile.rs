@@ -289,6 +289,7 @@ async fn start_vpn_service(
         metrics_port: None,
         metrics_socket: Some(metrics.to_owned()),
         log: log.clone(),
+        engine: None,
     };
     let built = config::build(server, settings, &runtime)?;
     // Xray's built-in DNS resolves the servers over the configured DoH, straight
@@ -335,6 +336,7 @@ async fn start_stealth(
         metrics_port: None,
         metrics_socket: Some(metrics.to_owned()),
         log: log.clone(),
+        engine: None,
     };
     let built = config::build(server, settings, &runtime)?;
     let args = json!({

@@ -34,7 +34,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/uniray-xray", "binaries/uniray-helper"],
+    "externalBin": ["binaries/uniray-xray", "binaries/uniray-helper", "binaries/uniray-engine"],
     "resources": ["resources/geoip.dat", "resources/geosite.dat"]
   }
 }

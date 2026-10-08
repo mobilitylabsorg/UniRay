@@ -130,6 +130,7 @@ fn traffic_flows_and_is_counted() {
         mixed_port: Some(mixed_port),
         metrics_port: Some(metrics_port), metrics_socket: None,
         log: LogSink::Stdout,
+        engine: None,
     };
     let built = build(&server, &settings, &runtime).unwrap();
     let _client = start_xray(&xray, &dir, "client.json", &built.config);
@@ -184,6 +185,7 @@ fn metrics_socket_answers_and_closes() {
         metrics_port: None,
         metrics_socket: Some(socket.to_string_lossy().into_owned()),
         log: LogSink::Stdout,
+        engine: None,
     };
     let settings = Settings { routing_preset: RoutingPreset::Global, ..Default::default() };
     let built = build(&server, &settings, &runtime).unwrap();

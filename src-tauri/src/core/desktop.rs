@@ -3,10 +3,15 @@
 //! In proxy mode it is a plain child of the app. TUN mode needs root, so the
 //! app starts `uniray-helper` elevated and the helper runs Xray; the helper
 //! stops Xray when the pipe to its stdin closes.
+//!
+//! A server Xray cannot run (WireGuard, AmneziaWG) also gets `uniray-engine`,
+//! which Xray reaches as a SOCKS proxy (see `uniray_core::engine`): our child
+//! next to Xray in proxy mode, the helper's in TUN mode.
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::path::Path;
 #[cfg(not(windows))]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -18,6 +23,7 @@ use tokio::net::TcpStream;
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, watch};
 use uniray_core::config::{self, LogSink, Runtime, Tun};
+use uniray_core::engine::{self, EngineRun, Peers};
 use uniray_core::model::{Mode, Server, Settings};
 
 use super::{free_port, PROBE_TIMEOUT, PROBE_URL};
@@ -56,7 +62,14 @@ pub struct Running {
     stats: JoinHandle<()>,
     system_proxy: bool,
     mixed_port: u16,
+    /// The engine, when it is our child (proxy mode).
+    engine: Option<Supervised>,
 }
+
+/// A child's stop trigger and supervising task, see [`spawn_supervised`].
+type Supervised = (oneshot::Sender<()>, JoinHandle<()>);
+/// [`Supervised`], the flag that turns true once the child is gone and its pid.
+type Spawned = (oneshot::Sender<()>, JoinHandle<()>, watch::Receiver<bool>, Option<u32>);
 
 impl Running {
     pub fn mixed_port(&self) -> Option<u16> {
@@ -75,12 +88,19 @@ impl Running {
             return Err(CmdError::new("portBusy", format!("port {mixed_port} is already in use")));
         }
         let metrics_port = free_port()?;
+        let engine_run = prepare_engine(server, settings).await?;
+        if let Some(run) = &engine_run {
+            for warning in &run.warnings {
+                logs::push(app, warning);
+            }
+        }
 
         let runtime = Runtime {
             tun: tun.then(|| Tun::Managed { name: interface_name(&settings.interface_name) }),
             mixed_port: Some(mixed_port),
             metrics_port: Some(metrics_port), metrics_socket: None,
             log: LogSink::Stdout,
+            engine: engine_run.as_ref().map(|run| run.runtime.clone()),
         };
         let built = config::build(server, settings, &runtime)?;
         let config_path = state.paths.run_dir.join("config.json");
@@ -88,12 +108,16 @@ impl Running {
         write_private(&config_path, &config_bytes).map_err(CmdError::io)?;
 
         let log_mark = logs::mark();
-        let (stop, supervisor, mut exited, tailer) = launch(app, tun, &config_path, generation).await?;
+        let (stop, supervisor, mut exited, tailer, engine) =
+            launch(app, tun, &config_path, engine_run.as_ref(), generation).await?;
 
         let timeout = if tun { READY_TIMEOUT_TUN } else { READY_TIMEOUT };
-        if let Err(err) = wait_ready(&[metrics_port, mixed_port], &mut exited, timeout).await {
+        let mut ports = vec![metrics_port, mixed_port];
+        ports.extend(engine_run.as_ref().map(|run| run.runtime.port));
+        if let Err(err) = wait_ready(&ports, &mut exited, timeout).await {
             let _ = stop.send(());
             let _ = supervisor.await;
+            stop_engine(engine).await;
             if let Some(tailer) = tailer {
                 tailer.abort();
             }
@@ -123,6 +147,7 @@ impl Running {
             stats: stats::spawn(app.clone(), stats::MetricsSource::Port(metrics_port), built.proxy_tags),
             system_proxy,
             mixed_port,
+            engine,
         })
     }
 
@@ -139,44 +164,123 @@ impl Running {
             let _ = stop.send(());
         }
         let _ = self.supervisor.await;
+        // After Xray, which has nothing to send it any more.
+        stop_engine(self.engine.take()).await;
         if let Some(tailer) = self.tailer.take() {
             // Let it pick up the core's last words first.
             tokio::time::sleep(Duration::from_millis(500)).await;
             tailer.abort();
         }
-        let _ = std::fs::remove_file(app.state::<App>().paths.run_dir.join("config.json"));
+        let run_dir = &app.state::<App>().paths.run_dir;
+        let _ = std::fs::remove_file(run_dir.join("config.json"));
+        // The engine removes it once read; not if it never started.
+        let _ = std::fs::remove_file(run_dir.join(ENGINE_CONFIG));
         None
     }
 }
 
-type Launched = (oneshot::Sender<()>, JoinHandle<()>, watch::Receiver<bool>, Option<JoinHandle<()>>);
+/// The engine's config in the run directory, see `uniray_core::engine`.
+const ENGINE_CONFIG: &str = "engine.json";
+
+/// The engine run for `server`, if it needs one. Resolving the server's name
+/// blocks, so it happens off the async runtime.
+async fn prepare_engine(server: &Server, settings: &Settings) -> CmdResult<Option<EngineRun>> {
+    if server.source.is_xray() {
+        return Ok(None);
+    }
+    let (server, ipv6, port) = (server.clone(), settings.ipv6, free_port()?);
+    let prepared = tauri::async_runtime::spawn_blocking(move || engine::prepare(&server, port, ipv6))
+        .await
+        .map_err(|err| CmdError::core(err.to_string()))?;
+    Ok(prepared?)
+}
+
+async fn stop_engine(engine: Option<Supervised>) {
+    if let Some((stop, supervisor)) = engine {
+        let _ = stop.send(());
+        let _ = supervisor.await;
+    }
+}
+
+type Launched = (
+    oneshot::Sender<()>,
+    JoinHandle<()>,
+    watch::Receiver<bool>,
+    Option<JoinHandle<()>>,
+    Option<Supervised>,
+);
 
 /// Starts the core: directly in proxy mode, through the elevated helper in
-/// TUN mode (pkexec on Linux, UAC on Windows).
-async fn launch(app: &AppHandle, tun: bool, config_path: &std::path::Path, generation: u64) -> CmdResult<Launched> {
+/// TUN mode (pkexec on Linux, UAC on Windows), and the engine with it.
+async fn launch(
+    app: &AppHandle,
+    tun: bool,
+    config_path: &Path,
+    engine: Option<&EngineRun>,
+    generation: u64,
+) -> CmdResult<Launched> {
     let state = app.state::<App>();
-    #[cfg(windows)]
+    let engine_config = state.paths.run_dir.join(ENGINE_CONFIG);
     if tun {
-        return spawn_elevated(app, config_path, generation).await;
+        // The helper tells the engine Xray's pid once it has started it.
+        if let Some(run) = engine {
+            write_private(&engine_config, &run.config_for(&Peers::Pids(Vec::new()))).map_err(CmdError::io)?;
+        }
+        #[cfg(windows)]
+        return spawn_elevated(app, config_path, engine.map(|run| (run.mode, engine_config.as_path())), generation).await;
+        #[cfg(not(windows))]
+        {
+            let staged = root_readable(app)?;
+            let mut command = Command::new("pkexec");
+            command
+                .arg(&staged.helper)
+                .arg(&staged.xray)
+                .arg(config_path)
+                .arg(&staged.assets)
+                .stdin(Stdio::piped());
+            if let Some(run) = engine {
+                command.arg("--engine").arg(&staged.engine).arg(run.mode).arg(&engine_config);
+            }
+            let (stop, supervisor, exited, _) = spawn_supervised(app, command, Some(generation))?;
+            return Ok((stop, supervisor, exited, None, None));
+        }
     }
-    #[cfg(not(windows))]
-    let command = if tun {
-        let (helper, xray, assets) = root_readable(app)?;
-        let mut command = Command::new("pkexec");
-        command
-            .arg(helper)
-            .arg(xray)
-            .arg(config_path)
-            .arg(assets)
-            .stdin(Stdio::piped());
-        command
-    } else {
-        xray_command(&state.paths.xray, config_path, &state.paths.assets)
-    };
-    #[cfg(windows)]
+
     let command = xray_command(&state.paths.xray, config_path, &state.paths.assets);
-    let (stop, supervisor, exited) = spawn_supervised(app, command, Some(generation))?;
-    Ok((stop, supervisor, exited, None))
+    let (stop, supervisor, exited, xray_pid) = spawn_supervised(app, command, Some(generation))?;
+    let Some(run) = engine else {
+        return Ok((stop, supervisor, exited, None, None));
+    };
+    // Started after Xray, so that its config names Xray's process. Xray
+    // only connects to it for traffic, which waits for `wait_ready`.
+    let spawned = write_private(&engine_config, &run.config_for(&Peers::Pids(xray_pid.into_iter().collect())))
+        .map_err(CmdError::io)
+        .and_then(|()| {
+            let mut command = Command::new(&state.paths.engine);
+            command.arg(run.mode).arg("--config").arg(&engine_config).stdin(Stdio::piped());
+            #[cfg(windows)]
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            spawn_supervised(app, command, Some(generation))
+        });
+    match spawned {
+        Ok((engine_stop, engine_supervisor, _, _)) => {
+            Ok((stop, supervisor, exited, None, Some((engine_stop, engine_supervisor))))
+        }
+        Err(err) => {
+            let _ = stop.send(());
+            let _ = supervisor.await;
+            Err(err)
+        }
+    }
+}
+
+/// What root runs in TUN mode, from where root can read it.
+#[cfg(not(windows))]
+struct RootReadable {
+    helper: PathBuf,
+    xray: PathBuf,
+    engine: PathBuf,
+    assets: PathBuf,
 }
 
 /// The helper, the core and the asset directory, from where root can read
@@ -185,18 +289,27 @@ async fn launch(app: &AppHandle, tun: bool, config_path: &std::path::Path, gener
 /// ("Permission denied"). From an AppImage they are copied out to the app's
 /// data directory first; an installed package needs nothing of the kind.
 #[cfg(not(windows))]
-fn root_readable(app: &AppHandle) -> CmdResult<(PathBuf, PathBuf, PathBuf)> {
+fn root_readable(app: &AppHandle) -> CmdResult<RootReadable> {
     let paths = &app.state::<App>().paths;
     if std::env::var_os("APPIMAGE").is_none() {
-        return Ok((paths.helper.clone(), paths.xray.clone(), paths.assets.clone()));
+        return Ok(RootReadable {
+            helper: paths.helper.clone(),
+            xray: paths.xray.clone(),
+            engine: paths.engine.clone(),
+            assets: paths.assets.clone(),
+        });
     }
-    stage_for_root(&paths.run_dir.join("elevated"), &paths.helper, &paths.xray, &paths.assets).map_err(CmdError::io)
+    let binaries = [paths.helper.as_path(), &paths.xray, &paths.engine];
+    let (binaries, assets) =
+        stage_for_root(&paths.run_dir.join("elevated"), &binaries, &paths.assets).map_err(CmdError::io)?;
+    let [helper, xray, engine] = <[PathBuf; 3]>::try_from(binaries).expect("one copy per binary");
+    Ok(RootReadable { helper, xray, engine, assets })
 }
 
-/// Copies the helper, the core and the files of the asset directory into
-/// `dir`, which only the user can write to.
+/// Copies the binaries (under their own names) and the files of the asset
+/// directory into `dir`, which only the user can write to.
 #[cfg(not(windows))]
-fn stage_for_root(dir: &Path, helper: &Path, xray: &Path, assets: &Path) -> std::io::Result<(PathBuf, PathBuf, PathBuf)> {
+fn stage_for_root(dir: &Path, binaries: &[&Path], assets: &Path) -> std::io::Result<(Vec<PathBuf>, PathBuf)> {
     use std::os::unix::fs::PermissionsExt;
 
     let staged_assets = dir.join("assets");
@@ -209,22 +322,32 @@ fn stage_for_root(dir: &Path, helper: &Path, xray: &Path, assets: &Path) -> std:
         std::fs::set_permissions(&to, std::fs::Permissions::from_mode(mode))?;
         Ok(to)
     };
-    let helper = copy(helper, dir.join("uniray-helper"), 0o755)?;
-    let xray = copy(xray, dir.join("uniray-xray"), 0o755)?;
+    let binaries = binaries
+        .iter()
+        .map(|binary| {
+            let name = binary.file_name().ok_or_else(|| std::io::Error::other("a binary path has no file name"))?;
+            copy(binary, dir.join(name), 0o755)
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
     for entry in std::fs::read_dir(assets)? {
         let entry = entry?;
         if entry.file_type()?.is_file() {
             copy(&entry.path(), staged_assets.join(entry.file_name()), 0o644)?;
         }
     }
-    Ok((helper, xray, staged_assets))
+    Ok((binaries, staged_assets))
 }
 
 /// Windows TUN: the helper runs as administrator after a UAC prompt. It
 /// cannot share pipes with us, so it logs to a file we follow, and stops when
 /// the stop file appears or this process is gone.
 #[cfg(windows)]
-async fn spawn_elevated(app: &AppHandle, config_path: &std::path::Path, generation: u64) -> CmdResult<Launched> {
+async fn spawn_elevated(
+    app: &AppHandle,
+    config_path: &Path,
+    engine: Option<(&str, &Path)>,
+    generation: u64,
+) -> CmdResult<Launched> {
     use std::ffi::{OsStr, OsString};
     use std::sync::Arc;
 
@@ -238,7 +361,7 @@ async fn spawn_elevated(app: &AppHandle, config_path: &std::path::Path, generati
     write_private(&log_file, b"").map_err(CmdError::io)?;
 
     let helper = state.paths.helper.clone();
-    let args: Vec<OsString> = vec![
+    let mut args: Vec<OsString> = vec![
         state.paths.xray.clone().into_os_string(),
         config_path.as_os_str().to_owned(),
         state.paths.assets.clone().into_os_string(),
@@ -246,6 +369,9 @@ async fn spawn_elevated(app: &AppHandle, config_path: &std::path::Path, generati
         stop_file.clone().into_os_string(),
         log_file.clone().into_os_string(),
     ];
+    if let Some((mode, config)) = engine {
+        args.extend(["--engine".into(), state.paths.engine.clone().into_os_string(), mode.into(), config.into()]);
+    }
     let launched = tauri::async_runtime::spawn_blocking(move || {
         let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
         Process::launch(&helper, &args)
@@ -286,7 +412,7 @@ async fn spawn_elevated(app: &AppHandle, config_path: &std::path::Path, generati
         }
         let _ = exited_tx.send(true);
     });
-    Ok((stop_tx, supervisor, exited_rx, Some(tailer)))
+    Ok((stop_tx, supervisor, exited_rx, Some(tailer), None))
 }
 
 fn xray_command(xray: &std::path::Path, config: &std::path::Path, assets: &std::path::Path) -> Command {
@@ -349,14 +475,14 @@ fn bind_to_app(child: &Child) {
 
 /// Spawns the core, forwards its output to the log and supervises it.
 ///
-/// Returns the stop trigger, the supervising task and a flag that turns true
-/// once the process is gone. With `generation` set, an exit that nobody asked
-/// for is reported through [`super::on_core_exit`].
+/// Returns the stop trigger, the supervising task, a flag that turns true
+/// once the process is gone and its pid. With `generation` set, an exit that
+/// nobody asked for is reported through [`super::on_core_exit`].
 fn spawn_supervised(
     app: &AppHandle,
     mut command: Command,
     generation: Option<u64>,
-) -> CmdResult<(oneshot::Sender<()>, JoinHandle<()>, watch::Receiver<bool>)> {
+) -> CmdResult<Spawned> {
     // Only a real run is logged; an unread pipe would eventually block a probe.
     let output = || if generation.is_some() { Stdio::piped() } else { Stdio::null() };
     command.stdout(output()).stderr(output()).kill_on_drop(true);
@@ -366,6 +492,7 @@ fn spawn_supervised(
         .map_err(|err| CmdError::core(format!("cannot start {program}: {err}")))?;
     #[cfg(windows)]
     bind_to_app(&child);
+    let pid = child.id();
 
     forward_output(app, child.stdout.take());
     forward_output(app, child.stderr.take());
@@ -377,7 +504,7 @@ fn spawn_supervised(
         supervise(&app, child, stdin, stop_rx, generation).await;
         let _ = exited_tx.send(true);
     });
-    Ok((stop_tx, supervisor, exited_rx))
+    Ok((stop_tx, supervisor, exited_rx, pid))
 }
 
 async fn supervise(
@@ -399,6 +526,7 @@ async fn supervise(
         _ = stop => match stdin {
             // The helper runs as root and cannot be signalled; closing its
             // stdin makes it stop Xray, which removes the interface and routes.
+            // The engine, too, exits when its stdin closes.
             Some(stdin) => {
                 drop(stdin);
                 if tokio::time::timeout(HELPER_STOP_TIMEOUT, child.wait()).await.is_err() {
@@ -485,7 +613,7 @@ async fn probe_batch(app: &AppHandle, servers: &[Server], on_result: &(impl Fn(&
     let command = xray_command(&state.paths.xray, &config_path, &state.paths.assets);
     let spawned = spawn_supervised(app, command, None);
     let result = match spawned {
-        Ok((stop, supervisor, mut exited)) => {
+        Ok((stop, supervisor, mut exited, _)) => {
             let ready = wait_ready(&ports, &mut exited, READY_TIMEOUT).await;
             if ready.is_ok() {
                 join_all(servers.iter().zip(&ports).map(|(server, port)| async move {
@@ -534,14 +662,20 @@ mod tests {
         std::fs::write(source.join("resources/geoip.dat"), b"ip").unwrap();
         std::fs::write(source.join("resources/geosite.dat"), b"site").unwrap();
 
+        std::fs::write(source.join("uniray-engine"), b"engine").unwrap();
+
         let dir = root.join("run/elevated");
+        let binaries = [source.join("uniray-helper"), source.join("uniray-xray"), source.join("uniray-engine")];
         let stage = || {
-            stage_for_root(&dir, &source.join("uniray-helper"), &source.join("uniray-xray"), &source.join("resources"))
-                .unwrap()
+            let binaries: Vec<&std::path::Path> = binaries.iter().map(|binary| binary.as_path()).collect();
+            stage_for_root(&dir, &binaries, &source.join("resources")).unwrap()
         };
-        let (helper, xray, assets) = stage();
+        let (staged, assets) = stage();
+        let [helper, xray, engine] = <[std::path::PathBuf; 3]>::try_from(staged).unwrap();
+        assert_eq!(helper, dir.join("uniray-helper"));
         assert_eq!(std::fs::read(&helper).unwrap(), b"helper");
         assert_eq!(std::fs::read(&xray).unwrap(), b"xray");
+        assert_eq!(std::fs::read(&engine).unwrap(), b"engine");
         assert_eq!(std::fs::read(assets.join("geosite.dat")).unwrap(), b"site");
         assert_eq!(std::fs::metadata(&helper).unwrap().permissions().mode() & 0o777, 0o755);
         assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
