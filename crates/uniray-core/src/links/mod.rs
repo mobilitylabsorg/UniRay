@@ -1,7 +1,8 @@
 //! Share link parsing: `vless://`, `vmess://`, `trojan://`, `ss://`,
 //! `hysteria2://` -> [`Server`] holding a ready Xray outbound; and the
 //! WireGuard/AmneziaWG forms - `vpn://` keys, `wireguard://` links and
-//! pasted `.conf` blocks - see [`crate::wireguard`].
+//! pasted `.conf` blocks - see [`crate::wireguard`]; and `naive+https://`,
+//! `naive+quic://`, see [`crate::naive`].
 
 mod stream;
 mod url;
@@ -15,7 +16,9 @@ use url::{Params, RawUrl};
 pub(crate) use url::{decode_base64, decode_base64_str, parse as parse_url};
 
 /// Schemes [`parse_link`] understands.
-pub const SCHEMES: [&str; 9] = ["vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "vpn", "wireguard", "wg"];
+pub const SCHEMES: [&str; 11] = [
+    "vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "vpn", "wireguard", "wg", "naive+https", "naive+quic",
+];
 
 pub fn is_link(line: &str) -> bool {
     line.split_once("://")
@@ -31,6 +34,7 @@ pub fn parse_link(link: &str) -> Result<Server> {
     let parsed = match scheme.as_str() {
         "vpn" => return crate::wireguard::server_from_amnezia_key(link),
         "wireguard" | "wg" => return crate::wireguard::server_from_link(link),
+        "naive+https" | "naive+quic" => return crate::naive::server_from_link(link),
         "vless" => vless(link),
         "vmess" => vmess(link),
         "trojan" => trojan(link),

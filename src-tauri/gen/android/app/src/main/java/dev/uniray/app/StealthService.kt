@@ -337,7 +337,7 @@ class StealthService : Service() {
   }
 
   /**
-   * For a WireGuard/AmneziaWG server: starts the engine as root, detached
+   * For a WireGuard/AmneziaWG or Naive server: starts the engine as root, detached
    * (the teardown kills it), and lets only root - Xray - reach its port; the
    * engine itself also accepts only root's connections. Runs before Xray.
    * Empty for the other servers.
@@ -346,7 +346,7 @@ class StealthService : Service() {
     val mode = spec.optString("engineMode")
     if (mode.isEmpty()) return ""
     val port = spec.optInt("enginePort")
-    val configFile = File(dir, "engine.json").apply { writeText(spec.getString("engineConfig")) }
+    val configFile = File(dir, "engine.json").apply { writeText(Engine.withNaive(this@StealthService, spec.getString("engineConfig"))) }
     val out = File(dir, "engine.out").absolutePath
     val log = Engine.logFile(config, File(dir, "engine.log")).absolutePath
     val pid = File(dir, "engine.pid").absolutePath
@@ -359,7 +359,7 @@ class StealthService : Service() {
       echo ${'$'}! > $pid
       for i in ${'$'}(seq 1 100); do grep -q '^ready ' $out 2>/dev/null && break; sleep 0.1; done
       if ! grep -q '^ready ' $out 2>/dev/null; then
-        echo "the WireGuard engine did not start:" >&2
+        echo "the engine did not start:" >&2
         tail -n 5 $log >&2
         exit 1
       fi
@@ -503,6 +503,7 @@ class StealthService : Service() {
       rm -f $pid 2>/dev/null || true
       [ -f $enginePid ] && kill ${'$'}(cat $enginePid) 2>/dev/null || true
       pkill -f "libuniray_engin[e].so" 2>/dev/null || true
+      pkill -f "libnaiv[e].so" 2>/dev/null || true
       rm -f $enginePid $dir/engine.json $dir/engine.out 2>/dev/null || true
       while iptables -w -t mangle -D OUTPUT -j $CHAIN_OUT 2>/dev/null; do :; done
       while iptables -w -t mangle -D PREROUTING -j $CHAIN_PRE 2>/dev/null; do :; done
@@ -535,7 +536,8 @@ class StealthService : Service() {
     ip6tables -w -t filter -S 2>/dev/null | grep -q $CHAIN_OUT && echo "ip6tables rules"
     ip rule 2>/dev/null | grep -q -e "lookup $TABLE" -e "lookup $TUN_TABLE" && echo "routing rules"
     ip -6 rule 2>/dev/null | grep -q "lookup $TUN_TABLE" && echo "IPv6 routing rules"
-    pgrep -f "libuniray_engin[e].so" >/dev/null 2>&1 && echo "the WireGuard engine"
+    pgrep -f "libuniray_engin[e].so" >/dev/null 2>&1 && echo "the engine"
+    pgrep -f "libnaiv[e].so" >/dev/null 2>&1 && echo "naive"
     true
     """.trimIndent()
 

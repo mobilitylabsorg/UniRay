@@ -40,7 +40,7 @@ class StartArgs {
   var serverName: String = ""
   var metricsSocket: String = ""
   var proxyTags: Array<String> = arrayOf()
-  /** The engine for a WireGuard/AmneziaWG server; empty for the others. */
+  /** The engine for a WireGuard/AmneziaWG or Naive server; empty for the others. */
   var engineMode: String = ""
   var engineConfig: String = ""
   var enginePort: Int = 0

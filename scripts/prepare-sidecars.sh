@@ -4,6 +4,7 @@
 #   src-tauri/binaries/uniray-xray-<target triple>     downloaded, see fetch-xray.sh
 #   src-tauri/binaries/uniray-helper-<target triple>   built from crates/uniray-helper
 #   src-tauri/binaries/uniray-engine-<target triple>   built from engine/ (Go), see build-engine.sh
+#   src-tauri/binaries/uniray-naive-<target triple>    downloaded, see fetch-naive.sh
 #
 # Usage: scripts/prepare-sidecars.sh [--release] [target triple]
 # Runs before `tauri dev` and `tauri build` (see package.json).
@@ -41,3 +42,5 @@ build=(cargo build)
 "${build[@]}" --manifest-path "$root/Cargo.toml" -p uniray-helper "${cargo_args[@]}"
 install -m 755 "$out/uniray-helper$exe" "$root/src-tauri/binaries/uniray-helper-$target$exe"
 "$root/scripts/build-engine.sh" "$target" "$root/src-tauri/binaries/uniray-engine-$target$exe"
+naive="$root/src-tauri/binaries/uniray-naive-$target$exe"
+[[ -f "$naive" ]] || "$root/scripts/fetch-naive.sh" "$target" "$naive"

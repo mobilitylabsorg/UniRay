@@ -139,7 +139,7 @@ pub fn build(server: &Server, settings: &Settings, runtime: &Runtime) -> Result<
     match &server.source {
         ServerSource::Outbound(outbound) => Ok(from_outbound(outbound, settings, runtime, None)),
         ServerSource::Config(config) => from_config(config, settings, runtime),
-        ServerSource::WireGuard(_) => {
+        ServerSource::WireGuard(_) | ServerSource::Naive(_) => {
             let engine = runtime.engine.as_ref().ok_or_else(no_engine)?;
             Ok(from_outbound(&engine.outbound(), settings, runtime, Some(engine)))
         }
@@ -148,6 +148,14 @@ pub fn build(server: &Server, settings: &Settings, runtime: &Runtime) -> Result<
 
 fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime, engine: Option<&Engine>) -> Built {
     let ip_strategy = if settings.ipv6 { "UseIP" } else { "UseIPv4" };
+    // Without UDP through the proxy, plain DNS to the remote server goes over
+    // TCP instead (Xray's `tcp://`); DoH and the like are TCP already.
+    let remote_dns = match settings.remote_dns.strip_prefix("udp://") {
+        _ if !engine.is_some_and(|engine| engine.block_udp) => settings.remote_dns.clone(),
+        Some(address) => format!("tcp://{address}"),
+        None if !settings.remote_dns.contains("://") => format!("tcp://{}", settings.remote_dns),
+        None => settings.remote_dns.clone(),
+    };
 
     let mut proxy = outbound.clone();
     proxy["tag"] = TAG_PROXY.into();
@@ -180,7 +188,7 @@ fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime, engin
         rules.extend(engine.bypass.iter().map(bypass_rule));
     }
     rules.push(dns_server_rule(&settings.direct_dns, TAG_DIRECT));
-    rules.push(dns_server_rule(&settings.remote_dns, TAG_PROXY));
+    rules.push(dns_server_rule(&remote_dns, TAG_PROXY));
     rules.extend(routing::rules(settings));
     if engine.is_some_and(|engine| engine.block_udp) {
         // Last, so that UDP the user routes `direct` still goes there.
@@ -189,7 +197,7 @@ fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime, engin
 
     let mut direct_domains = routing::direct_domains(settings);
     direct_domains.extend(server_domain.map(|domain| format!("full:{domain}")));
-    let mut dns_servers = vec![json!(settings.remote_dns)];
+    let mut dns_servers = vec![json!(remote_dns)];
     if !direct_domains.is_empty() {
         dns_servers.insert(
             0,
@@ -673,15 +681,15 @@ pub fn exit_server<'a>(servers: &'a [Server], connected: &Server, tag: &str) -> 
         .find(|server| server.id != connected.id && server.address == address && server.port == port)
 }
 
-/// A WireGuard/AmneziaWG server was built without its engine running.
+/// A WireGuard/AmneziaWG or Naive server was built without its engine running.
 fn no_engine() -> Error {
-    Error::InvalidConfig("the WireGuard/AmneziaWG engine is not running".into())
+    Error::InvalidConfig("the engine for this server is not running".into())
 }
 
-/// WireGuard and AmneziaWG servers run on their own engine; asking for an
-/// Xray config of one is a mistake of the caller.
+/// WireGuard, AmneziaWG and Naive servers run on the engine; asking for an
+/// Xray outbound of one is a mistake of the caller.
 fn not_xray() -> Error {
-    Error::InvalidConfig("this is a WireGuard/AmneziaWG server, which does not run on Xray".into())
+    Error::InvalidConfig("this server does not run on Xray (WireGuard, AmneziaWG or Naive)".into())
 }
 
 /// The outbound a delay probe should go through, tagged `tag`.
@@ -693,7 +701,7 @@ pub fn probe_outbound(server: &Server, tag: &str) -> Result<Value> {
             .and_then(|outbounds| outbounds.first())
             .cloned()
             .ok_or_else(|| Error::InvalidConfig("no outbounds".into()))?,
-        ServerSource::WireGuard(_) => return Err(not_xray()),
+        ServerSource::WireGuard(_) | ServerSource::Naive(_) => return Err(not_xray()),
     };
     outbound["tag"] = tag.into();
     Ok(outbound)

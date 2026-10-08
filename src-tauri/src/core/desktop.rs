@@ -204,15 +204,22 @@ async fn launch(
     let state = app.state::<App>();
     let engine_config = state.paths.run_dir.join(ENGINE_CONFIG);
     if tun {
+        #[cfg(not(windows))]
+        let staged = root_readable(app)?;
         // The helper tells the engine Xray's pid once it has started it.
         if let Some(run) = engine {
+            #[cfg(not(windows))]
+            let run = {
+                let mut run = run.clone();
+                run.set_naive_binary(&staged.naive);
+                run
+            };
             write_private(&engine_config, &run.config_for(&Peers::Pids(Vec::new()), false)).map_err(CmdError::io)?;
         }
         #[cfg(windows)]
         return spawn_elevated(app, config_path, engine.map(|run| (run.mode, engine_config.as_path())), generation).await;
         #[cfg(not(windows))]
         {
-            let staged = root_readable(app)?;
             let mut command = Command::new("pkexec");
             command
                 .arg(&staged.helper)
@@ -262,6 +269,7 @@ struct RootReadable {
     helper: PathBuf,
     xray: PathBuf,
     engine: PathBuf,
+    naive: PathBuf,
     assets: PathBuf,
 }
 
@@ -278,14 +286,15 @@ fn root_readable(app: &AppHandle) -> CmdResult<RootReadable> {
             helper: paths.helper.clone(),
             xray: paths.xray.clone(),
             engine: paths.engine.clone(),
+            naive: paths.naive.clone(),
             assets: paths.assets.clone(),
         });
     }
-    let binaries = [paths.helper.as_path(), &paths.xray, &paths.engine];
+    let binaries = [paths.helper.as_path(), &paths.xray, &paths.engine, &paths.naive];
     let (binaries, assets) =
         stage_for_root(&paths.run_dir.join("elevated"), &binaries, &paths.assets).map_err(CmdError::io)?;
-    let [helper, xray, engine] = <[PathBuf; 3]>::try_from(binaries).expect("one copy per binary");
-    Ok(RootReadable { helper, xray, engine, assets })
+    let [helper, xray, engine, naive] = <[PathBuf; 4]>::try_from(binaries).expect("one copy per binary");
+    Ok(RootReadable { helper, xray, engine, naive, assets })
 }
 
 /// Copies the binaries (under their own names) and the files of the asset

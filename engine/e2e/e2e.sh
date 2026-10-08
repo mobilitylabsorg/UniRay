@@ -21,6 +21,10 @@
 #
 # In TUN mode the engine's own packets to the server are captured too, and
 # must leave through Xray's bypass rule rather than loop back into the tunnel.
+#
+# With NAIVE_BIN set to the real naive, the engine also starts it with the
+# config it writes (there is no NaiveProxy server here to go further): naive
+# must take it and serve the engine with the credentials it was given.
 set -euo pipefail
 
 engine=$1 server=$2 keygen=$3
@@ -95,8 +99,19 @@ while True:
 sleep 0.5
 
 # --- client: the engine, as the app would start it
+# The engines share one client key: WireGuard follows a peer to wherever its
+# latest packet came from, so an earlier engine still sending keepalives
+# would draw the server's replies away from the one under test.
+engine_pids=()
+stop_engines() {
+  for pid in "${engine_pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+  for pid in "${engine_pids[@]}"; do while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done; done
+  engine_pids=()
+}
+
 run_engine() { # run_engine <name> <awg options> [extra config, as JSON members]
   local name=$1 options=$2 extra=${3:-}
+  stop_engines
   local uapi="private_key=$client_priv_hex
 $options
 replace_peers=true
@@ -114,6 +129,7 @@ config = {"user": "uniray", "pass": "s3cret-" + name, **json.loads("{" + extra +
 print(json.dumps(config))' "$name" "$uapi" "$extra" >"$work/$name.json"
   mkfifo "$work/$name.in"
   ip netns exec cli "$engine" awg --config "$work/$name.json" <"$work/$name.in" >"$work/$name.out" 2>"$work/$name.err" &
+  engine_pids+=($!)
   exec {fd}>"$work/$name.in"
   eval "${name}_fd=$fd"
   for _ in $(seq 1 50); do grep -q '^ready ' "$work/$name.out" 2>/dev/null && break; sleep 0.1; done
@@ -146,15 +162,15 @@ grep -q "not Xray" "$work/good.err" && echo "PASS  the engine logged the refusal
 echo "--- Android: the owner's uid, from /proc/net (stealth, Android 9)"
 run_engine uid0 "$awg" '"ownerUid": 0, "detached": true'
 while read -r line; do expect ok "uid 0: $line"; done < <(client "$uid0_port" s3cret-uid0 none http:10.8.0.1:8080 udp:10.8.0.1:9999)
-run_engine uid1 "$awg" '"ownerUid": 4242'
-while read -r line; do expect fail "uid 4242: $line"; done < <(client "$uid1_port" s3cret-uid1 none http:10.8.0.1:8080)
 exec {uid0_fd}>&-
 sleep 0.5
-if ip netns pids cli | xargs -r -n1 sh -c 'tr "\0" " " < /proc/$0/cmdline' 2>/dev/null | grep -q "$work/uid0.json"; then
+if kill -0 "${engine_pids[0]}" 2>/dev/null; then
   echo "PASS  detached: still running with stdin closed"
 else
   echo "FAIL  detached: exited when stdin closed"; failures=$((failures + 1))
 fi
+run_engine uid1 "$awg" '"ownerUid": 4242'
+while read -r line; do expect fail "uid 4242: $line"; done < <(client "$uid1_port" s3cret-uid1 none http:10.8.0.1:8080)
 
 echo "--- Android VPN mode: the owner's uid, from the VPN service's socket"
 ip netns exec cli python3 "$here/owner.py" uniray-e2e-yes 0 "$work/questions" &
@@ -166,6 +182,66 @@ run_engine no "$awg" '"ownerUid": 0, "ownerSocket": "@uniray-e2e-no"'
 while read -r line; do expect fail "owner says 10123: $line"; done < <(client "$no_port" s3cret-no none http:10.8.0.1:8080)
 grep -qE '^tcp 127\.0\.0\.1:[0-9]+ 127\.0\.0\.1:[0-9]+$' "$work/questions" && grep -qE '^udp 127\.0\.0\.1:[0-9]+ 127\.0\.0\.1:[0-9]+$' "$work/questions" \
   && echo "PASS  the questions name both ends" || { echo "FAIL  unexpected questions: $(head -3 "$work/questions")"; failures=$((failures + 1)); }
+
+echo "--- naive mode (a stand-in for naive: the real one needs a NaiveProxy server)"
+mkdir -p "$work/naive" && cp "$here/fake_naive.py" "$work/naive/naive" && chmod 755 "$work/naive/naive"
+ip netns exec cli python3 -m http.server 8081 --bind 127.0.0.2 --directory "$work" >/dev/null 2>&1 &
+mkdir -p "$work/nv"
+python3 -c '
+import json, sys
+print(json.dumps({"user": "uniray", "pass": "s3cret-naive", "naive": {"binary": sys.argv[1], "config": {
+    "proxy": "https://me:pw@proxy.example:443", "host-resolver-rules": "MAP proxy.example 203.0.113.5"}}}))' \
+  "$work/naive/naive" >"$work/nv/naive.json"
+mkfifo "$work/nv/in"
+ip netns exec cli "$engine" naive --config "$work/nv/naive.json" <"$work/nv/in" >"$work/nv/out" 2>"$work/nv/err" &
+exec {naive_fd}>"$work/nv/in"
+for _ in $(seq 1 100); do grep -q '^ready ' "$work/nv/out" 2>/dev/null && break; sleep 0.1; done
+if grep -q '^ready ' "$work/nv/out"; then
+  naive_port=$(sed -n 's/^ready //p' "$work/nv/out")
+  sleep 0.5
+  while read -r line; do expect ok "naive: $line"; done < <(client "$naive_port" s3cret-naive "$naive_fd" http:127.0.0.2:8081)
+  while read -r line; do expect fail "naive (no UDP): $line"; done < <(client "$naive_port" s3cret-naive "$naive_fd" udp:10.8.0.1:9999)
+  python3 - "$work/naive/config.seen" <<'PY' && echo "PASS  naive got its listen, the server and the pinned address" || { echo "FAIL  naive's config"; failures=$((failures + 1)); }
+import json, os, sys
+seen = json.load(open(sys.argv[1]))
+assert seen["listen"].startswith("socks://uniray:") and seen["listen"].count("@127.0.0.1:") == 1, seen
+assert seen["proxy"] == "https://me:pw@proxy.example:443" and seen["host-resolver-rules"] == "MAP proxy.example 203.0.113.5"
+assert not os.path.exists(seen["file"]), "naive's config file was left on disk"
+PY
+  exec {naive_fd}>&-
+  sleep 1
+  if pgrep -f "$work/naive/naive" >/dev/null; then echo "FAIL  naive outlived the engine"; failures=$((failures + 1)); else echo "PASS  naive stopped with the engine"; fi
+else
+  echo "FAIL  the naive engine did not start: $(cat "$work/nv/err")"; failures=$((failures + 1))
+fi
+
+if [ -n "${NAIVE_BIN:-}" ]; then
+  echo "--- the real naive takes the engine's config"
+  mkdir -p "$work/real"
+  python3 -c '
+import json, sys
+print(json.dumps({"user": "uniray", "pass": "s3cret-real", "naive": {"binary": sys.argv[1], "config": {
+    "proxy": "https://me:pw@proxy.example:443", "host-resolver-rules": "MAP proxy.example 127.0.0.9"}}}))' \
+    "$NAIVE_BIN" >"$work/real/naive.json"
+  mkfifo "$work/real/in"
+  ip netns exec cli "$engine" naive --config "$work/real/naive.json" <"$work/real/in" >"$work/real/out" 2>"$work/real/err" &
+  exec {real_fd}>"$work/real/in"
+  for _ in $(seq 1 150); do grep -q '^ready ' "$work/real/out" 2>/dev/null && break; sleep 0.1; done
+  if grep -q '^ready ' "$work/real/out"; then
+    real_port=$(sed -n 's/^ready //p' "$work/real/out")
+    # No server answers at 127.0.0.9, so the CONNECT fails - past naive's
+    # SOCKS handshake, which is what this checks.
+    client "$real_port" s3cret-real "$real_fd" http:127.0.0.2:8081 >/dev/null
+    if grep -q "refused" "$work/real/err"; then
+      echo "FAIL  naive refused the engine: $(grep refused "$work/real/err" | head -1)"; failures=$((failures + 1))
+    else
+      echo "PASS  naive listens with the engine's credentials"
+    fi
+  else
+    echo "FAIL  the engine could not start the real naive:"; cat "$work/real/err"; failures=$((failures + 1))
+  fi
+  exec {real_fd}>&-
+fi
 
 echo "--- obfuscation mismatch (H1 outside the server's range)"
 run_engine bad "${awg/h1=100000-100500/h1=999}"
@@ -232,6 +308,7 @@ PY
 }
 
 if [ -n "${CHAIN_XRAY:-}" ]; then
+  stop_engines
   # Xray's TUN routes need a default route to find the way out. The server
   # gets an address only that route leads to, as on the internet, so that in
   # TUN mode the engine's own packets enter the TUN. The tunnel's addresses

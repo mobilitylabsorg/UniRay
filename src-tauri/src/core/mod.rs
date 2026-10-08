@@ -77,7 +77,13 @@ pub(crate) async fn prepare_engine(app: &AppHandle, server: &Server, settings: &
         return Ok(None);
     }
     let (server, ipv6, port) = (server.clone(), settings.ipv6, free_port()?);
-    let run = tauri::async_runtime::spawn_blocking(move || engine::prepare(&server, port, ipv6))
+    // On Android the service fills it in: only it knows where the system
+    // extracted the native libraries.
+    #[cfg(desktop)]
+    let naive = app.state::<App>().paths.naive.clone();
+    #[cfg(mobile)]
+    let naive = std::path::PathBuf::new();
+    let run = tauri::async_runtime::spawn_blocking(move || engine::prepare(&server, port, ipv6, &naive))
         .await
         .map_err(|err| CmdError::core(err.to_string()))??;
     for warning in run.iter().flat_map(|run| &run.warnings) {

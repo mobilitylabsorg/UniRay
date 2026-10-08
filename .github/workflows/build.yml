@@ -81,6 +81,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Sidecars (Xray, helper, engine)
         run: bash scripts/prepare-sidecars.sh --release
+        env:
+          # fetch-naive.sh reads the naiveproxy release through the API.
+          GITHUB_TOKEN: ${{ github.token }}
 
       # The engine against the real amneziawg-go server, in network namespaces,
       # alone and behind Xray and the helper as the app runs them.
@@ -99,6 +102,7 @@ jobs:
             CHAIN_HELPER="$GITHUB_WORKSPACE/target/release/uniray-helper" \
             CHAIN_ASSETS="$GITHUB_WORKSPACE/src-tauri/resources" \
             CHAIN_CONFIGS="$GITHUB_WORKSPACE/target/release/examples/engine_configs" \
+            NAIVE_BIN="$GITHUB_WORKSPACE/src-tauri/binaries/uniray-naive-$triple" \
             bash e2e/e2e.sh "$bin/uniray-engine" "$bin/amneziawg-go" "$bin/keygen"
 
       # Includes the tests that run generated configs through the real Xray.
@@ -142,6 +146,9 @@ jobs:
       - name: Sidecars (Xray, Wintun, helper, engine)
         shell: bash
         run: bash scripts/prepare-sidecars.sh --release
+        env:
+          # fetch-naive.sh reads the naiveproxy release through the API.
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Build
         run: pnpm tauri build --bundles nsis
@@ -153,7 +160,7 @@ jobs:
           $release = "target/release"
           $out = "portable/UniRay"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          Copy-Item "$release/uniray.exe", "$release/uniray-xray.exe", "$release/uniray-helper.exe", "$release/uniray-engine.exe", "$release/wintun.dll", "$release/LICENSE-Wintun" $out
+          Copy-Item "$release/uniray.exe", "$release/uniray-xray.exe", "$release/uniray-helper.exe", "$release/uniray-engine.exe", "$release/uniray-naive.exe", "$release/wintun.dll", "$release/LICENSE-Wintun" $out
           Copy-Item -Recurse "$release/resources" $out
           Compress-Archive -Path $out -DestinationPath "portable/UniRay-windows-x64-portable.zip"
 
@@ -208,6 +215,10 @@ jobs:
           bash scripts/fetch-xray-android.sh
           bash scripts/build-engine.sh aarch64-linux-android \
             src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libuniray_engine.so
+          bash scripts/fetch-naive.sh aarch64-linux-android \
+            src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libnaive.so
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Signing key
         env:
@@ -281,6 +292,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Sidecars (Xray, helper, engine)
         run: bash scripts/prepare-sidecars.sh --release ${{ matrix.target }}
+        env:
+          # fetch-naive.sh reads the naiveproxy release through the API.
+          GITHUB_TOKEN: ${{ github.token }}
 
       # Tauri signs and notarizes when these are set; an empty one would make
       # it try and fail, so only the ones that exist are passed on.

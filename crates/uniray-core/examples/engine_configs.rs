@@ -24,7 +24,7 @@ fn main() {
     };
     let server = server_from_conf(&std::fs::read_to_string(conf).expect("read the .conf")).expect("parse the .conf");
     let settings = Settings { routing_preset: RoutingPreset::Global, ..Default::default() };
-    let run = prepare(&server, engine_port.parse().expect("engine port"), false)
+    let run = prepare(&server, engine_port.parse().expect("engine port"), false, Path::new("naive"))
         .expect("prepare the engine")
         .expect("a server for the engine");
     let runtime = Runtime {

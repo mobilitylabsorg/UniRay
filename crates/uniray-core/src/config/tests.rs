@@ -543,4 +543,18 @@ fn engine_without_udp_blocks_it_last() {
     let config = build(&engine_server(), &Settings::default(), &runtime).unwrap().config;
     let rules = config["routing"]["rules"].as_array().unwrap();
     assert_eq!(rules.last().unwrap(), &json!({ "network": "udp", "outboundTag": "block" }));
+    // The default remote DNS (DoH) needs no UDP.
+    assert_eq!(config["dns"]["servers"].as_array().unwrap().last().unwrap(), "https://1.1.1.1/dns-query");
+
+    // Plain DNS through the proxy goes over TCP then.
+    for (remote, expected) in [("8.8.8.8", "tcp://8.8.8.8"), ("udp://9.9.9.9:53", "tcp://9.9.9.9:53"), ("tcp://1.0.0.1", "tcp://1.0.0.1")] {
+        let settings = Settings { remote_dns: remote.into(), ..Settings::default() };
+        let config = build(&engine_server(), &settings, &runtime).unwrap().config;
+        assert_eq!(config["dns"]["servers"].as_array().unwrap().last().unwrap(), expected);
+    }
+    // Not when UDP goes through.
+    let settings = Settings { remote_dns: "8.8.8.8".into(), ..Settings::default() };
+    let runtime = Runtime { engine: Some(engine(false)), ..proxy_runtime() };
+    let config = build(&engine_server(), &settings, &runtime).unwrap().config;
+    assert_eq!(config["dns"]["servers"].as_array().unwrap().last().unwrap(), "8.8.8.8");
 }

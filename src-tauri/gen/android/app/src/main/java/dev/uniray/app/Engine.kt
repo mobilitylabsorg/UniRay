@@ -18,7 +18,7 @@ import kotlin.concurrent.thread
 import org.json.JSONObject
 
 /**
- * `uniray-engine`, which runs the servers Xray cannot (WireGuard, AmneziaWG)
+ * `uniray-engine`, which runs the servers Xray cannot (WireGuard, AmneziaWG, Naive)
  * and serves them to Xray, and to nothing else, as a SOCKS5 proxy on loopback
  * (see `engine/` and `uniray_core::engine` in the repository).
  *
@@ -30,6 +30,18 @@ object Engine {
   private const val READY_TIMEOUT_MS = 10_000L
 
   fun binary(context: Context) = File(context.applicationInfo.nativeLibraryDir, "libuniray_engine.so")
+
+  /**
+   * The engine's config with the `naive` it runs for a Naive server, which
+   * ships as a native library too; the app cannot know where the system put
+   * those. Unchanged for the other servers.
+   */
+  fun withNaive(context: Context, config: String): String {
+    val json = JSONObject(config)
+    val naive = json.optJSONObject("naive") ?: return config
+    naive.put("binary", File(context.applicationInfo.nativeLibraryDir, "libnaive.so").absolutePath)
+    return json.toString()
+  }
 
   /** Where the engine's log lines go: the core's error log, which the app shows. */
   fun logFile(config: String, fallback: File): File =
@@ -53,7 +65,7 @@ object Engine {
     private val onExit: (String) -> Unit,
   ) {
     private val configFile = File(context.filesDir, "run/engine.json")
-    private var config = JSONObject(config)
+    private var config = JSONObject(withNaive(context, config))
     private var process: java.lang.Process? = null
     private val exited = CountDownLatch(1)
     private var owner: OwnerServer? = null
@@ -99,11 +111,11 @@ object Engine {
         val code = started.waitFor()
         exited.countDown()
         ready.countDown()
-        if (!stopping) onExit("the WireGuard engine stopped (exit code $code)")
+        if (!stopping) onExit("the engine stopped (exit code $code)")
       }
       if (!ready.await(READY_TIMEOUT_MS, TimeUnit.MILLISECONDS) || exited.count == 0L) {
         stop()
-        return "the WireGuard engine did not start; see the log"
+        return "the engine did not start; see the log"
       }
       return null
     }

@@ -10,15 +10,18 @@ pub enum ServerSource {
     /// A complete Xray config from a JSON subscription. Its outbounds, routing
     /// and DNS are used as is; inbounds are replaced with ours.
     Config(Value),
-    /// A WireGuard or AmneziaWG server. Not Xray: it runs on the AmneziaWG
-    /// engine, see [`crate::wireguard`].
+    /// A WireGuard or AmneziaWG server. Not Xray: it runs on the engine, see
+    /// [`crate::wireguard`] and [`crate::engine`].
     WireGuard(crate::wireguard::WgConfig),
+    /// A NaiveProxy server. Not Xray: `naive` runs it behind the engine, see
+    /// [`crate::naive`].
+    Naive(crate::naive::NaiveConfig),
 }
 
 impl ServerSource {
-    /// Whether this server runs on Xray (else on the AmneziaWG engine).
+    /// Whether this server runs on Xray (else on the engine).
     pub fn is_xray(&self) -> bool {
-        !matches!(self, ServerSource::WireGuard(_))
+        matches!(self, ServerSource::Outbound(_) | ServerSource::Config(_))
     }
 }
 
@@ -28,7 +31,7 @@ pub struct Server {
     pub id: String,
     pub name: String,
     /// `vless`, `vmess`, `trojan`, `shadowsocks`, `hysteria`, `amneziawg`,
-    /// `wireguard` or `custom`.
+    /// `wireguard`, `naive` or `custom`.
     pub protocol: String,
     pub address: String,
     pub port: u16,

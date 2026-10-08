@@ -7,7 +7,7 @@ use super::*;
 fn outbound(server: &Server) -> &Value {
     match &server.source {
         ServerSource::Outbound(outbound) => outbound,
-        ServerSource::Config(_) | ServerSource::WireGuard(_) => panic!("expected an outbound"),
+        _ => panic!("expected an outbound"),
     }
 }
 

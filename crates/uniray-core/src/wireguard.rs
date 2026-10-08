@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -94,19 +94,7 @@ impl WgConfig {
             .iter()
             .map(|peer| {
                 let (host, port) = split_endpoint(&peer.endpoint)?;
-                if let Ok(ip) = host.parse::<IpAddr>() {
-                    return Ok(SocketAddr::new(ip, port));
-                }
-                let found: Vec<SocketAddr> = (host.as_str(), port)
-                    .to_socket_addrs()
-                    .map_err(|err| Error::InvalidConfig(format!("cannot resolve {host}: {err}")))?
-                    .collect();
-                found
-                    .iter()
-                    .find(|addr| addr.is_ipv4())
-                    .or_else(|| found.iter().find(|_| ipv6))
-                    .copied()
-                    .ok_or_else(|| Error::InvalidConfig(format!("{host} has no usable address")))
+                crate::engine::resolve(&host, port, ipv6)
             })
             .collect()
     }

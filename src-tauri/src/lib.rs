@@ -58,6 +58,8 @@ pub fn run() {
                 helper: sidecar("uniray-helper")?,
                 #[cfg(desktop)]
                 engine: sidecar("uniray-engine")?,
+                #[cfg(desktop)]
+                naive: sidecar("uniray-naive")?,
             };
             app.manage(App::new(store, device, paths));
 

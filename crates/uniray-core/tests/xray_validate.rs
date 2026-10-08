@@ -199,6 +199,24 @@ fn xray_accepts_generated_configs() {
         }
     }
 
+    // Naive: no UDP through the engine, plain remote DNS over TCP.
+    let naive = parse_link("naive+https://me:pw@203.0.113.9:443#N").unwrap();
+    let engine = config::Engine {
+        port: 28091,
+        user: "uniray".into(),
+        pass: "secret".into(),
+        bypass: vec![Bypass { addr: "203.0.113.9:443".parse().unwrap(), network: "tcp,udp" }],
+        block_udp: true,
+    };
+    let plain_dns = Settings { remote_dns: "8.8.8.8".into(), ..Default::default() };
+    for (runtime_index, runtime) in runtimes.iter().enumerate() {
+        let runtime = Runtime { engine: Some(engine.clone()), ..runtime.clone() };
+        let built = build(&naive, &plain_dns, &runtime).unwrap();
+        assert_eq!(built.config["dns"]["servers"][0], "tcp://8.8.8.8");
+        xray_accepts(&xray, &dir, &format!("naive (runtime #{runtime_index})"), &built.config);
+        checked += 1;
+    }
+
     let refs: Vec<&Server> = servers.iter().collect();
     let ports: Vec<u16> = (0..refs.len() as u16).map(|index| 29000 + index).collect();
     xray_accepts(&xray, &dir, "delay probe", &build_probe(&refs, &ports).unwrap());

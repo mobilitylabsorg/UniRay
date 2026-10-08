@@ -32,6 +32,9 @@ pub struct Paths {
     /// Runs the servers Xray cannot (WireGuard, AmneziaWG), see `core::engine`.
     #[cfg(desktop)]
     pub engine: PathBuf,
+    /// NaiveProxy's client, which the engine runs for a Naive server.
+    #[cfg(desktop)]
+    pub naive: PathBuf,
 }
 
 pub struct App {

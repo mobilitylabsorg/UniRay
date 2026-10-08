@@ -83,7 +83,7 @@ class UniRayVpnService : VpnService() {
   // after it has been removed (which would leave it stuck, with us gone).
   @Volatile private var stopped = false
   private var tun: ParcelFileDescriptor? = null
-  // For a WireGuard/AmneziaWG server: the engine Xray hands its traffic to.
+  // For a WireGuard/AmneziaWG or Naive server: the engine Xray hands its traffic to.
   private var engine: Engine.Child? = null
   private var notification: NotificationCompat.Builder? = null
 

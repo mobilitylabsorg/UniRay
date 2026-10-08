@@ -119,7 +119,7 @@ impl App {
     fn xray_only(&self, servers: Vec<Server>) -> Vec<Server> {
         let (xray, other): (Vec<Server>, Vec<Server>) = servers.into_iter().partition(|server| server.source.is_xray());
         for server in &other {
-            self.log(format!("uniray: skipped {} ({}): WireGuard/AmneziaWG is not supported here", server.name, server.protocol));
+            self.log(format!("uniray: skipped {} ({}): WireGuard, AmneziaWG and Naive are not supported here", server.name, server.protocol));
         }
         xray
     }

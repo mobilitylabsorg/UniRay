@@ -3,7 +3,10 @@
 // loopback. Xray stays in front (TUN, routing, DNS, stats); for such a server
 // its proxy outbound is SOCKS to this engine.
 //
-// Usage: uniray-engine awg --config <file>
+// Usage: uniray-engine awg|naive --config <file>
+//
+// awg runs WireGuard/AmneziaWG itself (amneziawg-go, userspace); naive starts
+// the official NaiveProxy client as its child and passes connections on.
 //
 // The config file holds secrets, so it is read once and removed. Nothing
 // secret goes on the command line, which other users can read. The engine
@@ -24,6 +27,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -48,12 +52,13 @@ type Config struct {
 	// Keep running when stdin closes.
 	Detached bool `json:"detached"`
 
-	AWG *AWGConfig `json:"awg"`
+	AWG   *AWGConfig   `json:"awg"`
+	Naive *NaiveConfig `json:"naive"`
 }
 
 func main() {
 	if len(os.Args) < 2 {
-		fatalf("usage: uniray-engine awg --config <file>")
+		fatalf("usage: uniray-engine awg|naive --config <file>")
 	}
 	mode := os.Args[1]
 	flags := flag.NewFlagSet(mode, flag.ExitOnError)
@@ -83,6 +88,13 @@ func main() {
 			fatalf("the config has no awg section")
 		}
 		upstream, err = startAWG(config.AWG)
+	case "naive":
+		if config.Naive == nil {
+			fatalf("the config has no naive section")
+		}
+		upstream, err = startNaive(config.Naive, filepath.Dir(*configPath), func(err error) {
+			fatalf("naive exited: %v", err)
+		})
 	default:
 		fatalf("unknown mode %q", mode)
 	}

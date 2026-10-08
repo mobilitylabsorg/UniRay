@@ -11,6 +11,7 @@ pub mod error;
 pub mod hwid;
 pub mod links;
 pub mod model;
+pub mod naive;
 pub mod routing;
 pub mod subscription;
 pub mod wireguard;
