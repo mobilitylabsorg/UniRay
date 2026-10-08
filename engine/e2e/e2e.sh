@@ -323,7 +323,9 @@ if [ -n "${CHAIN_XRAY:-}" ]; then
   chain tun
 fi
 
-grep -q 'handshake with the server done' "$work/good.err" && echo "PASS  the engine logged the handshake" || { echo "FAIL  no handshake logged"; failures=$((failures + 1)); }
+# The handshake is polled once a second; an engine may be stopped sooner.
+cat "$work"/{good,uid0,uid1,yes,no}.err 2>/dev/null | grep -q 'handshake with the server done' \
+  && echo "PASS  the engine logged the handshake" || { echo "FAIL  no handshake logged"; failures=$((failures + 1)); }
 grep -q 'handshake with the server done' "$work/bad.err" && { echo "FAIL  a handshake with mismatched H1"; failures=$((failures + 1)); } || echo "PASS  no handshake with mismatched H1"
 if [ "$failures" -ne 0 ]; then
   echo "== $failures check(s) failed"; echo "--- engine log"; cat "$work/good.err"; echo "--- server log"; tail -20 "$work/server.log"
