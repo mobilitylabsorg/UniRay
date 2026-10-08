@@ -39,8 +39,8 @@ Linux · Windows · macOS · Android · MikroTik
 | --- | --- | --- |
 | VLESS, VMess, Trojan, Shadowsocks, Hysteria2 | Xray | ✅ |
 | WireGuard, AmneziaWG 2.0 | `uniray-engine` за Xray | ✅ |
-| AmneziaWG 3.1 (RandomTrailers, DisableCookies, HeaderProtectionKey) | `uniray-engine` на amneziawg-go v3.1 | 🟡 проверено с сервером v3.1 в тестах |
-| NaiveProxy (`naive+https`, `naive+quic`) | официальный `naive` за движком | 🟡 запуск проверен в тестах, с сервером — нет |
+| AmneziaWG 3.1 (RandomTrailers, DisableCookies, HeaderProtectionKey) | `uniray-engine` на amneziawg-go v3.1 | ✅ |
+| NaiveProxy (`naive+https`, `naive+quic`) | официальный `naive` за движком | ✅ |
 
 Цепочка «Xray → движок → сервер AmneziaWG» проверяется в CI на каждый коммит: в network namespaces, в режимах прокси и TUN.
 
