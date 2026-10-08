@@ -313,14 +313,16 @@ fn newer_amneziawg_options_reach_the_engine() {
     ] {
         assert!(uapi.contains(&format!("{line}\n")), "{line} missing from\n{uapi}");
     }
+    // AWG 3.1's switches: on/off in the .conf, true/false for Go's ParseBool.
+    assert!(uapi.contains("\nrandom_trailers=true\ndisable_cookies=true\n"), "{uapi}");
     // Device options, ahead of the peers.
-    assert!(uapi.find("max_handshake_attempts").unwrap() < uapi.find("replace_peers").unwrap());
-    // Not in any amneziawg-go yet: kept, exported, said so - not sent.
-    assert!(!uapi.contains("random_trailers") && !uapi.contains("disable_cookies"), "{uapi}");
-    assert_eq!(config.unsupported_options(), ["RandomTrailers", "DisableCookies"]);
-    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(uapi.find("disable_cookies").unwrap() < uapi.find("replace_peers").unwrap());
+    assert!(config.unsupported_options().is_empty());
+    assert!(warnings.is_empty(), "{warnings:?}");
     let conf = config.to_conf();
     assert!(conf.contains("RandomTrailers = on") && conf.contains("HeaderProtectionKey = "));
+    let off = parse_conf(&awg_new_conf().replace("RandomTrailers = on", "RandomTrailers = Off")).unwrap().0;
+    assert!(off.to_uapi(&["203.0.113.7:51820".parse().unwrap()]).unwrap().contains("\nrandom_trailers=false\n"));
     // The old names stay one word.
     assert!(uapi.contains("\njc=4\njmin=10\njmax=50\n"), "{uapi}");
 }

@@ -3,12 +3,12 @@ module uniray/engine
 go 1.25.0
 
 require (
-	github.com/amnezia-vpn/amneziawg-go v0.2.20-0.20260724121833-457d920a1a7d
 	golang.org/x/crypto v0.42.0
 	golang.org/x/sys v0.36.0
 )
 
 require (
+	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260828
 	github.com/google/btree v1.1.3 // indirect
 	golang.org/x/net v0.44.0 // indirect
 	golang.org/x/time v0.9.0 // indirect

@@ -32,11 +32,22 @@ pub const OBFUSCATION_KEYS: [&str; 29] = [
     "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts", "RandomTrailers", "DisableCookies",
 ];
 
-/// Options the engine's amneziawg-go does not have: kept in the server (and
-/// its `.conf` export) but left out of the UAPI, which would refuse them. The
-/// AWG 1.5 extras are gone from it; RandomTrailers and DisableCookies are in
-/// no published amneziawg-go yet. See [`WgConfig::unsupported_options`].
-pub const ENGINE_UNSUPPORTED_KEYS: [&str; 6] = ["J1", "J2", "J3", "Itime", "RandomTrailers", "DisableCookies"];
+/// Options the engine's amneziawg-go (3.1) does not have: kept in the server
+/// (and its `.conf` export) but left out of the UAPI, which would refuse them.
+/// The AWG 1.5 extras are gone from it. See [`WgConfig::unsupported_options`].
+pub const ENGINE_UNSUPPORTED_KEYS: [&str; 4] = ["J1", "J2", "J3", "Itime"];
+
+/// Options that are switches: `on`/`off` in a `.conf`, as AmneziaVPN writes
+/// them, but Go's ParseBool in the UAPI, which knows only true/false and 1/0.
+const FLAG_KEYS: [&str; 2] = ["RandomTrailers", "DisableCookies"];
+
+fn flag_value(value: &str) -> Option<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "on" | "true" | "1" => Some(true),
+        "off" | "false" | "0" => Some(false),
+        _ => None,
+    }
+}
 
 /// The nonce of a protected header (amneziawg-go's HeaderCipherNonceSize).
 const HEADER_NONCE_SIZE: u32 = 12;
@@ -133,8 +144,15 @@ impl WgConfig {
         let mut uapi = format!("private_key={}\n", key_hex(&self.private_key)?);
         for key in OBFUSCATION_KEYS.into_iter().filter(|key| !ENGINE_UNSUPPORTED_KEYS.contains(key)) {
             if let Some(value) = self.obfuscation.get(key) {
-                // The key is base64 like the others; the UAPI wants hex.
-                let value = if key == "HeaderProtectionKey" { key_hex(value)? } else { value.clone() };
+                let value = if key == "HeaderProtectionKey" {
+                    // The key is base64 like the others; the UAPI wants hex.
+                    key_hex(value)?
+                } else if FLAG_KEYS.contains(&key) {
+                    let flag = flag_value(value).ok_or_else(|| Error::InvalidConfig(format!("bad AmneziaWG option {key} = {value:?}")))?;
+                    flag.to_string()
+                } else {
+                    value.clone()
+                };
                 uapi.push_str(&format!("{}={value}\n", uapi_name(key)));
             }
         }
@@ -293,9 +311,7 @@ fn validate_obfuscation(key: &str, value: &str) -> Result<()> {
             key_hex(value).map_err(|_| bad())?;
         }
         "RandomTrailers" | "DisableCookies" => {
-            if !["on", "off", "true", "false", "1", "0"].iter().any(|flag| flag.eq_ignore_ascii_case(value)) {
-                return Err(bad());
-            }
+            flag_value(value).ok_or_else(bad)?;
         }
         // Signature packets in the CPS notation; one line each.
         _ => {

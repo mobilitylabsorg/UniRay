@@ -7,7 +7,8 @@
 #
 # Checks: HTTP and UDP through the tunnel; refusals for a wrong password, for
 # a process the engine was not told about, and for mismatched obfuscation
-# (H1), which proves the AmneziaWG options are really in effect.
+# (H1, random trailers), which proves the AmneziaWG options are really in
+# effect.
 #
 # Usage: e2e.sh <uniray-engine> <amneziawg-go> <keygen>
 #   keygen prints "<priv b64> <pub b64> <priv hex> <pub hex>".
@@ -70,14 +71,17 @@ h2=200000-200500
 h3=300000-300500
 h4=400000-400500"
 # The newer options AmneziaVPN exports: a key encrypting the headers, padding
-# added to the content, the timers drawn from ranges.
+# added to the content, the timers drawn from ranges, and AWG 3.1's random
+# trailers (both ends must agree) and cookie replies turned off.
 read -r hpk_b64 hpk_hex < <(python3 -c 'import base64, os; k = os.urandom(32); print(base64.b64encode(k).decode(), k.hex())')
 newer="content_padding_addition=10-100
 rekey_after_time=100-120
 rekey_timeout=3-7
 reject_after_time=150-180
 keepalive_timeout=5-15
-max_handshake_attempts=15-20"
+max_handshake_attempts=15-20
+random_trailers=true
+disable_cookies=true"
 awg="$awg
 header_protection_key=$hpk_hex
 $newer"
@@ -283,6 +287,9 @@ delay=$(probe probe "$awg" 10s)
 if [ -n "$delay" ] && [ "$delay" -ge 0 ]; then echo "PASS  probe: $delay ms"; else echo "FAIL  probe: '$delay' $(tail -2 "$work/probe.err")"; failures=$((failures + 1)); fi
 delay=$(probe probebad "${awg/h1=100000-100500/h1=999}" 3s)
 if [ "$delay" = -1 ]; then echo "PASS  probe through a mismatched H1: -1"; else echo "FAIL  probe through a mismatched H1: '$delay'"; failures=$((failures + 1)); fi
+# The server expects random trailers; a client without them gets no handshake.
+delay=$(probe probenotrailers "${awg/random_trailers=true/random_trailers=false}" 3s)
+if [ "$delay" = -1 ]; then echo "PASS  probe without the server's random trailers: -1"; else echo "FAIL  probe without the server's random trailers: '$delay'"; failures=$((failures + 1)); fi
 
 echo "--- obfuscation mismatch (H1 outside the server's range)"
 run_engine bad "${awg/h1=100000-100500/h1=999}"
@@ -298,7 +305,7 @@ chain() { # chain <proxy|tun>
     "Jc = 4" "Jmin = 10" "Jmax = 50" "S1 = 117" "S2 = 19" "S3 = 16" "S4 = 16" \
     "H1 = 100000-100500" "H2 = 200000-200500" "H3 = 300000-300500" "H4 = 400000-400500" \
     "HeaderProtectionKey = $hpk_b64" "ContentPaddingAddition = 10-100" "RekeyAfterTime = 100-120" "RekeyTimeout = 3-7" \
-    "RejectAfterTime = 150-180" "KeepaliveTimeout = 5-15" "MaxHandshakeAttempts = 15-20" "RandomTrailers = on" \
+    "RejectAfterTime = 150-180" "KeepaliveTimeout = 5-15" "MaxHandshakeAttempts = 15-20" "RandomTrailers = on" "DisableCookies = on" \
     "[Peer]" "PublicKey = $server_pub" "Endpoint = 198.51.100.1:51820" "AllowedIPs = 0.0.0.0/0" >"$dir/server.conf"
   "$CHAIN_CONFIGS" "$dir/server.conf" "$dir" 18080 18090 $([ "$mode" = tun ] && echo tun)
   if [ ! -e /proc/net/if_inet6 ]; then

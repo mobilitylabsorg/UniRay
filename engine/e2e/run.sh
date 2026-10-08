@@ -6,6 +6,6 @@ cd "$(dirname "$0")/.."
 bin="$(mktemp -d)"
 trap 'rm -rf "$bin"' EXIT
 go build -o "$bin/uniray-engine" .
-go build -o "$bin/amneziawg-go" github.com/amnezia-vpn/amneziawg-go
+go build -o "$bin/amneziawg-go" github.com/amnezia-vpn/amneziawg-go/v3
 go build -o "$bin/keygen" ./e2e/keygen
 bash e2e/e2e.sh "$bin/uniray-engine" "$bin/amneziawg-go" "$bin/keygen"

@@ -100,7 +100,7 @@ jobs:
           go test ./...
           bin=$(mktemp -d)
           go build -o "$bin/uniray-engine" .
-          go build -o "$bin/amneziawg-go" github.com/amnezia-vpn/amneziawg-go
+          go build -o "$bin/amneziawg-go" github.com/amnezia-vpn/amneziawg-go/v3
           go build -o "$bin/keygen" ./e2e/keygen
           sudo CHAIN_XRAY="$GITHUB_WORKSPACE/src-tauri/binaries/uniray-xray-$triple" \
             CHAIN_HELPER="$GITHUB_WORKSPACE/target/release/uniray-helper" \
