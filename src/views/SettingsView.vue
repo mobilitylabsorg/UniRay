@@ -115,6 +115,22 @@ const privilegeLabel = computed(() => PRIVILEGE_LABELS[privilege.value?.level ??
 const canStealth = computed(
   () => privilege.value?.level === "root" || privilege.value?.level === "shizukuRoot",
 );
+const hasTproxy = computed(() => privilege.value?.hasTproxy === true);
+const stealthRootTunHint = computed(() => {
+  if (hasTproxy.value) return "settings.stealthRootTunTproxySupported";
+  if (privilege.value && privilege.value.hasTproxy === false) return "settings.stealthRootTunTproxyMissing";
+  return "settings.stealthRootTunHint";
+});
+
+watch(
+  () => [canStealth.value, privilege.value?.hasTproxy] as const,
+  ([can, tproxy]) => {
+    if (can && tproxy && store.settings?.stealthRootTun) {
+      save({ stealthRootTun: false });
+    }
+  },
+  { immediate: true },
+);
 
 async function refreshPrivilege() {
   if (store.isDesktop) return;
@@ -282,6 +298,9 @@ onMounted(refreshPrivilege);
             <AppIcon name="chevron" class="text-muted" />
           </button>
         </Transition>
+        <div v-if="store.settings.stealth && canStealth" class="px-4 py-2.5 text-xs text-amber-500 bg-amber-500/10">
+          {{ t("settings.perAppStealthWarning") }}
+        </div>
       </div>
 
       <div class="section-title">{{ t("settings.stealth") }}</div>
@@ -318,12 +337,13 @@ onMounted(refreshPrivilege);
           <div v-if="store.settings.stealth && canStealth" class="flex items-center gap-3 px-4 py-3">
             <div class="flex-1">
               <div class="font-medium">{{ t("settings.stealthRootTun") }}</div>
-              <div class="text-xs text-muted">{{ t("settings.stealthRootTunHint") }}</div>
+              <div class="text-xs text-muted">{{ t(stealthRootTunHint) }}</div>
             </div>
             <ToggleSwitch
-              :model-value="store.settings.stealthRootTun"
+              :model-value="hasTproxy ? false : store.settings.stealthRootTun"
+              :disabled="hasTproxy"
               :label="t('settings.stealthRootTun')"
-              @update:model-value="(stealthRootTun: boolean) => save({ stealthRootTun })"
+              @update:model-value="(stealthRootTun: boolean) => !hasTproxy && save({ stealthRootTun })"
             />
           </div>
         </Transition>

@@ -1,6 +1,11 @@
 <script setup lang="ts">
-defineProps<{ modelValue: boolean; label: string; disabled?: boolean }>();
-defineEmits<{ "update:modelValue": [value: boolean] }>();
+const props = defineProps<{ modelValue: boolean; label: string; disabled?: boolean }>();
+const emit = defineEmits<{ "update:modelValue": [value: boolean] }>();
+
+function toggle() {
+  if (props.disabled) return;
+  emit("update:modelValue", !props.modelValue);
+}
 </script>
 
 <template>
@@ -10,9 +15,9 @@ defineEmits<{ "update:modelValue": [value: boolean] }>();
     :aria-checked="modelValue"
     :aria-label="label"
     :disabled="disabled"
-    class="relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50"
+    class="relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
     :class="modelValue ? 'bg-accent' : 'bg-line'"
-    @click="$emit('update:modelValue', !modelValue)"
+    @click="toggle"
   >
     <span
       class="absolute top-0.5 left-0.5 size-5 rounded-full bg-white shadow transition-transform"

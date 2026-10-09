@@ -127,11 +127,11 @@ class UniRayVpnService : VpnService() {
           e.message ?: e.toString()
         }
       if (error != null) {
-        shutdown(null)
+        shutdown(request, error)
       } else {
         startTicker()
+        VpnState.write(this, true, request, null)
       }
-      VpnState.write(this, error == null, request, error)
     }
     return START_NOT_STICKY
   }
@@ -177,11 +177,30 @@ class UniRayVpnService : VpnService() {
         .setSession(spec.optString("sessionName", getString(R.string.app_name)))
         .setMtu(spec.optInt("mtu", 1500))
         .addAddress(ADDRESS_V4, PREFIX_V4)
-        .addRoute("0.0.0.0", 0)
         .addDnsServer(DNS_V4)
+    // Everything but the engine's server (see the core's tunnel_routes).
+    val routes = spec.optJSONArray("routes")?.let { list -> (0 until list.length()).map { list.getString(it) } }
+      ?: listOf("0.0.0.0/0", "::/0")
+    val (routesV6, routesV4) = routes.partition { it.contains(':') }
+    for (route in routesV4) {
+      val prefix = route.substringAfter('/', "").toIntOrNull() ?: continue
+      try {
+        builder.addRoute(route.substringBefore('/'), prefix)
+      } catch (e: Exception) {
+        Log.w(TAG, "Failed to add route: $route", e)
+      }
+    }
     try {
       // Also capture IPv6, so that it cannot bypass the tunnel.
-      builder.addAddress(ADDRESS_V6, PREFIX_V6).addRoute("::", 0)
+      builder.addAddress(ADDRESS_V6, PREFIX_V6)
+      for (route in routesV6) {
+        val prefix = route.substringAfter('/', "").toIntOrNull() ?: continue
+        try {
+          builder.addRoute(route.substringBefore('/'), prefix)
+        } catch (e: Exception) {
+          Log.w(TAG, "Failed to add IPv6 route: $route", e)
+        }
+      }
     } catch (e: Exception) {
       Log.w(TAG, "IPv6 is not available for the tunnel", e)
     }
@@ -221,9 +240,10 @@ class UniRayVpnService : VpnService() {
     running = error == null
     if (error != null) return error
 
-    // After Xray, so the first handshake can already leave: the engine's
-    // packets enter the tunnel like the app's own and Xray sends them out
-    // past it (the config routes the server's endpoint direct).
+    // After Xray, so the first handshake can already leave. The engine's
+    // packets to its server leave by the system's routes (the VPN leaves the
+    // server out); should they enter the tunnel all the same, the config
+    // routes the server's endpoint direct.
     val engineMode = spec.optString("engineMode")
     if (engineMode.isNotEmpty()) {
       val log = Engine.logFile(spec.getString("config"), File(filesDir, "run/engine.log"))
@@ -270,25 +290,17 @@ class UniRayVpnService : VpnService() {
   }
 
   /**
-   * Removes the notification for good. Runs the removal on the ticker thread,
-   * after any refresh already queued there, so nothing re-posts it afterwards;
-   * [stopped] keeps later refreshes from posting at all.
+   * Removes the notification for good.
    */
   private fun clearNotification() {
-    val drop = Runnable {
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-        stopForeground(STOP_FOREGROUND_REMOVE)
-      } else {
-        @Suppress("DEPRECATION") stopForeground(true)
-      }
-      (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIFICATION_ID)
+    stopped = true
+    notification = null
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+      stopForeground(STOP_FOREGROUND_REMOVE)
+    } else {
+      @Suppress("DEPRECATION") stopForeground(true)
     }
-    try {
-      ticker.execute(drop)
-      ticker.shutdown()
-    } catch (e: java.util.concurrent.RejectedExecutionException) {
-      drop.run()
-    }
+    (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIFICATION_ID)
   }
 
   /** Queues a notification refresh unless we are stopping. */
@@ -307,7 +319,13 @@ class UniRayVpnService : VpnService() {
       ticker.scheduleWithFixedDelay(
         {
           try {
-            if (System.currentTimeMillis() - lastCheckAt >= CHECK_INTERVAL_MS) checkConnection()
+            if (System.currentTimeMillis() - lastCheckAt >= CHECK_INTERVAL_MS) {
+              lastCheckAt = System.currentTimeMillis()
+              kotlin.concurrent.thread(name = "vpn-check", isDaemon = true) {
+                checkConnection()
+                submitRefresh()
+              }
+            }
             refreshNotification()
           } catch (e: Exception) {
             Log.w(TAG, "notification refresh failed", e)

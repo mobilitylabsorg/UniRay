@@ -25,7 +25,14 @@ object VpnState {
     val tmp = File(target.parentFile, target.name + ".tmp")
     tmp.writeText(json.toString())
     // Atomic, so the app never reads half a file.
-    tmp.renameTo(target)
+    if (!tmp.renameTo(target)) {
+      target.delete()
+      if (!tmp.renameTo(target)) {
+        target.writeText(json.toString())
+        tmp.delete()
+      }
+    }
+    lastServiceAliveCheck = 0L
   }
 
   fun read(context: Context): State {
@@ -41,17 +48,31 @@ object VpnState {
     }
   }
 
+  @Volatile private var lastServiceAliveCheck = 0L
+  @Volatile private var cachedServiceAlive = false
+
   /**
    * Whether a tunnel service process exists; it may have been killed without a
    * word. Either the VPN service or the stealth service counts - they are the
    * two ways the tunnel runs and never run at once.
    */
   fun serviceAlive(context: Context): Boolean {
-    val manager = context.getSystemService(ActivityManager::class.java) ?: return false
+    val now = System.currentTimeMillis()
+    if (now - lastServiceAliveCheck < 2500L) {
+      return cachedServiceAlive
+    }
+    val manager = context.getSystemService(ActivityManager::class.java)
     val tunnels = setOf(UniRayVpnService::class.java.name, StealthService::class.java.name)
-    // Deprecated for third-party services, still answers for the app's own.
     @Suppress("DEPRECATION")
-    return manager.getRunningServices(Int.MAX_VALUE).any { it.service.className in tunnels && it.started }
+    val alive =
+      try {
+        manager?.getRunningServices(Int.MAX_VALUE)?.any { it.service.className in tunnels && it.started } ?: false
+      } catch (e: Exception) {
+        read(context).running
+      }
+    cachedServiceAlive = alive
+    lastServiceAliveCheck = now
+    return alive
   }
 
   fun isRunning(context: Context): Boolean = read(context).running && serviceAlive(context)
@@ -60,7 +81,12 @@ object VpnState {
   fun aliveTunnels(context: Context): List<Class<out android.app.Service>> {
     val manager = context.getSystemService(ActivityManager::class.java) ?: return emptyList()
     @Suppress("DEPRECATION")
-    val running = manager.getRunningServices(Int.MAX_VALUE).filter { it.started }.map { it.service.className }.toSet()
+    val running =
+      try {
+        manager.getRunningServices(Int.MAX_VALUE)?.filter { it.started }?.map { it.service.className }?.toSet() ?: emptySet()
+      } catch (e: Exception) {
+        emptySet()
+      }
     // The stealth service first: when both are somehow up, it is the one
     // that matters (the VPN service carries nothing without its interface).
     return listOf(StealthService::class.java, UniRayVpnService::class.java).filter { it.name in running }
