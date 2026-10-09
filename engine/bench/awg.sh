@@ -12,6 +12,7 @@
 #   KERNEL_CC="cubic bbr"   the kernel's congestion controls to measure (default cubic)
 #   ENGINE=<path>  another uniray-engine to measure (default <bin dir>/uniray-engine)
 #   PCAP=<file>    record the engine's upload as the server sees it (sniff.py)
+#   ENGINE_LOG=1   print the engine's log at the end
 #
 # The kernel has no netem here, so the delay and loss come from the delay
 # relay in front of the server (UDP, which is all WireGuard sends).
@@ -111,3 +112,4 @@ if [ -n "${sniffer:-}" ]; then sleep 1; kill "$sniffer"; fi
 for cc in ${KERNEL_CC:-cubic}; do
   echo "kernel TUN, $cc:$(printf '%*s' $((15 - ${#cc})) '')$(CC=$cc measure - u p)"
 done
+if [ -n "${ENGINE_LOG:-}" ]; then cat "$work/engine.err"; fi
