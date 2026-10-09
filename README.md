@@ -7,7 +7,7 @@
 **Кроссплатформенный VPN-клиент на ядре [Xray](https://github.com/XTLS/Xray-core)**<br>
 VLESS · VMess · Trojan · Shadowsocks · Hysteria2 · WireGuard · AmneziaWG · NaiveProxy
 
-[![Build](https://github.com/delarun/UniRay/actions/workflows/build.yml/badge.svg)](https://github.com/delarun/UniRay/actions/workflows/build.yml)
+[![Build](https://github.com/MLabs-UniRay/UniRay/actions/workflows/build.yml/badge.svg)](https://github.com/MLabs-UniRay/UniRay/actions/workflows/build.yml)
 ![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-core-000000?logo=rust)
 ![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)
@@ -55,7 +55,7 @@ Linux · Windows · macOS · Android · MikroTik
 
 ## Установка
 
-Готовые сборки — в [релизах](https://github.com/delarun/UniRay/releases) и в артефактах [запусков CI](https://github.com/delarun/UniRay/actions/workflows/build.yml).
+Готовые сборки — в [релизах](https://github.com/MLabs-UniRay/UniRay/releases) и в артефактах [запусков CI](https://github.com/MLabs-UniRay/UniRay/actions/workflows/build.yml).
 
 - **Linux** — `chmod +x UniRay_*.AppImage` и запуск. Для TUN-режима нужен polkit-агент (права запрашиваются через `pkexec`). Системный прокси выставляется через `gsettings` (GNOME, GTK-приложения, Chromium); в окружениях без него используйте TUN или укажите прокси приложениям вручную.
 - **Windows** — установщик или портативный zip. TUN-режим запрашивает права администратора (UAC).
@@ -205,3 +205,9 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles n
    Готовый `.ipa` ставится на iPhone через Xcode (Window → Devices and Simulators).
 
 </details>
+
+## Лицензия
+
+UniRay распространяется под [GNU General Public License v3.0](LICENSE) (`GPL-3.0-only`): код можно использовать, изменять и распространять, в том числе за деньги, но изменённые версии и производные работы должны оставаться под GPL-3.0 с открытыми исходниками.
+
+Сторонние компоненты сохраняют свои лицензии: Xray-core — MPL-2.0, amneziawg-go — MIT, gVisor — Apache-2.0, NaiveProxy — BSD-3-Clause, Wintun — свои условия (`LICENSE-Wintun` рядом с `wintun.dll`).

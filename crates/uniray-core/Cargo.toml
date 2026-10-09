@@ -3,6 +3,8 @@ name = "uniray-core"
 description = "Platform-independent logic of UniRay: share links, subscriptions, Xray config generation"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 serde.workspace = true
