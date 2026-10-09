@@ -105,6 +105,11 @@ pub struct Engine {
     /// The engine carries no UDP (NaiveProxy): refuse it up front rather than
     /// let every datagram fail inside the engine.
     pub block_udp: bool,
+    /// The server's name, when the engine connects by one (NaiveProxy's TLS
+    /// carries it). Sniffing must not put it in place of the address: the
+    /// `bypass` rule matches the address, and a connection routed by the name
+    /// would go to `proxy`, back into the engine, in a loop.
+    pub sniff_excluded: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -381,7 +386,10 @@ fn retarget_inbound_tags(rule: &mut Value, provider_tags: &[String], our_tags: &
 }
 
 fn inbounds(settings: &Settings, runtime: &Runtime) -> Vec<Value> {
-    let sniffing = json!({ "enabled": true, "destOverride": ["http", "tls", "quic"] });
+    let mut sniffing = json!({ "enabled": true, "destOverride": ["http", "tls", "quic"] });
+    if let Some(engine) = runtime.engine.as_ref().filter(|engine| !engine.sniff_excluded.is_empty()) {
+        sniffing["domainsExcluded"] = engine.sniff_excluded.clone().into();
+    }
     let mut inbounds = Vec::new();
     if let Some(port) = runtime.mixed_port {
         inbounds.push(json!({

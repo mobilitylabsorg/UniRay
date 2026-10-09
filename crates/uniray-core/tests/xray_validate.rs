@@ -192,6 +192,7 @@ fn xray_accepts_generated_configs() {
                 Bypass { addr: "[2001:db8::9]:443".parse().unwrap(), network: "tcp,udp" },
             ],
             block_udp,
+            sniff_excluded: Vec::new(),
         };
         for (runtime_index, runtime) in runtimes.iter().enumerate() {
             let runtime = Runtime { engine: Some(engine.clone()), ..runtime.clone() };
@@ -209,6 +210,7 @@ fn xray_accepts_generated_configs() {
         pass: "secret".into(),
         bypass: vec![Bypass { addr: "203.0.113.9:443".parse().unwrap(), network: "tcp,udp" }],
         block_udp: true,
+        sniff_excluded: vec!["naive.example.com".into()],
     };
     let plain_dns = Settings { remote_dns: "8.8.8.8".into(), ..Default::default() };
     for (runtime_index, runtime) in runtimes.iter().enumerate() {
