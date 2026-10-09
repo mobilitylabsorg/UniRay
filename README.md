@@ -38,8 +38,8 @@ Linux · Windows · macOS · Android · MikroTik
 | | Как | Состояние |
 | --- | --- | --- |
 | VLESS, VMess, Trojan, Shadowsocks, Hysteria2 | Xray | ✅ |
-| WireGuard, AmneziaWG 2.0 | `uniray-engine` за Xray | ✅ |
-| AmneziaWG 3.1 (RandomTrailers, DisableCookies, HeaderProtectionKey) | `uniray-engine` на amneziawg-go v3.1 | ✅ |
+| WireGuard, AmneziaWG 2.0 | `uniray-engine` за Xray | ✅ upload при потерях медленнее, [см. ниже](#upload-wireguard) |
+| AmneziaWG 3.1 (RandomTrailers, DisableCookies, HeaderProtectionKey) | `uniray-engine` на amneziawg-go v3.1 | ✅ upload при потерях медленнее, [см. ниже](#upload-wireguard) |
 | NaiveProxy (`naive+https`, `naive+quic`) | официальный `naive` за движком | ✅ |
 
 Цепочка «Xray → движок → сервер AmneziaWG» проверяется в CI на каждый коммит: в network namespaces, в режимах прокси и TUN.
@@ -92,6 +92,33 @@ Linux · Windows · macOS · Android · MikroTik
 | `crates/uniray-gateway` | Контейнер для роутеров: VPN-шлюз для сети и веб-интерфейс. |
 | `src-tauri` | Приложение: запуск ядра, системный прокси, хранение состояния, команды для интерфейса. |
 | `src` | Интерфейс на Vue 3 (Pinia, vue-router, vue-i18n, Tailwind). |
+
+## Известные ограничения и планы
+
+<a id="upload-wireguard"></a>
+### Upload через WireGuard/AmneziaWG
+
+**Что видно.** Download почти как у официального клиента AmneziaVPN (на 5–10% ниже), а upload в разы ниже: на реальном канале 5 Мбит/с против 70 у AmneziaVPN. У NaiveProxy этого нет: его upload совпадает с `naive` без UniRay.
+
+**Почему.** AmneziaVPN отдаёт системный TUN прямо amneziawg-go. TCP-соединения приложений идут через туннель без изменений, данные отправляет TCP ядра ОС (CUBIC или BBR, современное восстановление после потерь). У нас впереди Xray (маршрутизация, DNS, счётчики): он принимает TCP приложений и передаёт его движку по SOCKS, а движок открывает соединение к сайту из userspace-стека [gVisor](https://gvisor.dev/) внутри amneziawg-go. На длинном участке данные отправляет gVisor, а он после потерь восстанавливается гораздо хуже ядра. При download отправляет сервер сайта со своим ядерным TCP, поэтому download почти не страдает.
+
+**Замеры** (стенд: сервер amneziawg-go v3.1 в network namespace, UDP-ретранслятор с задержкой и потерями, RTT 60 мс, upload):
+
+| | без потерь | 0,1% потерь | 0,5% потерь |
+| --- | ---: | ---: | ---: |
+| `uniray-engine` (gVisor, reno) | 142 Мбит/с | 6–16 Мбит/с | 4,5 Мбит/с |
+| TCP ядра Linux, CUBIC (как у AmneziaVPN) | 162 Мбит/с | 95 Мбит/с | 3,6 Мбит/с |
+| TCP ядра Linux, BBR | 163 Мбит/с | 69–91 Мбит/с | 74 Мбит/с |
+
+Что уже пробовали: CUBIC и буферы побольше в gVisor почти не помогают. Другого userspace-стека лучше gVisor нет: lwIP и smoltcp слабее, BBR нет ни в одном из них, в том числе в свежем gVisor. gVisor также плохо переносит перестановку пакетов. Download и NaiveProxy в порядке.
+
+**Что можно сделать:**
+
+1. **TCP ядра через настоящий TUN** там, где есть root: TUN-режим на десктопе (helper уже запускает движок от администратора) и Stealth на Android. Движок поднимает TUN-интерфейс AmneziaWG (amneziawg-go это умеет, как в AmneziaVPN) и открывает соединения к сайтам системными сокетами, привязанными к этому интерфейсу (`SO_BINDTODEVICE` на Linux и Android, `IP_UNICAST_IF` на Windows, `IP_BOUND_IF` на macOS). Xray остаётся впереди со всей маршрутизацией. Скорость как у AmneziaVPN. Не помогает в обычном VPN-режиме Android (там один TUN, у Xray) и в режиме прокси без root.
+2. **BBR в gVisor**: собирать движок с пропатченной копией gVisor (как `scripts/build-engine.sh` уже патчит amneziawg-go для образа MikroTik `-lowmem`). BBR почти не реагирует на случайные потери (см. таблицу), так что это работает во всех режимах, включая VPN-режим Android и прокси. Минусы: большая работа (BBR — сотни строк тонкого кода, в gVisor нет расчёта скорости доставки) и патч, который придётся поддерживать при обновлениях gVisor.
+3. **Для AWG-серверов в VPN-режиме Android** отдавать TUN VpnService прямо amneziawg-go, без Xray, как это делает AmneziaVPN. Тогда для таких серверов останутся только правила по IP: правила по доменам и DNS Xray работать не будут.
+
+Разумный порядок: сначала вариант 1 (без потерь функциональности, покрывает десктоп и Stealth), затем вариант 2 для остальных режимов.
 
 ## Разработка
 
