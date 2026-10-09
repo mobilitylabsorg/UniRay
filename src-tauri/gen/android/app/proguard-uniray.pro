@@ -17,3 +17,5 @@
 -keep class moe.shizuku.** { *; }
 # libsu runs shell and background binder services
 -keep class com.topjohnwu.superuser.** { *; }
+# Quick Settings Tile service
+-keep class dev.uniray.app.UniRayTileService { *; }

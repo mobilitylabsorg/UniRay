@@ -2,6 +2,7 @@ package dev.uniray.app
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
 import java.io.File
 import org.json.JSONObject
 
@@ -33,6 +34,13 @@ object VpnState {
       }
     }
     lastServiceAliveCheck = 0L
+    try {
+      val broadcast = Intent(UniRayTileService.ACTION_VPN_STATE_CHANGED)
+        .setPackage(context.packageName)
+        .putExtra("running", running)
+      context.sendBroadcast(broadcast)
+    } catch (_: Exception) {}
+    UniRayTileService.requestUpdate(context)
   }
 
   fun read(context: Context): State {
@@ -57,22 +65,21 @@ object VpnState {
    * two ways the tunnel runs and never run at once.
    */
   fun serviceAlive(context: Context): Boolean {
-    val now = System.currentTimeMillis()
-    if (now - lastServiceAliveCheck < 2500L) {
-      return cachedServiceAlive
-    }
-    val manager = context.getSystemService(ActivityManager::class.java)
-    val tunnels = setOf(UniRayVpnService::class.java.name, StealthService::class.java.name)
-    @Suppress("DEPRECATION")
-    val alive =
-      try {
-        manager?.getRunningServices(Int.MAX_VALUE)?.any { it.service.className in tunnels && it.started } ?: false
-      } catch (e: Exception) {
-        read(context).running
+    val state = read(context)
+    if (!state.running) return false
+
+    val manager = context.getSystemService(ActivityManager::class.java) ?: return true
+    val vpnProcess = "${context.packageName}:vpn"
+    return try {
+      val procs = manager.runningAppProcesses
+      if (procs != null) {
+        procs.any { it.processName == vpnProcess }
+      } else {
+        true
       }
-    cachedServiceAlive = alive
-    lastServiceAliveCheck = now
-    return alive
+    } catch (e: Exception) {
+      true
+    }
   }
 
   fun isRunning(context: Context): Boolean = read(context).running && serviceAlive(context)
