@@ -12,6 +12,7 @@ pub mod hwid;
 pub mod links;
 pub mod model;
 pub mod naive;
+pub mod routes;
 pub mod routing;
 pub mod subscription;
 pub mod wireguard;

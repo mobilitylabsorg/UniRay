@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 
 use crate::error::{Error, Result};
 use crate::model::{Server, ServerSource, Settings};
-use crate::routing;
+use crate::{routes, routing};
 
 pub const TAG_PROXY: &str = "proxy";
 pub const TAG_DIRECT: &str = "direct";
@@ -414,7 +414,7 @@ fn inbounds(settings: &Settings, runtime: &Runtime) -> Vec<Value> {
                 "dns": ["1.1.1.1"],
                 // Both families are captured even with IPv6 lookups off, so
                 // that IPv6 traffic cannot bypass the tunnel.
-                "autoSystemRoutingTable": ["0.0.0.0/0", "::/0"],
+                "autoSystemRoutingTable": tunnel_routes(runtime.engine.as_ref()),
                 "autoOutboundsInterface": "auto",
             },
             "sniffing": sniffing,
@@ -541,6 +541,22 @@ fn object_entry_value<'a>(config: &'a mut Value, key: &str) -> &'a mut Value {
 /// Answers DNS queries arriving through the TUN with the built-in DNS.
 fn dns_hijack_rule(dns_outbound: &str) -> Value {
     json!({ "inboundTag": [TAG_TUN], "port": "53", "outboundTag": dns_outbound })
+}
+
+/// What a TUN that takes all traffic routes into itself: both address
+/// families but the addresses the engine connects to. The engine (and the
+/// naive it runs) is a process of its own, its sockets bound to no interface:
+/// its packets to the server then leave by the system's routes instead of
+/// passing through Xray a second time on their way out.
+pub fn tunnel_routes(engine: Option<&Engine>) -> Vec<String> {
+    let holes: Vec<(IpAddr, u8)> = engine
+        .iter()
+        .flat_map(|engine| &engine.bypass)
+        .map(|bypass| (bypass.addr.ip(), if bypass.addr.is_ipv4() { 32 } else { 128 }))
+        .collect();
+    let mut routes = routes::all_but(false, &holes);
+    routes.extend(routes::all_but(true, &holes));
+    routes
 }
 
 /// Lets the engine's own connections to `bypass` out past the tunnel.

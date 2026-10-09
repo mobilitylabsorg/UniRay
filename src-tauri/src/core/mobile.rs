@@ -88,6 +88,11 @@ struct StartArgs {
     /// `ip:port` of the DNS server for the core's own lookups.
     dns: String,
     mtu: u32,
+    /// What the VPN routes into itself (`address/length`, both families):
+    /// everything but the engine's server. The engine and its naive are
+    /// processes of their own, whose sockets VpnService cannot protect; left
+    /// out of the VPN, their packets do not go through Xray a second time.
+    routes: Vec<String>,
     /// Label shown for the VPN in Android's system settings.
     session_name: String,
     /// What the service needs to keep its notification current by itself
@@ -346,6 +351,7 @@ async fn start_vpn_service(
         packages: settings.per_app.packages.clone(),
         dns: format!("{dns}:53"),
         mtu: config::TUN_MTU,
+        routes: config::tunnel_routes(runtime.engine.as_ref()),
         session_name: name.to_owned(),
         server_name: server.name.clone(),
         metrics_socket: metrics.to_owned(),

@@ -20,8 +20,9 @@
 #
 #   [cli] curl --> Xray (mixed or TUN) --SOCKS5--> uniray-engine ==AWG==> [srv]
 #
-# In TUN mode the engine's own packets to the server are captured too, and
-# must leave through Xray's bypass rule rather than loop back into the tunnel.
+# In TUN mode the engine's own packets to the server must not loop back into
+# the tunnel: the TUN leaves the server's address out of its routes, so they
+# take the system's route and never reach Xray.
 #
 # With NAIVE_BIN set to the real naive, the engine also starts it with the
 # config it writes (there is no NaiveProxy server here to go further): naive
@@ -300,7 +301,7 @@ chain() { # chain <proxy|tun>
   mkdir -p "$dir"
   # No PersistentKeepalive: with one the engine handshakes at once, before
   # Xray has made the TUN, and keeps sending out that interface (sticky
-  # source), so the bypass rule this test checks would never be needed.
+  # source), so the route this test checks would never be needed.
   printf '%s\n' "[Interface]" "PrivateKey = $client_priv" "Address = 10.8.0.2/32" "DNS = 10.8.0.1" \
     "Jc = 4" "Jmin = 10" "Jmax = 50" "S1 = 117" "S2 = 19" "S3 = 16" "S4 = 16" \
     "H1 = 100000-100500" "H2 = 200000-200500" "H3 = 300000-300500" "H4 = 400000-400500" \
@@ -335,10 +336,15 @@ PY
     sleep 1
     expect ok "tun http $(http_get http://10.8.0.1:8080/)"
     expect ok "tun udp $(ip netns exec cli python3 "$here/udp_echo.py" 10.8.0.1 9999 2>/dev/null || echo fail)"
-    if grep -q "accepted udp:198.51.100.1:51820 \[tun -> direct\]" "$dir/log"; then
-      echo "PASS  the engine's packets left through the bypass rule"
+    if ip -n cli route get 198.51.100.1 | grep -q uniray0 || grep -q "udp:198.51.100.1:51820 \[tun" "$dir/log"; then
+      echo "FAIL  the engine's packets to the server went into the TUN"; failures=$((failures + 1))
     else
-      echo "FAIL  the engine's packets did not go through the bypass rule"; failures=$((failures + 1))
+      echo "PASS  the engine's packets to the server left past the TUN"
+    fi
+    if ip -n cli route get 198.51.100.2 | grep -q uniray0; then
+      echo "PASS  the rest of the server's network goes into the TUN"
+    else
+      echo "FAIL  198.51.100.2 does not go into the TUN"; failures=$((failures + 1))
     fi
   else
     expect ok "proxy http $(http_get -x socks5h://127.0.0.1:18080 http://10.8.0.1:8080/)"

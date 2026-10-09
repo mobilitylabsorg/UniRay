@@ -36,6 +36,8 @@ class StartArgs {
   var packages: Array<String> = arrayOf()
   var dns: String = "8.8.8.8:53"
   var mtu: Int = 1500
+  /** What the VPN routes into itself, `address/length`: all but the engine's server. */
+  var routes: Array<String> = arrayOf("0.0.0.0/0", "::/0")
   var sessionName: String = "VPN"
   var serverName: String = ""
   var metricsSocket: String = ""
@@ -139,6 +141,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         .put("packages", JSONArray(args.packages))
         .put("dns", args.dns)
         .put("mtu", args.mtu)
+        .put("routes", JSONArray(args.routes))
         .put("sessionName", args.sessionName)
         .put("serverName", args.serverName)
         .put("metricsSocket", args.metricsSocket)

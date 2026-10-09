@@ -177,11 +177,16 @@ class UniRayVpnService : VpnService() {
         .setSession(spec.optString("sessionName", getString(R.string.app_name)))
         .setMtu(spec.optInt("mtu", 1500))
         .addAddress(ADDRESS_V4, PREFIX_V4)
-        .addRoute("0.0.0.0", 0)
         .addDnsServer(DNS_V4)
+    // Everything but the engine's server (see the core's tunnel_routes).
+    val routes = spec.optJSONArray("routes")?.let { list -> (0 until list.length()).map { list.getString(it) } }
+      ?: listOf("0.0.0.0/0", "::/0")
+    val (routesV6, routesV4) = routes.partition { it.contains(':') }
+    for (route in routesV4) builder.addRoute(route.substringBefore('/'), route.substringAfter('/').toInt())
     try {
       // Also capture IPv6, so that it cannot bypass the tunnel.
-      builder.addAddress(ADDRESS_V6, PREFIX_V6).addRoute("::", 0)
+      builder.addAddress(ADDRESS_V6, PREFIX_V6)
+      for (route in routesV6) builder.addRoute(route.substringBefore('/'), route.substringAfter('/').toInt())
     } catch (e: Exception) {
       Log.w(TAG, "IPv6 is not available for the tunnel", e)
     }
@@ -221,9 +226,10 @@ class UniRayVpnService : VpnService() {
     running = error == null
     if (error != null) return error
 
-    // After Xray, so the first handshake can already leave: the engine's
-    // packets enter the tunnel like the app's own and Xray sends them out
-    // past it (the config routes the server's endpoint direct).
+    // After Xray, so the first handshake can already leave. The engine's
+    // packets to its server leave by the system's routes (the VPN leaves the
+    // server out); should they enter the tunnel all the same, the config
+    // routes the server's endpoint direct.
     val engineMode = spec.optString("engineMode")
     if (engineMode.isNotEmpty()) {
       val log = Engine.logFile(spec.getString("config"), File(filesDir, "run/engine.log"))
