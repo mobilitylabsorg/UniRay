@@ -25,7 +25,7 @@ scripts/build-gateway.sh linux/arm64     # другие варианты: linux/
 
 Нужны Docker с buildx, Go 1.25+ (движок), [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) (`cargo install cargo-zigbuild`), Zig (`pip install ziglang` или пакет из дистрибутива), `readelf` (binutils) и цели Rust: `rustup target add armv7-unknown-linux-musleabihf aarch64-unknown-linux-musl`.
 
-Каждая платформа даёт два образа: `build/uniray-gateway-<arch>.tar` и `build/uniray-gateway-<arch>-lowmem.tar`. `NAIVE=0 scripts/build-gateway.sh` собирает без `naive` и glibc (меньше на ~11 МБ, без Naive-серверов). Ограничение буферов в `-lowmem` задаёт `ENGINE_MAX_BUFFERS` (по умолчанию 384, см. `scripts/build-engine.sh`).
+Каждая платформа даёт два образа: `build/uniray-gateway-<arch>.tar` и `build/uniray-gateway-<arch>-lowmem.tar`. `NAIVE=0 scripts/build-gateway.sh` собирает без `naive` и glibc (меньше на ~11 МБ, без Naive-серверов). Движок в `-lowmem` собирается с `ENGINE_LOWMEM=1` (тег `uniray_lowmem` нашего форка amneziawg-go: не больше 384 буферов на пул, см. `scripts/build-engine.sh`).
 
 Готовые образы для armv7 и arm64 собирает CI (`.github/workflows/build.yml`): они лежат в артефакте `uniray-gateway` каждого запуска и в релизах.
 

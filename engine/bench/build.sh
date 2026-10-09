@@ -2,7 +2,7 @@
 # Builds everything the benches run into <bin dir>: uniray-engine, the
 # amneziawg-go server (the version go.mod pins), the key generator of the e2e
 # test, the delay relay, Caddy with klzgrad's naive forwardproxy, and naive
-# (scripts/fetch-naive.sh). Needs Go 1.25+.
+# (scripts/fetch-naive.sh). Needs Go 1.26+ (or GOTOOLCHAIN=auto).
 #
 #   build.sh <bin dir>
 set -euo pipefail

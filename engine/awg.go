@@ -63,6 +63,9 @@ func startAWG(config *AWGConfig) (Upstream, error) {
 	if err != nil {
 		return nil, fmt.Errorf("network stack: %w", err)
 	}
+	if err := tuneTCP(tnet); err != nil {
+		return nil, fmt.Errorf("TCP of the network stack: %w", err)
+	}
 	level := device.LogLevelError
 	if config.LogLevel == "verbose" {
 		level = device.LogLevelVerbose

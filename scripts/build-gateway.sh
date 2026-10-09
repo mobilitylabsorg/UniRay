@@ -108,14 +108,14 @@ for platform in "${platforms[@]}"; do
   fi
 
   # Two images, the same but for the engine: amneziawg-go as it is, and
-  # -lowmem, with bounded packet buffers (ENGINE_MAX_BUFFERS, see
+  # -lowmem, with bounded packet buffers (ENGINE_LOWMEM, see
   # build-engine.sh), which stays within a small memory limit under load.
   for variant in default lowmem; do
     if [[ "$variant" == lowmem ]]; then
-      ENGINE_MAX_BUFFERS="${ENGINE_MAX_BUFFERS:-384}" "$root/scripts/build-engine.sh" "$target" "$rootfs/usr/bin/uniray-engine"
+      ENGINE_LOWMEM=1 "$root/scripts/build-engine.sh" "$target" "$rootfs/usr/bin/uniray-engine"
       out="$root/build/uniray-gateway-$arch-lowmem.tar" tag=lowmem
     else
-      ENGINE_MAX_BUFFERS="" "$root/scripts/build-engine.sh" "$target" "$rootfs/usr/bin/uniray-engine"
+      ENGINE_LOWMEM="" "$root/scripts/build-engine.sh" "$target" "$rootfs/usr/bin/uniray-engine"
       out="$root/build/uniray-gateway-$arch.tar" tag=latest
     fi
     docker buildx build \

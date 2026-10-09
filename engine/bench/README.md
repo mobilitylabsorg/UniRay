@@ -1,6 +1,6 @@
 # Стенд скорости движка
 
-Замеры скорости `uniray-engine` против эталона: для AmneziaWG/WireGuard — TCP ядра через TUN (как в AmneziaVPN), для NaiveProxy — `naive` без UniRay. Всё в network namespaces, нужен root. С этого стенда сняты цифры раздела «Upload через WireGuard/AmneziaWG» в корневом README.
+Замеры скорости `uniray-engine` (с BBRv3 из форка gVisor, см. `engine/tcp.go`) против эталона: для AmneziaWG/WireGuard — TCP ядра через TUN (как в AmneziaVPN), для NaiveProxy — `naive` без UniRay. Всё в network namespaces, нужен root. С этого стенда сняты цифры раздела «Upload через WireGuard/AmneziaWG» в корневом README.
 
 ```sh
 bash engine/bench/build.sh /tmp/bench-bin      # движок, amneziawg-go, ретранслятор, Caddy, naive
@@ -16,7 +16,7 @@ sudo bash engine/bench/naive.sh /tmp/bench-bin
 
 | Файл | Что делает |
 | --- | --- |
-| `awg.sh` | Сервер amneziawg-go и два клиента: движок (SOCKS → gVisor) и amneziawg-go с TUN в ядре. Переменные: `LOSS`, `MB`, `KERNEL_CC`, `ENGINE` (другой бинарник движка для сравнения), `PCAP`. |
+| `awg.sh` | Сервер amneziawg-go и два клиента: движок (SOCKS → gVisor) и amneziawg-go с TUN в ядре. Переменные: `LOSS`, `MB`, `KERNEL_CC`, `ENGINE` (другой бинарник движка для сравнения, например собранный без `bbr.Register()`), `PCAP`. |
 | `naive.sh` | Caddy с forwardproxy (форк klzgrad, TLS, padding) и три пути до приёмника: `naive` через движок, `naive` сам по себе, чистый TCP. На время прогона добавляет свой CA в `/etc/ssl/certs/ca-certificates.crt` и убирает его при любом выходе: `naive` доверяет только системным сертификатам. |
 | `delay/` | UDP-ретранслятор перед сервером: задержка в каждую сторону и потери, **с сохранением порядка пакетов**. В ядре здесь нет `netem`, а WireGuard ходит только по UDP. |
 | `client.py`, `sink.py` | Загрузка и скачивание N МиБ через SOCKS5 (или напрямую) до приёмника; приёмник подтверждает конец загрузки байтом, не полагаясь на полузакрытие через прокси. |
