@@ -132,6 +132,8 @@ export interface Snapshot {
   device: { hwid: string; os: string; osVersion: string; model: string };
   version: string;
   platform: "linux" | "windows" | "macos" | "android" | "ios";
+  /** Android TV / Google TV: the remote-control layout. */
+  tv: boolean;
   testing: boolean;
 }
 

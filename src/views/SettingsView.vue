@@ -280,7 +280,7 @@ onMounted(refreshPrivilege);
         <div class="flex items-center gap-3 px-4 py-3">
           <div class="flex-1">
             <div class="font-medium">{{ t("settings.keepAwake") }}</div>
-            <div class="text-xs text-muted">{{ t("settings.keepAwakeHint") }}</div>
+            <div class="text-xs text-muted">{{ t(store.isTv ? "settings.keepAwakeTvHint" : "settings.keepAwakeHint") }}</div>
             <div v-if="store.settings.keepAwake && batteryExempt === false" class="mt-1 text-xs text-amber-500">
               {{ t("settings.keepAwakeNoExemption") }}
             </div>

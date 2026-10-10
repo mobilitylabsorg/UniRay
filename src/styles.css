@@ -78,6 +78,19 @@ button:disabled {
   outline-offset: 2px;
 }
 
+/* Android TV: read from across the room and steered with a D-pad. Every size
+   is in rem, so a larger root scales the whole UI; the focused control must
+   stand out at a glance. */
+html.tv {
+  font-size: 125%;
+}
+
+.tv :focus-visible {
+  outline: 3px solid var(--color-accent);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-accent) 25%, transparent);
+}
+
 @layer components {
   .card {
     @apply rounded-2xl border border-line bg-surface;

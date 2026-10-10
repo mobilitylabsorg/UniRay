@@ -164,6 +164,9 @@ struct DeviceInfo {
     device_id: String,
     model: String,
     os_version: String,
+    /// Android TV / Google TV.
+    #[serde(default)]
+    tv: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -518,6 +521,7 @@ pub async fn init_device(app: &AppHandle) {
         }
         device.model = info.model;
         device.os_version = info.os_version;
+        state.tv.store(info.tv, std::sync::atomic::Ordering::Relaxed);
     }
 
     let files = run_files(app);

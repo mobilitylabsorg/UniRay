@@ -70,6 +70,7 @@ const MODES: { value: Mode; label: string }[] = [
         "
         :disabled="busy || !server"
         :aria-label="connected ? t('home.disconnect') : t('home.connect')"
+        data-autofocus
         @click="store.toggleConnection()"
       >
         <span v-if="connected" class="halo pointer-events-none absolute inset-[-4px] rounded-full border-2 border-accent" />

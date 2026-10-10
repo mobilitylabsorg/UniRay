@@ -49,6 +49,9 @@ pub struct App {
     pub generation: AtomicU64,
     pub logs: Mutex<VecDeque<LogLine>>,
     pub testing: AtomicBool,
+    /// Running on a TV (Android TV / Google TV): the frontend switches to its
+    /// remote-control layout. Set once the device info is in.
+    pub tv: AtomicBool,
     /// The latest traffic sample of the live connection.
     pub traffic: Mutex<Traffic>,
     /// Connection checker and system UI presenter, see `monitor`.
@@ -68,6 +71,7 @@ impl App {
             generation: AtomicU64::new(0),
             logs: Mutex::new(VecDeque::new()),
             testing: AtomicBool::new(false),
+            tv: AtomicBool::new(false),
             traffic: Mutex::new(Traffic::default()),
             monitor: Mutex::new(None),
             paths,
@@ -112,6 +116,8 @@ pub struct Snapshot {
     pub platform: &'static str,
     /// A delay test is in progress.
     pub testing: bool,
+    /// A TV: remote-control layout.
+    pub tv: bool,
 }
 
 pub fn snapshot(app: &AppHandle) -> Snapshot {
@@ -133,6 +139,7 @@ pub fn snapshot(app: &AppHandle) -> Snapshot {
         version: device.app_version.clone(),
         platform: std::env::consts::OS,
         testing: state.testing.load(Ordering::Relaxed),
+        tv: state.tv.load(Ordering::Relaxed),
     }
 }
 

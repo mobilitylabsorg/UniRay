@@ -39,6 +39,8 @@ export const useAppStore = defineStore("app", () => {
   const connection = computed(() => snapshot.value?.connection ?? null);
   const status = computed(() => connection.value?.status ?? "disconnected");
   const isDesktop = computed(() => !["android", "ios"].includes(snapshot.value?.platform ?? ""));
+  /** Android TV: D-pad navigation and the 10-foot layout. */
+  const isTv = computed(() => snapshot.value?.tv === true);
   /** TUN needs the elevated helper: pkexec on Linux, UAC on Windows, the
    * administrator prompt on macOS. */
   const tunSupported = computed(() => ["linux", "windows", "macos"].includes(snapshot.value?.platform ?? ""));
@@ -128,6 +130,7 @@ export const useAppStore = defineStore("app", () => {
     connection,
     status,
     isDesktop,
+    isTv,
     tunSupported,
     selectedServer,
     traffic,

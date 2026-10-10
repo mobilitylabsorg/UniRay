@@ -151,6 +151,7 @@ const en: typeof ru = {
     perAppStealthWarning: "In Stealth mode, per-app filtering is inactive: all traffic is routed through the tunnel.",
     keepAwake: "Stay awake with the screen off",
     keepAwakeHint: "While the tunnel is connected, the phone keeps the CPU and Wi-Fi awake, so connections survive the screen lock. Uses more battery.",
+    keepAwakeTvHint: "While the tunnel is connected, the box keeps the CPU and network awake, so connections survive standby and the screensaver. Recommended on a TV.",
     keepAwakeNoExemption: "The app is not exempt from battery optimization: in deep sleep Android may still cut the connection. Allow it in the system dialog or the battery settings.",
     stealth: "Stealth",
     privilege: "Privileges",

@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.Context
 import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
@@ -107,6 +108,13 @@ class StealthArgs {
  * The service lives in another process (`:vpn`): requests go out as intents
  * carrying a request id, and answers come back through [VpnState].
  */
+/** Android TV / Google TV: a television UI mode, or the leanback feature. */
+fun isTv(context: Context): Boolean {
+  val ui = context.getSystemService(android.app.UiModeManager::class.java)
+  return ui?.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION ||
+    context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+}
+
 @TauriPlugin
 class VpnPlugin(private val activity: Activity) : Plugin(activity) {
   companion object {
@@ -354,6 +362,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         .put("deviceId", id ?: "")
         .put("model", "${Build.MANUFACTURER} ${Build.MODEL}")
         .put("osVersion", Build.VERSION.RELEASE ?: "")
+        .put("tv", isTv(activity))
     )
   }
 
@@ -368,7 +377,10 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
           manager.getInstalledApplications(0)
             .filter {
               it.packageName != activity.packageName &&
-                manager.getLaunchIntentForPackage(it.packageName) != null
+                // TV apps (YouTube for TV and the like) may only have a
+                // leanback launcher entry.
+                (manager.getLaunchIntentForPackage(it.packageName) != null ||
+                  manager.getLeanbackLaunchIntentForPackage(it.packageName) != null)
             }
             .map { info ->
               Triple(
