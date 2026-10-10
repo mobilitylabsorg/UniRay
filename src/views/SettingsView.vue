@@ -115,22 +115,13 @@ const privilegeLabel = computed(() => PRIVILEGE_LABELS[privilege.value?.level ??
 const canStealth = computed(
   () => privilege.value?.level === "root" || privilege.value?.level === "shizukuRoot",
 );
-const hasTproxy = computed(() => privilege.value?.hasTproxy === true);
+// A hint, not a lock: a kernel can list TPROXY and still handle it badly
+// (some custom ROMs), and the root TUN is the way out then.
 const stealthRootTunHint = computed(() => {
-  if (hasTproxy.value) return "settings.stealthRootTunTproxySupported";
-  if (privilege.value && privilege.value.hasTproxy === false) return "settings.stealthRootTunTproxyMissing";
+  if (privilege.value?.hasTproxy === true) return "settings.stealthRootTunTproxySupported";
+  if (privilege.value?.hasTproxy === false) return "settings.stealthRootTunTproxyMissing";
   return "settings.stealthRootTunHint";
 });
-
-watch(
-  () => [canStealth.value, privilege.value?.hasTproxy] as const,
-  ([can, tproxy]) => {
-    if (can && tproxy && store.settings?.stealthRootTun) {
-      save({ stealthRootTun: false });
-    }
-  },
-  { immediate: true },
-);
 
 async function refreshPrivilege() {
   if (store.isDesktop) return;
@@ -340,10 +331,9 @@ onMounted(refreshPrivilege);
               <div class="text-xs text-muted">{{ t(stealthRootTunHint) }}</div>
             </div>
             <ToggleSwitch
-              :model-value="hasTproxy ? false : store.settings.stealthRootTun"
-              :disabled="hasTproxy"
+              :model-value="store.settings.stealthRootTun"
               :label="t('settings.stealthRootTun')"
-              @update:model-value="(stealthRootTun: boolean) => !hasTproxy && save({ stealthRootTun })"
+              @update:model-value="(stealthRootTun: boolean) => save({ stealthRootTun })"
             />
           </div>
         </Transition>

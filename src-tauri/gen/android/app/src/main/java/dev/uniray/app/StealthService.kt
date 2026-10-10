@@ -264,17 +264,31 @@ class StealthService : Service() {
   }
 
   /**
-   * Removes the notification for good.
+   * Removes the notification for good. Runs the removal on the ticker thread,
+   * after any refresh already running or queued there, so nothing re-posts it
+   * afterwards; [stopped] keeps later refreshes from posting at all. The
+   * ticker itself keeps running: this instance may be started again, and only
+   * [onDestroy] shuts it down.
    */
   private fun clearNotification() {
     stopped = true
-    notification = null
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-      stopForeground(STOP_FOREGROUND_REMOVE)
-    } else {
-      @Suppress("DEPRECATION") stopForeground(true)
+    val drop = Runnable {
+      // Started again meanwhile: the notification is the new run's.
+      if (!stopped) return@Runnable
+      notification = null
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+      } else {
+        @Suppress("DEPRECATION") stopForeground(true)
+      }
+      (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIFICATION_ID)
     }
-    (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIFICATION_ID)
+    try {
+      ticker.execute(drop)
+    } catch (e: java.util.concurrent.RejectedExecutionException) {
+      // The ticker is shut down already (onDestroy): nothing can re-post.
+      drop.run()
+    }
   }
 
   /** Queues a notification refresh unless we are stopping. */

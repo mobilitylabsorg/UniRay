@@ -98,6 +98,9 @@ struct StartArgs {
     /// What the service needs to keep its notification current by itself
     /// once the app is gone: the server, and where to read the counters.
     server_name: String,
+    /// The server's id: the Quick Settings tile starts the service again from
+    /// the saved spec, and tells the app which server that is.
+    server_id: String,
     metrics_socket: String,
     proxy_tags: Vec<String>,
     #[serde(flatten)]
@@ -360,6 +363,7 @@ async fn start_vpn_service(
         routes: config::tunnel_routes(runtime.engine.as_ref()),
         session_name: name.to_owned(),
         server_name: server.name.clone(),
+        server_id: server.id.clone(),
         metrics_socket: metrics.to_owned(),
         proxy_tags: built.proxy_tags.clone(),
         // Xray runs inside the app: the engine accepts the app's own uid,
@@ -414,6 +418,7 @@ async fn start_stealth(
         "tunName": name,
         "ipv6": settings.ipv6,
         "serverName": server.name,
+        "serverId": server.id,
         "metricsSocket": metrics,
         "proxyTags": built.proxy_tags,
         "engineMode": engine.engine_mode,

@@ -40,6 +40,7 @@ class StartArgs {
   var routes: Array<String> = arrayOf("0.0.0.0/0", "::/0")
   var sessionName: String = "VPN"
   var serverName: String = ""
+  var serverId: String = ""
   var metricsSocket: String = ""
   var proxyTags: Array<String> = arrayOf()
   /** The engine for a WireGuard/AmneziaWG or Naive server; empty for the others. */
@@ -82,6 +83,7 @@ class StealthArgs {
   var tunName: String = ""
   var ipv6: Boolean = false
   var serverName: String = ""
+  var serverId: String = ""
   var metricsSocket: String = ""
   var proxyTags: Array<String> = arrayOf()
   var engineMode: String = ""
@@ -148,6 +150,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         .put("routes", JSONArray(args.routes))
         .put("sessionName", args.sessionName)
         .put("serverName", args.serverName)
+        .put("serverId", args.serverId)
         .put("metricsSocket", args.metricsSocket)
         .put("proxyTags", JSONArray(args.proxyTags))
         .put("engineMode", args.engineMode)
@@ -184,8 +187,11 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
   fun stop(invoke: Invoke) {
     // Every tunnel service that is up, not just the first found: stopping
     // the wrong one leaves the other carrying the traffic.
-    val tunnels = VpnState.aliveTunnels(activity)
-    val targets = if (tunnels.isNotEmpty()) tunnels else listOf(StealthService::class.java, UniRayVpnService::class.java)
+    val targets = VpnState.tunnelsToStop(activity)
+    if (targets.isEmpty()) {
+      invoke.resolve()
+      return
+    }
     val stopIntents =
       targets.map { service ->
         when (service) {
@@ -480,6 +486,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
           .put("ipv6", args.ipv6)
           .put("privilege", state.level.name)
           .put("serverName", args.serverName)
+          .put("serverId", args.serverId)
           .put("metricsSocket", args.metricsSocket)
           .put("proxyTags", JSONArray(args.proxyTags))
           .put("engineMode", args.engineMode)

@@ -241,8 +241,7 @@ class UniRayTileService : TileService() {
       tile.updateTile()
     }
 
-    val tunnels = VpnState.aliveTunnels(this)
-    val targets = if (tunnels.isNotEmpty()) tunnels else listOf(StealthService::class.java, UniRayVpnService::class.java)
+    val targets = VpnState.tunnelsToStop(this)
     val request = UUID.randomUUID().toString()
 
     for (service in targets) {
@@ -320,29 +319,10 @@ class UniRayTileService : TileService() {
       val metricsSocket = spec.optString("metricsSocket")
       val proxyTags = spec.optJSONArray("proxyTags") ?: JSONArray()
 
-      var serverId = ""
-      val stateFiles = listOf(
-        File(filesDir.parentFile, "state.json"),
-        File(filesDir, "state.json"),
-      )
-      for (sf in stateFiles) {
-        if (sf.exists()) {
-          try {
-            val stateJson = JSONObject(sf.readText())
-            val selected = stateJson.optJSONObject("settings")?.optString("selectedServer")
-            if (!selected.isNullOrEmpty()) {
-              serverId = selected
-              break
-            }
-            val servers = stateJson.optJSONArray("servers")
-            if (servers != null && servers.length() > 0) {
-              serverId = servers.getJSONObject(0).optString("id")
-              break
-            }
-          } catch (_: Exception) {}
-        }
-      }
-      if (serverId.isEmpty()) serverId = serverName
+      // The spec names the server it runs; an older spec (from before the id
+      // was saved in it) only has the name, which the app then does not find
+      // and simply shows no server as connected.
+      val serverId = spec.optString("serverId").ifEmpty { serverName }
 
       val sessionJson = JSONObject().apply {
         put("serverId", serverId)

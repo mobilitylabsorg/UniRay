@@ -33,7 +33,6 @@ object VpnState {
         tmp.delete()
       }
     }
-    lastServiceAliveCheck = 0L
     try {
       val broadcast = Intent(UniRayTileService.ACTION_VPN_STATE_CHANGED)
         .setPackage(context.packageName)
@@ -56,28 +55,21 @@ object VpnState {
     }
   }
 
-  @Volatile private var lastServiceAliveCheck = 0L
-  @Volatile private var cachedServiceAlive = false
-
   /**
-   * Whether a tunnel service process exists; it may have been killed without a
-   * word. Either the VPN service or the stealth service counts - they are the
-   * two ways the tunnel runs and never run at once.
+   * Whether the tunnel's process exists; it may have been killed without a
+   * word. Both tunnel services (the VPN service and the stealth service) run
+   * in the `:vpn` process. Independent of the state file on purpose: while a
+   * service starts, the file still holds the previous run's `running=false`,
+   * and the start must not be taken for a failure then.
    */
   fun serviceAlive(context: Context): Boolean {
-    val state = read(context)
-    if (!state.running) return false
-
     val manager = context.getSystemService(ActivityManager::class.java) ?: return true
     val vpnProcess = "${context.packageName}:vpn"
     return try {
-      val procs = manager.runningAppProcesses
-      if (procs != null) {
-        procs.any { it.processName == vpnProcess }
-      } else {
-        true
-      }
+      // Lists this app's own processes; null when there are none to list.
+      manager.runningAppProcesses?.any { it.processName == vpnProcess } ?: aliveTunnels(context).isNotEmpty()
     } catch (e: Exception) {
+      // Cannot tell: rather wait for the service's answer than give up on it.
       true
     }
   }
@@ -97,6 +89,19 @@ object VpnState {
     // The stealth service first: when both are somehow up, it is the one
     // that matters (the VPN service carries nothing without its interface).
     return listOf(StealthService::class.java, UniRayVpnService::class.java).filter { it.name in running }
+  }
+
+  /**
+   * The services a stop must reach: those started, or, when the system lists
+   * none although the tunnel's process is up (some ROMs answer
+   * getRunningServices with nothing), both. Nothing when the process is gone:
+   * starting the stealth service only to stop it would run its privileged
+   * teardown for a tunnel that is not there.
+   */
+  fun tunnelsToStop(context: Context): List<Class<out android.app.Service>> {
+    val started = aliveTunnels(context)
+    if (started.isNotEmpty()) return started
+    return if (serviceAlive(context)) listOf(StealthService::class.java, UniRayVpnService::class.java) else emptyList()
   }
 
   /** Which tunnel service is currently running, if any. */
