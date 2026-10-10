@@ -147,11 +147,11 @@ class StealthService : Service() {
           e.message ?: e.toString()
         }
       if (error != null) {
-        shutdown(null)
+        shutdown(request, error)
       } else {
         startTicker()
+        VpnState.write(this, true, request, null)
       }
-      VpnState.write(this, error == null, request, error)
     }
     return START_NOT_STICKY
   }
@@ -264,11 +264,18 @@ class StealthService : Service() {
   }
 
   /**
-   * Removes the notification for good, on the ticker thread after any queued
-   * refresh, so nothing re-posts it; [stopped] blocks later refreshes.
+   * Removes the notification for good. Runs the removal on the ticker thread,
+   * after any refresh already running or queued there, so nothing re-posts it
+   * afterwards; [stopped] keeps later refreshes from posting at all. The
+   * ticker itself keeps running: this instance may be started again, and only
+   * [onDestroy] shuts it down.
    */
   private fun clearNotification() {
+    stopped = true
     val drop = Runnable {
+      // Started again meanwhile: the notification is the new run's.
+      if (!stopped) return@Runnable
+      notification = null
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
         stopForeground(STOP_FOREGROUND_REMOVE)
       } else {
@@ -278,8 +285,8 @@ class StealthService : Service() {
     }
     try {
       ticker.execute(drop)
-      ticker.shutdown()
     } catch (e: java.util.concurrent.RejectedExecutionException) {
+      // The ticker is shut down already (onDestroy): nothing can re-post.
       drop.run()
     }
   }
@@ -340,7 +347,12 @@ class StealthService : Service() {
       rm -f "$sock" "$sock.lock"
       $env XRAY_LOCATION_ASSET=$geo setsid $xray run -c ${configFile.absolutePath} >$log 2>&1 &
       echo ${'$'}! > $pid
-      for i in ${'$'}(seq 1 40); do [ -S "$sock" ] && chmod 666 "$sock" && break; sleep 0.1; done
+      for i in ${'$'}(seq 1 80); do [ -S "$sock" ] && chmod 666 "$sock" && break; sleep 0.1; done
+      if ! kill -0 ${'$'}(cat $pid 2>/dev/null) 2>/dev/null; then
+        echo "the core did not start:" >&2
+        tail -n 10 $log >&2
+        exit 1
+      fi
     """.trimIndent()
   }
 
@@ -606,6 +618,8 @@ class StealthService : Service() {
     ip6tables -w -t filter -S 2>/dev/null | grep -q $CHAIN_OUT && echo "ip6tables rules"
     ip rule 2>/dev/null | grep -qE "lookup ($TABLE|$TUN_TABLE)( |${'$'})" && echo "routing rules"
     ip -6 rule 2>/dev/null | grep -qE "lookup $TUN_TABLE( |${'$'})" && echo "IPv6 routing rules"
+    pgrep -f "xra[y] run" >/dev/null 2>&1 && echo "xray"
+    pgrep -f "xra[y]-tun run" >/dev/null 2>&1 && echo "xray-tun"
     pgrep -f "libuniray_engin[e].so" >/dev/null 2>&1 && echo "the engine"
     pgrep -f "libnaiv[e].so" >/dev/null 2>&1 && echo "naive"
     true
@@ -626,7 +640,13 @@ class StealthService : Service() {
       ticker.scheduleWithFixedDelay(
         {
           try {
-            if (System.currentTimeMillis() - lastCheckAt >= CHECK_INTERVAL_MS) checkConnection()
+            if (System.currentTimeMillis() - lastCheckAt >= CHECK_INTERVAL_MS) {
+              lastCheckAt = System.currentTimeMillis()
+              kotlin.concurrent.thread(name = "stealth-check", isDaemon = true) {
+                checkConnection()
+                submitRefresh()
+              }
+            }
             refreshNotification()
           } catch (e: Exception) {
             Log.w(TAG, "notification refresh failed", e)

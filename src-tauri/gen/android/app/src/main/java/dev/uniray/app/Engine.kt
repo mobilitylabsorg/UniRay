@@ -117,23 +117,23 @@ object Engine {
 
     /** Starts the engine and waits until it listens; returns why it could not. */
     fun start(): String? {
-      val socket = config.optString("ownerSocket")
-      if (socket.isNotEmpty()) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-          owner = OwnerServer(context, socket.removePrefix("@")).also { it.start() }
-        } else {
-          // Before Android 10 /proc/net is readable to apps, and there is no
-          // system call to ask instead; the engine reads it itself.
-          config.remove("ownerSocket")
-        }
-      }
-      configFile.parentFile?.mkdirs()
-      configFile.writeText(config.toString())
-      // The secrets are in the file; the engine removes it once read.
-      config = JSONObject()
-
       val started =
         try {
+          val socket = config.optString("ownerSocket")
+          if (socket.isNotEmpty()) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+              owner = OwnerServer(context, socket.removePrefix("@")).also { it.start() }
+            } else {
+              // Before Android 10 /proc/net is readable to apps, and there is no
+              // system call to ask instead; the engine reads it itself.
+              config.remove("ownerSocket")
+            }
+          }
+          configFile.parentFile?.mkdirs()
+          configFile.writeText(config.toString())
+          // The secrets are in the file; the engine removes it once read.
+          config = JSONObject()
+
           ProcessBuilder(binary(context).absolutePath, mode, "--config", configFile.absolutePath).start()
         } catch (e: Exception) {
           stop()

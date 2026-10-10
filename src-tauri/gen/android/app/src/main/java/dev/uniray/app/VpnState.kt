@@ -2,6 +2,7 @@ package dev.uniray.app
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
 import java.io.File
 import org.json.JSONObject
 
@@ -25,7 +26,20 @@ object VpnState {
     val tmp = File(target.parentFile, target.name + ".tmp")
     tmp.writeText(json.toString())
     // Atomic, so the app never reads half a file.
-    tmp.renameTo(target)
+    if (!tmp.renameTo(target)) {
+      target.delete()
+      if (!tmp.renameTo(target)) {
+        target.writeText(json.toString())
+        tmp.delete()
+      }
+    }
+    try {
+      val broadcast = Intent(UniRayTileService.ACTION_VPN_STATE_CHANGED)
+        .setPackage(context.packageName)
+        .putExtra("running", running)
+      context.sendBroadcast(broadcast)
+    } catch (_: Exception) {}
+    UniRayTileService.requestUpdate(context)
   }
 
   fun read(context: Context): State {
@@ -42,16 +56,22 @@ object VpnState {
   }
 
   /**
-   * Whether a tunnel service process exists; it may have been killed without a
-   * word. Either the VPN service or the stealth service counts - they are the
-   * two ways the tunnel runs and never run at once.
+   * Whether the tunnel's process exists; it may have been killed without a
+   * word. Both tunnel services (the VPN service and the stealth service) run
+   * in the `:vpn` process. Independent of the state file on purpose: while a
+   * service starts, the file still holds the previous run's `running=false`,
+   * and the start must not be taken for a failure then.
    */
   fun serviceAlive(context: Context): Boolean {
-    val manager = context.getSystemService(ActivityManager::class.java) ?: return false
-    val tunnels = setOf(UniRayVpnService::class.java.name, StealthService::class.java.name)
-    // Deprecated for third-party services, still answers for the app's own.
-    @Suppress("DEPRECATION")
-    return manager.getRunningServices(Int.MAX_VALUE).any { it.service.className in tunnels && it.started }
+    val manager = context.getSystemService(ActivityManager::class.java) ?: return true
+    val vpnProcess = "${context.packageName}:vpn"
+    return try {
+      // Lists this app's own processes; null when there are none to list.
+      manager.runningAppProcesses?.any { it.processName == vpnProcess } ?: aliveTunnels(context).isNotEmpty()
+    } catch (e: Exception) {
+      // Cannot tell: rather wait for the service's answer than give up on it.
+      true
+    }
   }
 
   fun isRunning(context: Context): Boolean = read(context).running && serviceAlive(context)
@@ -60,10 +80,28 @@ object VpnState {
   fun aliveTunnels(context: Context): List<Class<out android.app.Service>> {
     val manager = context.getSystemService(ActivityManager::class.java) ?: return emptyList()
     @Suppress("DEPRECATION")
-    val running = manager.getRunningServices(Int.MAX_VALUE).filter { it.started }.map { it.service.className }.toSet()
+    val running =
+      try {
+        manager.getRunningServices(Int.MAX_VALUE)?.filter { it.started }?.map { it.service.className }?.toSet() ?: emptySet()
+      } catch (e: Exception) {
+        emptySet()
+      }
     // The stealth service first: when both are somehow up, it is the one
     // that matters (the VPN service carries nothing without its interface).
     return listOf(StealthService::class.java, UniRayVpnService::class.java).filter { it.name in running }
+  }
+
+  /**
+   * The services a stop must reach: those started, or, when the system lists
+   * none although the tunnel's process is up (some ROMs answer
+   * getRunningServices with nothing), both. Nothing when the process is gone:
+   * starting the stealth service only to stop it would run its privileged
+   * teardown for a tunnel that is not there.
+   */
+  fun tunnelsToStop(context: Context): List<Class<out android.app.Service>> {
+    val started = aliveTunnels(context)
+    if (started.isNotEmpty()) return started
+    return if (serviceAlive(context)) listOf(StealthService::class.java, UniRayVpnService::class.java) else emptyList()
   }
 
   /** Which tunnel service is currently running, if any. */

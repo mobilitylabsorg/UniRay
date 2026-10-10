@@ -98,6 +98,9 @@ struct StartArgs {
     /// What the service needs to keep its notification current by itself
     /// once the app is gone: the server, and where to read the counters.
     server_name: String,
+    /// The server's id: the Quick Settings tile starts the service again from
+    /// the saved spec, and tells the app which server that is.
+    server_id: String,
     metrics_socket: String,
     proxy_tags: Vec<String>,
     #[serde(flatten)]
@@ -344,16 +347,23 @@ async fn start_vpn_service(
     // out the physical interface, so a resolver on the path cannot substitute
     // them. Go's own resolver still needs a plain IP; a public one when the
     // direct DNS is a DoH URL (the usual case).
-    let dns = if settings.direct_dns.parse::<IpAddr>().is_ok() { settings.direct_dns.as_str() } else { FALLBACK_DNS };
+    let dns_endpoint = if let Ok(ip) = settings.direct_dns.parse::<IpAddr>() {
+        if ip.is_ipv6() { format!("[{ip}]:53") } else { format!("{ip}:53") }
+    } else if let Ok(addr) = settings.direct_dns.parse::<std::net::SocketAddr>() {
+        addr.to_string()
+    } else {
+        format!("{FALLBACK_DNS}:53")
+    };
     let args = StartArgs {
         config: built.config.to_string(),
         per_app_mode: settings.per_app.mode,
         packages: settings.per_app.packages.clone(),
-        dns: format!("{dns}:53"),
+        dns: dns_endpoint,
         mtu: config::TUN_MTU,
         routes: config::tunnel_routes(runtime.engine.as_ref()),
         session_name: name.to_owned(),
         server_name: server.name.clone(),
+        server_id: server.id.clone(),
         metrics_socket: metrics.to_owned(),
         proxy_tags: built.proxy_tags.clone(),
         // Xray runs inside the app: the engine accepts the app's own uid,
@@ -408,6 +418,7 @@ async fn start_stealth(
         "tunName": name,
         "ipv6": settings.ipv6,
         "serverName": server.name,
+        "serverId": server.id,
         "metricsSocket": metrics,
         "proxyTags": built.proxy_tags,
         "engineMode": engine.engine_mode,

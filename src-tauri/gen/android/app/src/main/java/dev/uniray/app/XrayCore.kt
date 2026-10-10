@@ -16,14 +16,22 @@ object XrayCore {
   class Response(val success: Boolean, val data: JSONObject?, val error: String)
 
   private fun invoke(method: String, payload: JSONObject? = null): Response {
-    val request = JSONObject().put("apiVersion", API_VERSION).put("method", method)
-    if (payload != null) request.put("payload", payload)
-    val response = JSONObject(LibXray.invoke(request.toString()))
-    return Response(
-      response.optBoolean("success"),
-      response.optJSONObject("data"),
-      response.optString("error")
-    )
+    return try {
+      val request = JSONObject().put("apiVersion", API_VERSION).put("method", method)
+      if (payload != null) request.put("payload", payload)
+      val raw = LibXray.invoke(request.toString())
+      if (raw.isNullOrEmpty()) {
+        return Response(false, null, "empty response from libXray")
+      }
+      val response = JSONObject(raw)
+      Response(
+        response.optBoolean("success"),
+        response.optJSONObject("data"),
+        response.optString("error")
+      )
+    } catch (e: Exception) {
+      Response(false, null, e.message ?: e.toString())
+    }
   }
 
   /** Starts the core with [config]; returns the error, or null on success. */

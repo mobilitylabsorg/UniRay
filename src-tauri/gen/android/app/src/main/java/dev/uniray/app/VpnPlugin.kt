@@ -40,6 +40,7 @@ class StartArgs {
   var routes: Array<String> = arrayOf("0.0.0.0/0", "::/0")
   var sessionName: String = "VPN"
   var serverName: String = ""
+  var serverId: String = ""
   var metricsSocket: String = ""
   var proxyTags: Array<String> = arrayOf()
   /** The engine for a WireGuard/AmneziaWG or Naive server; empty for the others. */
@@ -82,6 +83,7 @@ class StealthArgs {
   var tunName: String = ""
   var ipv6: Boolean = false
   var serverName: String = ""
+  var serverId: String = ""
   var metricsSocket: String = ""
   var proxyTags: Array<String> = arrayOf()
   var engineMode: String = ""
@@ -98,7 +100,10 @@ class StealthArgs {
  */
 @TauriPlugin
 class VpnPlugin(private val activity: Activity) : Plugin(activity) {
-  private var pendingStart: StartArgs? = null
+  companion object {
+    @Volatile
+    private var pendingStart: StartArgs? = null
+  }
 
   @Command
   fun start(invoke: Invoke) {
@@ -128,6 +133,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
     // Without it the service still runs, only its notification is hidden.
     if (
       Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        !activity.isFinishing && !activity.isDestroyed &&
         ContextCompat.checkSelfPermission(activity, Manifest.permission.POST_NOTIFICATIONS) !=
           PackageManager.PERMISSION_GRANTED
     ) {
@@ -144,6 +150,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         .put("routes", JSONArray(args.routes))
         .put("sessionName", args.sessionName)
         .put("serverName", args.serverName)
+        .put("serverId", args.serverId)
         .put("metricsSocket", args.metricsSocket)
         .put("proxyTags", JSONArray(args.proxyTags))
         .put("engineMode", args.engineMode)
@@ -163,8 +170,11 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
       invoke.reject("cannot start the VPN service: ${e.message}")
       return
     }
+    val startTime = System.currentTimeMillis()
     thread {
-      val answer = awaitAnswer(request, START_TIMEOUT_MS)
+      val answer = awaitAnswer(request, START_TIMEOUT_MS) { state ->
+        System.currentTimeMillis() - startTime > 4000L && !state.running && !VpnState.serviceAlive(activity)
+      }
       when {
         answer == null -> invoke.reject("the VPN service did not answer")
         answer.running -> invoke.resolve()
@@ -177,17 +187,18 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
   fun stop(invoke: Invoke) {
     // Every tunnel service that is up, not just the first found: stopping
     // the wrong one leaves the other carrying the traffic.
+    val targets = VpnState.tunnelsToStop(activity)
+    if (targets.isEmpty()) {
+      invoke.resolve()
+      return
+    }
     val stopIntents =
-      VpnState.aliveTunnels(activity).map { service ->
+      targets.map { service ->
         when (service) {
           StealthService::class.java -> Intent(activity, service).setAction(StealthService.ACTION_STOP)
           else -> Intent(activity, service).setAction(UniRayVpnService.ACTION_STOP)
         }
       }
-    if (stopIntents.isEmpty()) {
-      invoke.resolve()
-      return
-    }
     val request = UUID.randomUUID().toString()
     try {
       for (intent in stopIntents) activity.startService(intent.putExtra(UniRayVpnService.EXTRA_REQUEST, request))
@@ -287,7 +298,12 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun deviceInfo(invoke: Invoke) {
-    val id = Settings.Secure.getString(activity.contentResolver, Settings.Secure.ANDROID_ID)
+    val id =
+      try {
+        Settings.Secure.getString(activity.contentResolver, Settings.Secure.ANDROID_ID)
+      } catch (e: Exception) {
+        ""
+      }
     invoke.resolve(
       JSObject()
         .put("deviceId", id ?: "")
@@ -300,22 +316,35 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun listApps(invoke: Invoke) {
     thread {
-      val manager = activity.packageManager
-      val apps = JSArray()
-      val installed =
-        manager.getInstalledApplications(0).filter {
-          it.packageName != activity.packageName &&
-            manager.getLaunchIntentForPackage(it.packageName) != null
+      try {
+        val manager = activity.packageManager
+        val apps = JSArray()
+        val installed =
+          manager.getInstalledApplications(0)
+            .filter {
+              it.packageName != activity.packageName &&
+                manager.getLaunchIntentForPackage(it.packageName) != null
+            }
+            .map { info ->
+              Triple(
+                info.packageName,
+                manager.getApplicationLabel(info).toString(),
+                info.flags and ApplicationInfo.FLAG_SYSTEM != 0
+              )
+            }
+            .sortedBy { it.second.lowercase() }
+        for ((pkg, label, isSystem) in installed) {
+          apps.put(
+            JSObject()
+              .put("package", pkg)
+              .put("label", label)
+              .put("system", isSystem)
+          )
         }
-      for (info in installed.sortedBy { manager.getApplicationLabel(it).toString().lowercase() }) {
-        apps.put(
-          JSObject()
-            .put("package", info.packageName)
-            .put("label", manager.getApplicationLabel(info).toString())
-            .put("system", info.flags and ApplicationInfo.FLAG_SYSTEM != 0)
-        )
+        invoke.resolve(JSObject().put("apps", apps))
+      } catch (e: Exception) {
+        invoke.reject("failed to list applications: ${e.message}")
       }
-      invoke.resolve(JSObject().put("apps", apps))
     }
   }
 
@@ -370,16 +399,49 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
           .put("level", privilegeToken(state.level))
           .put("shizukuAvailable", state.shizukuAvailable)
           .put("shizukuGranted", state.shizukuGranted)
+          .put("hasTproxy", state.hasTproxy)
       )
     }
   }
 
-  /** Asks Shizuku for permission (interactive); resolves the new state. */
+  /** Asks Shizuku for permission (interactive); resolves the new state once answered. */
   @Command
   fun requestShizuku(invoke: Invoke) {
     try {
       if (Shizuku.pingBinder() && !Shizuku.isPreV11()) {
+        if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+          privilegeState(invoke)
+          return
+        }
+        val responded = java.util.concurrent.atomic.AtomicBoolean(false)
+        val listener = object : Shizuku.OnRequestPermissionResultListener {
+          override fun onRequestPermissionResult(requestCode: Int, grantResult: Int) {
+            if (requestCode == PrivilegedShell.SHIZUKU_PERMISSION_REQUEST) {
+              if (responded.compareAndSet(false, true)) {
+                try {
+                  Shizuku.removeRequestPermissionResultListener(this)
+                } catch (e: Exception) {
+                  // Ignore
+                }
+                privilegeState(invoke)
+              }
+            }
+          }
+        }
+        Shizuku.addRequestPermissionResultListener(listener)
+        thread {
+          Thread.sleep(30_000L)
+          if (responded.compareAndSet(false, true)) {
+            try {
+              Shizuku.removeRequestPermissionResultListener(listener)
+            } catch (e: Exception) {
+              // Ignore
+            }
+            privilegeState(invoke)
+          }
+        }
         Shizuku.requestPermission(PrivilegedShell.SHIZUKU_PERMISSION_REQUEST)
+        return
       }
     } catch (e: Exception) {
       // Nothing to request against; the state call below just reports "none".
@@ -406,6 +468,15 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         return@thread
       }
 
+      if (
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+          !activity.isFinishing && !activity.isDestroyed &&
+          ContextCompat.checkSelfPermission(activity, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+      ) {
+        ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+      }
+
       val spec =
         JSONObject()
           .put("config", args.config)
@@ -415,6 +486,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
           .put("ipv6", args.ipv6)
           .put("privilege", state.level.name)
           .put("serverName", args.serverName)
+          .put("serverId", args.serverId)
           .put("metricsSocket", args.metricsSocket)
           .put("proxyTags", JSONArray(args.proxyTags))
           .put("engineMode", args.engineMode)
@@ -435,7 +507,10 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         invoke.reject("cannot start the stealth service: ${e.message}")
         return@thread
       }
-      val answer = awaitAnswer(request, START_TIMEOUT_MS)
+      val startTime = System.currentTimeMillis()
+      val answer = awaitAnswer(request, START_TIMEOUT_MS) { state ->
+        System.currentTimeMillis() - startTime > 4000L && !state.running && !VpnState.serviceAlive(activity)
+      }
       when {
         answer == null -> invoke.reject("the stealth service did not answer")
         answer.running -> invoke.resolve()

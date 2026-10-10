@@ -127,11 +127,11 @@ class UniRayVpnService : VpnService() {
           e.message ?: e.toString()
         }
       if (error != null) {
-        shutdown(null)
+        shutdown(request, error)
       } else {
         startTicker()
+        VpnState.write(this, true, request, null)
       }
-      VpnState.write(this, error == null, request, error)
     }
     return START_NOT_STICKY
   }
@@ -182,11 +182,25 @@ class UniRayVpnService : VpnService() {
     val routes = spec.optJSONArray("routes")?.let { list -> (0 until list.length()).map { list.getString(it) } }
       ?: listOf("0.0.0.0/0", "::/0")
     val (routesV6, routesV4) = routes.partition { it.contains(':') }
-    for (route in routesV4) builder.addRoute(route.substringBefore('/'), route.substringAfter('/').toInt())
+    for (route in routesV4) {
+      val prefix = route.substringAfter('/', "").toIntOrNull() ?: continue
+      try {
+        builder.addRoute(route.substringBefore('/'), prefix)
+      } catch (e: Exception) {
+        Log.w(TAG, "Failed to add route: $route", e)
+      }
+    }
     try {
       // Also capture IPv6, so that it cannot bypass the tunnel.
       builder.addAddress(ADDRESS_V6, PREFIX_V6)
-      for (route in routesV6) builder.addRoute(route.substringBefore('/'), route.substringAfter('/').toInt())
+      for (route in routesV6) {
+        val prefix = route.substringAfter('/', "").toIntOrNull() ?: continue
+        try {
+          builder.addRoute(route.substringBefore('/'), prefix)
+        } catch (e: Exception) {
+          Log.w(TAG, "Failed to add IPv6 route: $route", e)
+        }
+      }
     } catch (e: Exception) {
       Log.w(TAG, "IPv6 is not available for the tunnel", e)
     }
@@ -277,11 +291,17 @@ class UniRayVpnService : VpnService() {
 
   /**
    * Removes the notification for good. Runs the removal on the ticker thread,
-   * after any refresh already queued there, so nothing re-posts it afterwards;
-   * [stopped] keeps later refreshes from posting at all.
+   * after any refresh already running or queued there, so nothing re-posts it
+   * afterwards; [stopped] keeps later refreshes from posting at all. The
+   * ticker itself keeps running: this instance may be started again, and only
+   * [onDestroy] shuts it down.
    */
   private fun clearNotification() {
+    stopped = true
     val drop = Runnable {
+      // Started again meanwhile: the notification is the new run's.
+      if (!stopped) return@Runnable
+      notification = null
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
         stopForeground(STOP_FOREGROUND_REMOVE)
       } else {
@@ -291,8 +311,8 @@ class UniRayVpnService : VpnService() {
     }
     try {
       ticker.execute(drop)
-      ticker.shutdown()
     } catch (e: java.util.concurrent.RejectedExecutionException) {
+      // The ticker is shut down already (onDestroy): nothing can re-post.
       drop.run()
     }
   }
@@ -313,7 +333,13 @@ class UniRayVpnService : VpnService() {
       ticker.scheduleWithFixedDelay(
         {
           try {
-            if (System.currentTimeMillis() - lastCheckAt >= CHECK_INTERVAL_MS) checkConnection()
+            if (System.currentTimeMillis() - lastCheckAt >= CHECK_INTERVAL_MS) {
+              lastCheckAt = System.currentTimeMillis()
+              kotlin.concurrent.thread(name = "vpn-check", isDaemon = true) {
+                checkConnection()
+                submitRefresh()
+              }
+            }
             refreshNotification()
           } catch (e: Exception) {
             Log.w(TAG, "notification refresh failed", e)

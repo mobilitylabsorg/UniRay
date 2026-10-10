@@ -36,6 +36,8 @@ data class PrivilegeState(
   val shizukuAvailable: Boolean,
   /** Shizuku is bound and has granted us permission. */
   val shizukuGranted: Boolean,
+  /** Whether the kernel and iptables support the TPROXY target. */
+  val hasTproxy: Boolean = false,
 )
 
 class ShellResult(val code: Int, val out: List<String>, val err: List<String>) {
@@ -61,6 +63,9 @@ class ShellResult(val code: Int, val out: List<String>, val err: List<String>) {
 object PrivilegedShell {
   private const val TAG = "UniRayPriv"
   const val SHIZUKU_PERMISSION_REQUEST = 4001
+  /** Longest a Shizuku script may run: the stealth setup waits for the core and the engine. */
+  private const val SHIZUKU_EXEC_TIMEOUT_S = 60L
+  @Volatile private var cachedTproxy: Boolean? = null
 
   init {
     // Create shells on demand with a short timeout; never keep a cached root
@@ -81,18 +86,38 @@ object PrivilegedShell {
         shizuku != Privilege.NONE -> shizuku
         else -> Privilege.NONE
       }
-    return PrivilegeState(level, shizukuAvailable, shizukuGranted)
+    val hasTproxy = if (level.canStealth) checkTproxy(level) else false
+    return PrivilegeState(level, shizukuAvailable, shizukuGranted, hasTproxy)
+  }
+
+  /** Tests whether the kernel has the iptables TPROXY target. */
+  fun checkTproxy(level: Privilege): Boolean {
+    if (!level.canStealth) return false
+    cachedTproxy?.let { return it }
+    val script =
+      "(iptables -w -t mangle -F UNIRAY_CHK 2>/dev/null; iptables -w -t mangle -X UNIRAY_CHK 2>/dev/null); if iptables -w -t mangle -N UNIRAY_CHK 2>/dev/null && iptables -w -t mangle -A UNIRAY_CHK -p tcp -j TPROXY --on-ip 127.0.0.1 --on-port 12345 --tproxy-mark 0x1/0x1 2>/dev/null; then echo 1; else echo 0; fi; iptables -w -t mangle -F UNIRAY_CHK 2>/dev/null; iptables -w -t mangle -X UNIRAY_CHK 2>/dev/null"
+    val res = execPrivileged(level, script)
+    val supported = (res.ok || res.code == 0) && res.outText().contains("1")
+    Log.i(TAG, "checkTproxy: ok=${res.ok}, code=${res.code}, out=${res.outText()}, err=${res.errText()}, supported=$supported")
+    // Either answer, once the script ran (it prints 1 or 0): the kernel does
+    // not change while the app runs, and each check is a privileged shell. A
+    // shell that failed to start says nothing and is asked again next time;
+    // a new root grant clears the answer.
+    if (res.outText().contains("1") || res.outText().contains("0")) cachedTproxy = supported
+    return supported
   }
 
   /** Whether real root is available, prompting for the grant if it must. Call
    * off the main thread. */
-  fun requestRoot(): Boolean =
-    try {
+  fun requestRoot(): Boolean {
+    cachedTproxy = null
+    return try {
       Shell.getShell().isRoot
     } catch (e: Throwable) {
       Log.w(TAG, "root shell failed", e)
       false
     }
+  }
 
   /** Runs [script] with `sh` as root (through libsu). Call off the main thread. */
   fun execRoot(script: String): ShellResult {
@@ -121,10 +146,32 @@ object PrivilegedShell {
           .getDeclaredMethod("newProcess", Array<String>::class.java, Array<String>::class.java, String::class.java)
           .apply { isAccessible = true }
       val process =
-        newProcess.invoke(null, arrayOf("sh", "-c", script), null, null) as Process
-      val out = process.inputStream.bufferedReader().readLines()
-      val err = process.errorStream.bufferedReader().readLines()
-      val code = process.waitFor()
+        newProcess.invoke(null, arrayOf("sh", "-c", script), null, null) as java.lang.Process
+      // Both streams drained at once, so neither can fill up and stall the
+      // script; the whole run is bounded, as a hung script would otherwise
+      // hold the caller (and the tunnel's start or stop) forever.
+      var out = emptyList<String>()
+      var err = emptyList<String>()
+      val readers =
+        listOf(
+          kotlin.concurrent.thread(name = "shizuku-out") {
+            out = runCatching { process.inputStream.bufferedReader().readLines() }.getOrDefault(emptyList())
+          },
+          kotlin.concurrent.thread(name = "shizuku-err") {
+            err = runCatching { process.errorStream.bufferedReader().readLines() }.getOrDefault(emptyList())
+          },
+        )
+      // Process.waitFor(timeout) needs API 26, and Shizuku's remote process
+      // only implements the plain waitFor(): wait for it on a thread instead.
+      var code = -1
+      val waiter = kotlin.concurrent.thread(name = "shizuku-wait") { code = runCatching { process.waitFor() }.getOrDefault(-1) }
+      waiter.join(SHIZUKU_EXEC_TIMEOUT_S * 1000)
+      val finished = !waiter.isAlive
+      if (!finished) runCatching { process.destroy() }
+      // The streams close with the process (or its destruction).
+      for (reader in readers) reader.join(2_000)
+      if (!finished) code = -1
+      if (!finished) err = err + "the script did not finish within ${SHIZUKU_EXEC_TIMEOUT_S}s"
       ShellResult(code, out, err)
     } catch (e: Throwable) {
       // Reflection wraps whatever Shizuku threw; report that, not the wrapper.

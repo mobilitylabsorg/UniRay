@@ -28,6 +28,7 @@ pinned_sha256() {
     naiveproxy-v154.0.8037.49-4-linux-x64.tar.xz) echo 9d765620b90f7c60eb40c7c68b2f82537757cc52a8693dee7a00f8ba8b13dfd0 ;;
     naiveproxy-v154.0.8037.49-4-linux-arm64.tar.xz) echo dfa99dc36dafa1ee7f97f48bde14e9ee96bc4011e5cc10c7881fa7883859a036 ;;
     naiveproxy-v154.0.8037.49-4-linux-arm.tar.xz) echo e5637d35a0534af79aa17f69e1e3bbf59a41513104527e686f7650e180b139bb ;;
+    naiveproxy-plugin-v154.0.8037.49-4-arm64-v8a.apk) echo 53d2ffd05fa13a8af22225bd738e5f59c7a499b369917c633a30c19c84f1f117 ;;
     *) echo "" ;;
   esac
 }

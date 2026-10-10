@@ -115,6 +115,13 @@ const privilegeLabel = computed(() => PRIVILEGE_LABELS[privilege.value?.level ??
 const canStealth = computed(
   () => privilege.value?.level === "root" || privilege.value?.level === "shizukuRoot",
 );
+// A hint, not a lock: a kernel can list TPROXY and still handle it badly
+// (some custom ROMs), and the root TUN is the way out then.
+const stealthRootTunHint = computed(() => {
+  if (privilege.value?.hasTproxy === true) return "settings.stealthRootTunTproxySupported";
+  if (privilege.value?.hasTproxy === false) return "settings.stealthRootTunTproxyMissing";
+  return "settings.stealthRootTunHint";
+});
 
 async function refreshPrivilege() {
   if (store.isDesktop) return;
@@ -282,6 +289,9 @@ onMounted(refreshPrivilege);
             <AppIcon name="chevron" class="text-muted" />
           </button>
         </Transition>
+        <div v-if="store.settings.stealth && canStealth" class="px-4 py-2.5 text-xs text-amber-500 bg-amber-500/10">
+          {{ t("settings.perAppStealthWarning") }}
+        </div>
       </div>
 
       <div class="section-title">{{ t("settings.stealth") }}</div>
@@ -318,7 +328,7 @@ onMounted(refreshPrivilege);
           <div v-if="store.settings.stealth && canStealth" class="flex items-center gap-3 px-4 py-3">
             <div class="flex-1">
               <div class="font-medium">{{ t("settings.stealthRootTun") }}</div>
-              <div class="text-xs text-muted">{{ t("settings.stealthRootTunHint") }}</div>
+              <div class="text-xs text-muted">{{ t(stealthRootTunHint) }}</div>
             </div>
             <ToggleSwitch
               :model-value="store.settings.stealthRootTun"

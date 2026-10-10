@@ -87,6 +87,7 @@ export interface PrivilegeState {
   level: PrivilegeLevel;
   shizukuAvailable: boolean;
   shizukuGranted: boolean;
+  hasTproxy?: boolean;
 }
 
 export interface CmdError {
