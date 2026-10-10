@@ -25,7 +25,7 @@ Linux · Windows · macOS · Android · MikroTik
 | 🐧 **Linux** | ✅ | ✅ TUN | AppImage |
 | 🪟 **Windows** 10+ | ✅ | ✅ TUN (Wintun) | установщик и портативный zip |
 | 🍎 **macOS** | ✅ | 🟡 TUN собирается, вживую не проверен | DMG (Apple Silicon и Intel) |
-| 🤖 **Android** | — | ✅ VPN · ✅ Stealth (root) | APK (arm64) |
+| 🤖 **Android**, Android TV | — | ✅ VPN · ✅ Stealth (root) | APK (arm64, armv7) |
 | 📡 **MikroTik** | ✅ | ✅ шлюз для сети | контейнер (armv7, arm64), [подробнее](docker/gateway/README.md) |
 | 📱 iOS | — | ❌ туннеля пока нет | — |
 
@@ -64,6 +64,8 @@ Linux · Windows · macOS · Android · MikroTik
   xattr -cr /Applications/UniRay.app
   ```
 - **Android** — установите APK. Stealth-режим требует root.
+  - `UniRay-android-arm64.apk` — для телефонов и 64-битных приставок.
+  - `UniRay-android-armv7.apk` — для большинства Android TV и ТВ-приставок (Chromecast with Google TV, Mi Box и т.п.): на них 32-битный Android даже при 64-битном процессоре. Если arm64-APK не ставится («Приложение не установлено»), берите armv7. Разрядность системы показывает, например, CPU-Z или AIDA64 («Instruction set» / «ABI»).
 - **MikroTik** — см. [docker/gateway/README.md](docker/gateway/README.md).
 
 ## Как это устроено

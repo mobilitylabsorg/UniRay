@@ -29,6 +29,7 @@ pinned_sha256() {
     naiveproxy-v154.0.8037.49-4-linux-arm64.tar.xz) echo dfa99dc36dafa1ee7f97f48bde14e9ee96bc4011e5cc10c7881fa7883859a036 ;;
     naiveproxy-v154.0.8037.49-4-linux-arm.tar.xz) echo e5637d35a0534af79aa17f69e1e3bbf59a41513104527e686f7650e180b139bb ;;
     naiveproxy-plugin-v154.0.8037.49-4-arm64-v8a.apk) echo 53d2ffd05fa13a8af22225bd738e5f59c7a499b369917c633a30c19c84f1f117 ;;
+    naiveproxy-plugin-v154.0.8037.49-4-armeabi-v7a.apk) echo 175e0edcccf65c9e69ff9b2b3185b86474008d14c5ed7507bbb63a4bf3765797 ;;
     *) echo "" ;;
   esac
 }
@@ -43,7 +44,8 @@ case "$target" in
   aarch64-pc-windows-*) pattern="naiveproxy-{v}-win-arm64.zip" ;;
   x86_64-apple-darwin) pattern="naiveproxy-{v}-mac-x64-x64.tar.xz" ;;
   aarch64-apple-darwin) pattern="naiveproxy-{v}-mac-arm64-arm64.tar.xz" ;;
-  aarch64-linux-android) pattern="naiveproxy-plugin-{v}-arm64-v8a.apk" ;;
+  aarch64-linux-android) pattern="naiveproxy-plugin-{v}-arm64-v8a.apk" abi=arm64-v8a ;;
+  armv7-linux-androideabi) pattern="naiveproxy-plugin-{v}-armeabi-v7a.apk" abi=armeabi-v7a ;;
   *) echo "fetch-naive.sh: no naive build for $target" >&2; exit 1 ;;
 esac
 
@@ -108,8 +110,8 @@ case "$asset" in
     (cd "$work/x" && unzip -q "../$asset")
     binary="$(find "$work/x" -name naive.exe -type f | head -1)" ;;
   *.apk)
-    (cd "$work/x" && unzip -q "../$asset" lib/arm64-v8a/libnaive.so)
-    binary="$work/x/lib/arm64-v8a/libnaive.so" ;;
+    (cd "$work/x" && unzip -q "../$asset" "lib/$abi/libnaive.so")
+    binary="$work/x/lib/$abi/libnaive.so" ;;
   *)
     tar -xJf "$work/$asset" -C "$work/x"
     binary="$(find "$work/x" -name naive -type f | head -1)" ;;

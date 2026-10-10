@@ -80,6 +80,12 @@ class StealthService : Service() {
     // Root CAs for the Linux build of Xray, which looks only in the desktop
     // places: the updatable store (Android 14+), then the system one.
     private const val ANDROID_CA_DIRS = "/apex/com.android.conscrypt/cacerts:/system/etc/security/cacerts"
+    /**
+     * For every Xray it launches: a Linux build (the root TUN one, and the
+     * tproxy one on 32-bit ARM) knows no Android CA store and no temp dir;
+     * the Android build reads the same and is not bothered.
+     */
+    private const val BASE_ENV = "SSL_CERT_DIR=$ANDROID_CA_DIRS"
 
     private const val REFRESH_SECONDS = 5L
     private const val CHECK_INTERVAL_MS = 5 * 60 * 1000L
@@ -92,9 +98,13 @@ class StealthService : Service() {
 
     fun stealthDir(context: Context) = File(context.filesDir, "stealth")
 
-    /** The Android build of Xray, for tproxy. */
+    /**
+     * Xray for tproxy: the Android build (the static Linux one on 32-bit ARM,
+     * which has no Android build). Shipped as the native library
+     * libxray.so, copied here under this name.
+     */
     private const val XRAY_TPROXY = "xray"
-    /** The Linux build, for the root TUN: only it creates a TUN itself. */
+    /** The Linux build, for the root TUN: only it creates a TUN itself (libxray_tun.so). */
     private const val XRAY_TUN = "xray-tun"
   }
 
@@ -327,9 +337,12 @@ class StealthService : Service() {
     val version = packageManager.getPackageInfo(packageName, 0).lastUpdateTime.toString()
     if (stamp.exists() && stamp.readText() == version) return dir
 
-    for (name in listOf(XRAY_TPROXY, XRAY_TUN)) {
+    // Native libraries of this APK's ABI, extracted at install
+    // (scripts/fetch-xray-android.sh); run from a copy in the private dir.
+    val libs = File(applicationInfo.nativeLibraryDir)
+    for ((name, lib) in listOf(XRAY_TPROXY to "libxray.so", XRAY_TUN to "libxray_tun.so")) {
       val xray = File(dir, name)
-      assets.open("stealth/$name").use { input -> xray.outputStream().use { input.copyTo(it) } }
+      File(libs, lib).inputStream().use { input -> xray.outputStream().use { input.copyTo(it) } }
       xray.setExecutable(true, false)
       xray.setReadable(true, false)
     }
@@ -362,7 +375,7 @@ class StealthService : Service() {
       # A socket or lock left by an earlier core, maybe not openable by this
       # one; root may remove it whoever made it.
       rm -f "$sock" "$sock.lock"
-      $env XRAY_LOCATION_ASSET=$geo setsid $xray run -c ${configFile.absolutePath} >$log 2>&1 &
+      $env $BASE_ENV TMPDIR=${dir.absolutePath} XRAY_LOCATION_ASSET=$geo setsid $xray run -c ${configFile.absolutePath} >$log 2>&1 &
       echo ${'$'}! > $pid
       for i in ${'$'}(seq 1 80); do [ -S "$sock" ] && chmod 666 "$sock" && break; sleep 0.1; done
       if ! kill -0 ${'$'}(cat $pid 2>/dev/null) 2>/dev/null; then
@@ -491,7 +504,7 @@ class StealthService : Service() {
 
       $engine
 
-      ${launch(dir, configFile, XRAY_TUN, "SSL_CERT_DIR=$ANDROID_CA_DIRS TMPDIR=${dir.absolutePath}")}
+      ${launch(dir, configFile, XRAY_TUN)}
 
       for i in ${'$'}(seq 1 50); do ip link show $tun 2>/dev/null | grep -q '[<,]UP[,>]' && break; sleep 0.1; done
       if ! ip link show $tun 2>/dev/null | grep -q '[<,]UP[,>]'; then
