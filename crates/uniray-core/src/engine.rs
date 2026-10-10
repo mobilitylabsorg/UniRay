@@ -80,6 +80,8 @@ fn wireguard_run(wireguard: &WgConfig, port: u16, ipv6: bool) -> Result<EngineRu
             pass,
             bypass: endpoints.iter().map(|addr| Bypass { addr: *addr, network: "udp" }).collect(),
             block_udp: false,
+            // WireGuard's UDP has nothing to sniff a name from.
+            sniff_excluded: Vec::new(),
         },
         warnings,
     })
@@ -106,6 +108,7 @@ fn naive_run(naive: &NaiveConfig, port: u16, ipv6: bool, binary: &Path) -> Resul
             // HTTP/2 over TCP, or QUIC over UDP.
             bypass: vec![Bypass { addr: server, network: "tcp,udp" }],
             block_udp: true,
+            sniff_excluded: if naive.host.parse::<IpAddr>().is_ok() { Vec::new() } else { vec![naive.host.clone()] },
         },
         warnings: Vec::new(),
     })
@@ -230,6 +233,12 @@ mod tests {
         let engine: Value = serde_json::from_slice(&staged.config_for(&Peers::Pids(vec![]), false)).unwrap();
         assert_eq!(engine["naive"]["binary"], "/run/elevated/uniray-naive");
         assert_eq!(run.runtime.bypass, [Bypass { addr: "127.0.0.1:8443".parse().unwrap(), network: "tcp,udp" }]);
+        // An address carries no name for sniffing to put in its place.
+        assert!(run.runtime.sniff_excluded.is_empty());
+
+        let by_name = parse_link("naive+https://me:pw@localhost:8443#N").unwrap();
+        let run = prepare(&by_name, 40125, false, Path::new("/opt/naive")).unwrap().unwrap();
+        assert_eq!(run.runtime.sniff_excluded, ["localhost"]);
     }
 
     #[test]

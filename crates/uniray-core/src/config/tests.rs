@@ -508,6 +508,7 @@ fn engine(block_udp: bool) -> Engine {
         pass: "p".into(),
         bypass: vec![Bypass { addr: "203.0.113.9:51820".parse().unwrap(), network: "udp" }],
         block_udp,
+        sniff_excluded: Vec::new(),
     }
 }
 
@@ -535,6 +536,38 @@ fn engine_servers_go_through_a_socks_outbound() {
         json!({ "ip": ["203.0.113.9/32"], "port": "51820", "network": "udp", "outboundTag": "direct" })
     );
     assert!(!rules.iter().any(|rule| rule["outboundTag"] == "block" && rule["network"] == "udp"));
+    // Nothing to keep from sniffing.
+    assert!(config["inbounds"].as_array().unwrap().iter().all(|inbound| inbound["sniffing"].get("domainsExcluded").is_none()));
+}
+
+#[test]
+fn the_tun_leaves_the_engine_servers_address_out() {
+    let tun_routes = |engine: Engine| {
+        let runtime = Runtime { tun: Some(Tun::Managed { name: "utun9".into() }), engine: Some(engine), ..proxy_runtime() };
+        let config = build(&engine_server(), &Settings::default(), &runtime).unwrap().config;
+        let tun = config["inbounds"].as_array().unwrap().iter().find(|inbound| inbound["tag"] == "tun").unwrap().clone();
+        serde_json::from_value::<Vec<String>>(tun["settings"]["autoSystemRoutingTable"].clone()).unwrap()
+    };
+    let routes = tun_routes(engine(false));
+    let covered = |ip: &str| routes.iter().any(|route| crate::routes::covers(route, ip.parse().unwrap()));
+    assert!(!covered("203.0.113.9"), "the engine's server goes the system's way");
+    assert!(covered("203.0.113.8") && covered("1.1.1.1") && covered("2606:4700::1111"));
+    assert_eq!(tunnel_routes(None), ["0.0.0.0/0", "::/0"]);
+}
+
+#[test]
+fn sniffing_keeps_the_engine_servers_address() {
+    // naive's own TLS to the server carries its name; sniffed, the name would
+    // replace the address the bypass rule matches, and the connection would go
+    // to the proxy: back into the engine.
+    let engine = Engine { sniff_excluded: vec!["naive.example.com".into()], ..engine(true) };
+    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into() }), engine: Some(engine), ..proxy_runtime() };
+    let config = build(&engine_server(), &Settings::default(), &runtime).unwrap().config;
+    let inbounds = config["inbounds"].as_array().unwrap();
+    assert!(inbounds.iter().any(|inbound| inbound["tag"] == "tun"));
+    for inbound in inbounds.iter().filter(|inbound| inbound.get("sniffing").is_some()) {
+        assert_eq!(inbound["sniffing"]["domainsExcluded"], json!(["naive.example.com"]), "{}", inbound["tag"]);
+    }
 }
 
 #[test]

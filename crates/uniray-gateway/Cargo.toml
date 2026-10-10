@@ -3,6 +3,8 @@ name = "uniray-gateway"
 description = "Headless UniRay for routers: Xray as a LAN gateway with a small web UI"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 uniray-core = { path = "../uniray-core" }

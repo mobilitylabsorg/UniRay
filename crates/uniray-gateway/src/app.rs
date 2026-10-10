@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -350,7 +350,15 @@ impl App {
         }
 
         let metrics_port = free_port()?;
-        let routes = net::tunnel_routes(&net::system_nameservers());
+        // The engine's own connections to its server leave by the normal
+        // interface, not through Xray: less work for a small router, and no
+        // chance of them looping back into the engine.
+        let mut excluded = net::system_nameservers();
+        excluded.extend(engine_run.iter().flat_map(|run| &run.runtime.bypass).filter_map(|bypass| match bypass.addr.ip() {
+            IpAddr::V4(ip) => Some(ip),
+            IpAddr::V6(_) => None,
+        }));
+        let routes = net::tunnel_routes(&excluded);
         let settings = Settings {
             mode: Mode::Tun,
             mixed_port: self.options.mixed_port,

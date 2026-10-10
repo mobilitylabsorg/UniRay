@@ -7,7 +7,7 @@
 **Кроссплатформенный VPN-клиент на ядре [Xray](https://github.com/XTLS/Xray-core)**<br>
 VLESS · VMess · Trojan · Shadowsocks · Hysteria2 · WireGuard · AmneziaWG · NaiveProxy
 
-[![Build](https://github.com/delarun/UniRay/actions/workflows/build.yml/badge.svg)](https://github.com/delarun/UniRay/actions/workflows/build.yml)
+[![Build](https://github.com/mobilitylabsorg/UniRay/actions/workflows/build.yml/badge.svg)](https://github.com/mobilitylabsorg/UniRay/actions/workflows/build.yml)
 ![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-core-000000?logo=rust)
 ![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)
@@ -38,8 +38,8 @@ Linux · Windows · macOS · Android · MikroTik
 | | Как | Состояние |
 | --- | --- | --- |
 | VLESS, VMess, Trojan, Shadowsocks, Hysteria2 | Xray | ✅ |
-| WireGuard, AmneziaWG 2.0 | `uniray-engine` за Xray | ✅ |
-| AmneziaWG 3.1 (RandomTrailers, DisableCookies, HeaderProtectionKey) | `uniray-engine` на amneziawg-go v3.1 | ✅ |
+| WireGuard, AmneziaWG 2.0 | `uniray-engine` за Xray | ✅ upload с BBRv3, [см. ниже](#upload-wireguard) |
+| AmneziaWG 3.1 (RandomTrailers, DisableCookies, HeaderProtectionKey) | `uniray-engine` на amneziawg-go v3.1 | ✅ upload с BBRv3, [см. ниже](#upload-wireguard) |
 | NaiveProxy (`naive+https`, `naive+quic`) | официальный `naive` за движком | ✅ |
 
 Цепочка «Xray → движок → сервер AmneziaWG» проверяется в CI на каждый коммит: в network namespaces, в режимах прокси и TUN.
@@ -55,7 +55,7 @@ Linux · Windows · macOS · Android · MikroTik
 
 ## Установка
 
-Готовые сборки — в [релизах](https://github.com/delarun/UniRay/releases) и в артефактах [запусков CI](https://github.com/delarun/UniRay/actions/workflows/build.yml).
+Готовые сборки — в [релизах](https://github.com/mobilitylabsorg/UniRay/releases) и в артефактах [запусков CI](https://github.com/mobilitylabsorg/UniRay/actions/workflows/build.yml).
 
 - **Linux** — `chmod +x UniRay_*.AppImage` и запуск. Для TUN-режима нужен polkit-агент (права запрашиваются через `pkexec`). Системный прокси выставляется через `gsettings` (GNOME, GTK-приложения, Chromium); в окружениях без него используйте TUN или укажите прокси приложениям вручную.
 - **Windows** — установщик или портативный zip. TUN-режим запрашивает права администратора (UAC).
@@ -88,14 +88,45 @@ Linux · Windows · macOS · Android · MikroTik
 | --- | --- |
 | `crates/uniray-core` | Логика без привязки к платформе: разбор ссылок и подписок, HWID, генерация конфига Xray. |
 | `crates/uniray-helper` | Привилегированный супервизор Xray и движка для TUN-режима на десктопе. |
-| `engine` | `uniray-engine` (Go): WireGuard/AmneziaWG на amneziawg-go и NaiveProxy через `naive`; e2e-тест в `engine/e2e`. |
+| `engine` | `uniray-engine` (Go): WireGuard/AmneziaWG на amneziawg-go и NaiveProxy через `naive`; форки gVisor (BBRv3) и amneziawg-go — в [mobilitylabsorg](https://github.com/mobilitylabsorg); e2e-тест в `engine/e2e`, стенд скорости в `engine/bench`. |
 | `crates/uniray-gateway` | Контейнер для роутеров: VPN-шлюз для сети и веб-интерфейс. |
 | `src-tauri` | Приложение: запуск ядра, системный прокси, хранение состояния, команды для интерфейса. |
 | `src` | Интерфейс на Vue 3 (Pinia, vue-router, vue-i18n, Tailwind). |
 
+## Известные ограничения и планы
+
+<a id="upload-wireguard"></a>
+### Upload через WireGuard/AmneziaWG: BBRv3 в gVisor
+
+**Что было.** Download почти как у официального клиента AmneziaVPN, а upload в разы ниже: на реальном канале 5 Мбит/с против 70 у AmneziaVPN. У NaiveProxy этого не было: его upload совпадает с `naive` без UniRay.
+
+**Почему.** AmneziaVPN отдаёт системный TUN прямо amneziawg-go, и данные приложений отправляет TCP ядра ОС. У нас впереди Xray (маршрутизация, DNS, счётчики): он принимает TCP приложений и передаёт его движку по SOCKS, а движок открывает соединение к сайту из userspace-стека [gVisor](https://gvisor.dev/) внутри amneziawg-go. На длинном участке данные отправляет gVisor, а его reno/cubic после случайных потерь восстанавливаются очень плохо. При download отправляет сервер сайта своим TCP, поэтому download почти не страдал.
+
+**Что сделано.** Движок собирается с форками, которые лежат в организации:
+- [mobilitylabsorg/gvisor](https://github.com/mobilitylabsorg/gvisor/tree/uniray) — патч из [apoxy-dev/ccsim](https://github.com/apoxy-dev/ccsim) (подключаемый congestion control, оценка скорости доставки, pacing, исправления RACK/SACK), реализация **BBRv3** оттуда же и ограничение числа SACK-блоков;
+- [mobilitylabsorg/amneziawg-go](https://github.com/mobilitylabsorg/amneziawg-go/tree/uniray) — доступ к стеку gVisor (`Net.Stack()`) и тег сборки `uniray_lowmem` с ограниченными пулами буферов для образа MikroTik `-lowmem`.
+
+`engine/go.mod` подключает их через `replace` на закреплённые коммиты, движок включает BBR и буфер отправки 4 МиБ (1 МиБ в `uniray_lowmem`), см. `engine/tcp.go`. BBR почти не реагирует на случайные потери, поэтому помогает во всех режимах: TUN и прокси на десктопе, VPN и Stealth на Android, MikroTik.
+
+**Замеры** (стенд [`engine/bench`](engine/bench): сервер amneziawg-go v3.1 в network namespace, UDP-ретранслятор с задержкой и потерями, RTT 60 мс, upload; при потерях разброс между прогонами большой):
+
+| | без потерь | 0,1% потерь | 0,5% потерь |
+| --- | ---: | ---: | ---: |
+| `uniray-engine` до (gVisor, reno) | 142 Мбит/с | 6–42 Мбит/с | 3–4,5 Мбит/с |
+| **`uniray-engine` с BBRv3** | **191 Мбит/с** | **89–159 Мбит/с** | **34–79 Мбит/с** |
+| TCP ядра Linux, CUBIC (как у AmneziaVPN) | 148–162 Мбит/с | 8–95 Мбит/с | 3,4–5,4 Мбит/с |
+| TCP ядра Linux, BBR | 163–185 Мбит/с | 69–128 Мбит/с | 65–80 Мбит/с |
+
+Download с BBR не изменился. NaiveProxy это не касается: `naive` отправляет данные своим TCP ядра, движок только передаёт их по loopback.
+
+**Что осталось:**
+- проверить на живом канале против AmneziaVPN (тестовые сборки — в артефактах CI);
+- перенести патч на свежий gVisor: в новых версиях у `congestionControl.Update` появился аргумент `ackTime`, поэтому форк пока на gVisor от июля 2026 (его же требует amneziawg-go v3.1);
+- при желании — TCP ядра через настоящий TUN там, где есть root (TUN-режим на десктопе, Stealth на Android): движок поднимает TUN AmneziaWG и открывает соединения системными сокетами, привязанными к нему.
+
 ## Разработка
 
-Нужны Rust, Go 1.25+ (движок `engine/`), Node.js с pnpm и [системные зависимости Tauri](https://tauri.app/start/prerequisites/).
+Нужны Rust, Go 1.26+ (движок `engine/`; `GOTOOLCHAIN=auto` скачает нужную версию сам), Node.js с pnpm и [системные зависимости Tauri](https://tauri.app/start/prerequisites/).
 
 ```sh
 pnpm install
@@ -178,3 +209,11 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles n
    Готовый `.ipa` ставится на iPhone через Xcode (Window → Devices and Simulators).
 
 </details>
+
+## Лицензия
+
+UniRay распространяется под [GNU General Public License v3.0](LICENSE) (`GPL-3.0-only`): код можно использовать, изменять и распространять, в том числе за деньги, но изменённые версии и производные работы должны оставаться под GPL-3.0 с открытыми исходниками.
+
+**Движок `uniray-engine` распространяется на условиях [GNU AGPL v3.0](https://www.gnu.org/licenses/agpl-3.0.html).** В него входит код под AGPL-3.0 из [apoxy-dev/ccsim](https://github.com/apoxy-dev/ccsim): BBRv3 и патч gVisor в форке [mobilitylabsorg/gvisor](https://github.com/mobilitylabsorg/gvisor/tree/uniray). GPL-3.0 (раздел 13) разрешает такое объединение: исходники UniRay остаются под GPL-3.0, а собранный движок, где они соединены с кодом под AGPL, — под AGPL-3.0. Для пользователей приложения разницы нет; условие AGPL о сетевом доступе касается только тех, кто изменит движок и даст им пользоваться по сети.
+
+Сторонние компоненты сохраняют свои лицензии: Xray-core — MPL-2.0, amneziawg-go — MIT, gVisor — Apache-2.0 (патч и BBRv3 в нашем форке — AGPL-3.0), NaiveProxy — BSD-3-Clause, Wintun — свои условия (`LICENSE-Wintun` рядом с `wintun.dll`).
