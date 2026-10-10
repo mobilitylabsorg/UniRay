@@ -52,6 +52,8 @@ pub struct App {
     /// Running on a TV (Android TV / Google TV): the frontend switches to its
     /// remote-control layout. Set once the device info is in.
     pub tv: AtomicBool,
+    /// The TV's import page while its dialog is open (handoff.rs).
+    pub handoff: Mutex<Option<crate::handoff::Handoff>>,
     /// The latest traffic sample of the live connection.
     pub traffic: Mutex<Traffic>,
     /// Connection checker and system UI presenter, see `monitor`.
@@ -72,6 +74,7 @@ impl App {
             logs: Mutex::new(VecDeque::new()),
             testing: AtomicBool::new(false),
             tv: AtomicBool::new(false),
+            handoff: Mutex::new(None),
             traffic: Mutex::new(Traffic::default()),
             monitor: Mutex::new(None),
             paths,

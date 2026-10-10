@@ -173,6 +173,9 @@ export interface ImportReport {
 export const api = {
   getState: () => invoke<Snapshot>("get_state"),
   import: (text: string) => invoke<ImportReport>("import", { text }),
+  /** TV: starts the import page for a phone; resolves its URL (for the QR code). */
+  handoffStart: () => invoke<string>("handoff_start"),
+  handoffStop: () => invoke<void>("handoff_stop"),
   deleteServers: (ids: string[]) => invoke<void>("delete_servers", { ids }),
   selectServer: (id: string) => invoke<void>("select_server", { id }),
   addSubscription: (url: string) => invoke<ImportReport>("add_subscription", { url }),
@@ -201,6 +204,9 @@ export const events = {
     listen<Traffic>("traffic", (event) => handler(event.payload)),
   log: (handler: (line: LogLine) => void): Promise<UnlistenFn> =>
     listen<LogLine>("log", (event) => handler(event.payload)),
+  /** Something sent from a phone to the TV's import page was imported. */
+  handoff: (handler: (report: ImportReport) => void): Promise<UnlistenFn> =>
+    listen<ImportReport>("handoff", (event) => handler(event.payload)),
 };
 
 /** Commands reject with a `CmdError`; anything else is an unexpected failure. */

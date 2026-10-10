@@ -4703,6 +4703,7 @@ dependencies = [
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tiny_http",
  "tokio",
  "uniray-core",
  "windows-sys 0.61.2",

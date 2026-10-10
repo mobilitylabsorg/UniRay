@@ -3,6 +3,7 @@ mod commands;
 mod core;
 mod device;
 mod error;
+mod handoff;
 mod logs;
 mod monitor;
 mod network;
@@ -109,6 +110,8 @@ pub fn run() {
             commands::privilege_state,
             commands::request_shizuku,
             commands::set_keep_awake,
+            commands::handoff_start,
+            commands::handoff_stop,
             commands::get_logs,
             commands::clear_logs,
             commands::quit,

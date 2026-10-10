@@ -13,7 +13,8 @@ import java.net.Inet4Address
  * servers through it there.
  */
 object UnderlyingNetwork {
-  class Info(val type: String, val dns: List<String>)
+  /** [address]: this device's IPv4 address in it, for the TV import page. */
+  class Info(val type: String, val dns: List<String>, val address: String? = null)
 
   fun current(context: Context): Info {
     val manager = context.getSystemService(ConnectivityManager::class.java) ?: return Info("none", emptyList())
@@ -60,7 +61,16 @@ object UnderlyingNetwork {
       servers
         .sortedBy { if (it is Inet4Address) 0 else 1 }
         .mapNotNull { it.hostAddress?.substringBefore('%') }
-    return Info(type, dns)
+    val address =
+      try {
+        manager.getLinkProperties(best.first)?.linkAddresses.orEmpty()
+          .map { it.address }
+          .firstOrNull { it is Inet4Address && !it.isLoopbackAddress && !it.isLinkLocalAddress }
+          ?.hostAddress
+      } catch (e: Exception) {
+        null
+      }
+    return Info(type, dns, address)
   }
 
   private fun rank(caps: NetworkCapabilities): Int =

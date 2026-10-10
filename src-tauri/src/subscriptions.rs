@@ -17,7 +17,7 @@ use crate::logs::now_secs;
 const DEFAULT_INTERVAL_HOURS: u32 = 12;
 const AUTO_UPDATE_CHECK: Duration = Duration::from_secs(15 * 60);
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportReport {
     /// Servers imported.

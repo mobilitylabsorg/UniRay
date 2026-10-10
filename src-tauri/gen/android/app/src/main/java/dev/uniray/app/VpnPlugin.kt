@@ -366,6 +366,17 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
     )
   }
 
+  /**
+   * This device's IPv4 address in the local network (Wi-Fi or Ethernet, not
+   * the tunnel's), for the TV's import page; empty when there is none.
+   */
+  @Command
+  fun lanAddress(invoke: Invoke) {
+    val info = UnderlyingNetwork.current(activity)
+    val local = info.address.takeIf { info.type == "wifi" || info.type == "ethernet" }
+    invoke.resolve(JSObject().put("address", local ?: ""))
+  }
+
   /** Launchable apps other than this one, for the per-app proxy list. */
   @Command
   fun listApps(invoke: Invoke) {

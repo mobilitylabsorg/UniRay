@@ -26,6 +26,8 @@ serde_json.workspace = true
 tokio = { version = "1", features = ["process", "io-util", "time", "sync", "net", "fs", "macros", "rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# The TV's import page (handoff.rs), as in the MikroTik gateway.
+tiny_http = "0.12"
 
 [target.'cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))'.dependencies]
 libc = "0.2"

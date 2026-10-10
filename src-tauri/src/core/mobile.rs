@@ -475,6 +475,17 @@ pub async fn request_shizuku(app: &AppHandle) -> CmdResult<Value> {
     call::<Value>(app, "requestShizuku", json!({})).await
 }
 
+/// This device's IPv4 address in the local network (Wi-Fi or Ethernet),
+/// for the TV's import page. Asked of Android: an outgoing socket's address
+/// would be the tunnel's while connected.
+pub async fn lan_address(app: &AppHandle) -> CmdResult<IpAddr> {
+    let answer = call::<Value>(app, "lanAddress", json!({})).await?;
+    answer["address"]
+        .as_str()
+        .and_then(|address| address.parse().ok())
+        .ok_or_else(|| CmdError::new("noLan", "not connected to a Wi-Fi or Ethernet network"))
+}
+
 /// Applies Settings::keep_awake to the running tunnel, if any, at once; a
 /// tunnel started later reads it from its start arguments. When turning it
 /// on, also asks Android to exempt the app from battery optimization (a

@@ -62,6 +62,8 @@ const en: typeof ru = {
     fromFile: "From file",
     noQr: "No QR code found in the image",
     imported: "Servers added: {count}",
+    fromPhone: "From your phone",
+    fromPhoneHint: "Point your phone's camera at the code (the phone on the same Wi-Fi), paste a link or a subscription and tap Send.",
     skipped: "Could not parse: {count}",
     manual: "Added manually",
     testAll: "Test delay",

@@ -260,6 +260,39 @@ pub async fn request_shizuku() -> CmdResult<serde_json::Value> {
     Ok(serde_json::json!({ "level": "none", "shizukuAvailable": false, "shizukuGranted": false }))
 }
 
+/// Starts the TV's import page (handoff.rs) and returns its URL, for the
+/// QR code. Whatever is sent there is imported like pasted text; the
+/// frontend hears of it through the `handoff` event.
+#[cfg(mobile)]
+#[tauri::command]
+pub async fn handoff_start(app: AppHandle) -> CmdResult<String> {
+    use tauri::Emitter;
+    let ip = core::lan_address(&app).await?;
+    let handle = app.clone();
+    let handoff = crate::handoff::start(ip, move |text| {
+        let report = tauri::async_runtime::block_on(import(handle.clone(), text)).map_err(|err| err.message)?;
+        let added = report.added;
+        let _ = handle.emit("handoff", report);
+        Ok(added)
+    })
+    .map_err(|err| CmdError::new("handoff", err))?;
+    let url = handoff.url.clone();
+    *app.state::<App>().handoff.lock().unwrap() = Some(handoff);
+    Ok(url)
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn handoff_start() -> CmdResult<String> {
+    Err(CmdError::new("unsupported", "importing from a phone is for the TV app"))
+}
+
+/// Stops the TV's import page, if it is up.
+#[tauri::command]
+pub fn handoff_stop(app: AppHandle) {
+    app.state::<App>().handoff.lock().unwrap().take();
+}
+
 /// Applies the "stay awake with the screen off" setting to the running
 /// tunnel and, when turning it on, asks for the battery optimization
 /// exemption. Android only.
