@@ -280,22 +280,27 @@ jobs:
           } > "$android/keystore.properties"
 
       # One APK per ABI (the arm64 and arm flavors), the same app for phones
-      # and TVs.
+      # and TVs. One after the other: built together, Gradle runs both Rust
+      # release builds (LTO) at once, and that does not fit in 4 GB (the
+      # runner itself got killed).
       - name: Build
-        run: |
-          # Gradle's own part takes a minute or two; what an interrupted run
-          # left of it is not worth trusting. Rust's output (target/) stays.
-          rm -rf src-tauri/gen/android/app/build src-tauri/gen/android/build
-          pnpm tauri android build --apk --split-per-abi --target aarch64 armv7
-
-      - name: Collect
         run: |
           rm -rf apk && mkdir -p apk
           out=src-tauri/gen/android/app/build/outputs/apk
-          cp "$out"/arm64/release/*.apk apk/UniRay-android-arm64.apk
-          cp "$out"/arm/release/*.apk apk/UniRay-android-armv7.apk
+          for pair in aarch64:arm64:arm64 armv7:arm:armv7; do
+            IFS=: read -r target flavor name <<< "$pair"
+            # Gradle's own part takes a minute or two; what an interrupted run
+            # left of it is not worth trusting. Rust's output (target/) stays.
+            rm -rf src-tauri/gen/android/app/build src-tauri/gen/android/build
+            pnpm tauri android build --apk --split-per-abi --target "$target"
+            cp "$out/$flavor"/release/*.apk "apk/UniRay-android-$name.apk"
+          done
           ls -l apk
-          # Not left for the next run on this machine.
+
+      - name: Collect
+        if: always()
+        run: |
+          # Not left for the next run on this machine, whatever the build did.
           rm -f src-tauri/gen/android/keystore.properties "$RUNNER_TEMP/release.jks"
 
       - uses: actions/upload-artifact@v4
