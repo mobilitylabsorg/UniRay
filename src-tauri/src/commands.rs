@@ -154,6 +154,8 @@ fn affects_core(settings: &Settings) -> Settings {
         send_hwid: false,
         locale: None,
         selected_server: None,
+        // Applied to the running tunnel without a reconnect (set_keep_awake).
+        keep_awake: false,
         ..settings.clone()
     }
 }
@@ -256,6 +258,22 @@ pub async fn request_shizuku(app: AppHandle) -> CmdResult<serde_json::Value> {
 #[tauri::command]
 pub async fn request_shizuku() -> CmdResult<serde_json::Value> {
     Ok(serde_json::json!({ "level": "none", "shizukuAvailable": false, "shizukuGranted": false }))
+}
+
+/// Applies the "stay awake with the screen off" setting to the running
+/// tunnel and, when turning it on, asks for the battery optimization
+/// exemption. Android only.
+#[cfg(mobile)]
+#[tauri::command]
+pub async fn set_keep_awake(app: AppHandle, enabled: bool) -> CmdResult<serde_json::Value> {
+    core::set_keep_awake(&app, enabled).await
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn set_keep_awake(enabled: bool) -> CmdResult<serde_json::Value> {
+    let _ = enabled;
+    Ok(serde_json::json!({ "batteryExempt": true }))
 }
 
 /// Checks that traffic gets through the tunnel, and where it comes out.

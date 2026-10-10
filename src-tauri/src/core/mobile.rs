@@ -103,6 +103,8 @@ struct StartArgs {
     server_id: String,
     metrics_socket: String,
     proxy_tags: Vec<String>,
+    /// Hold a wake lock while connected (Settings::keep_awake).
+    keep_awake: bool,
     #[serde(flatten)]
     engine: EngineArgs,
 }
@@ -366,6 +368,7 @@ async fn start_vpn_service(
         server_id: server.id.clone(),
         metrics_socket: metrics.to_owned(),
         proxy_tags: built.proxy_tags.clone(),
+        keep_awake: settings.keep_awake,
         // Xray runs inside the app: the engine accepts the app's own uid,
         // which the service vouches for over a socket only it and the engine
         // know (the name is random, the abstract namespace is shared).
@@ -421,6 +424,7 @@ async fn start_stealth(
         "serverId": server.id,
         "metricsSocket": metrics,
         "proxyTags": built.proxy_tags,
+        "keepAwake": settings.keep_awake,
         "engineMode": engine.engine_mode,
         "engineConfig": engine.engine_config,
         "enginePort": engine.engine_port,
@@ -466,6 +470,15 @@ pub async fn privilege_state(app: &AppHandle) -> CmdResult<Value> {
 /// Asks Shizuku for permission (interactive) and returns the new state.
 pub async fn request_shizuku(app: &AppHandle) -> CmdResult<Value> {
     call::<Value>(app, "requestShizuku", json!({})).await
+}
+
+/// Applies Settings::keep_awake to the running tunnel, if any, at once; a
+/// tunnel started later reads it from its start arguments. When turning it
+/// on, also asks Android to exempt the app from battery optimization (a
+/// system dialog), without which Doze still cuts its network off. Returns
+/// whether the app is exempt.
+pub async fn set_keep_awake(app: &AppHandle, enabled: bool) -> CmdResult<Value> {
+    call::<Value>(app, "setKeepAwake", json!({ "enabled": enabled })).await
 }
 
 /// Notices when the service stops on its own: the user revoked the VPN,

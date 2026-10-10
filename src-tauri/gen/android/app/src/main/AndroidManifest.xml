@@ -6,6 +6,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- The "stay awake" setting: a wake lock and a Wi-Fi lock while connected,
+         and the request to leave the app out of battery optimization (Doze). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Stealth mode may be driven through Shizuku instead of root. -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <!-- The per-app proxy list shows the installed apps. -->

@@ -41,12 +41,19 @@ class StartArgs {
   var sessionName: String = "VPN"
   var serverName: String = ""
   var serverId: String = ""
+  /** Hold a wake lock while connected (the "stay awake" setting). */
+  var keepAwake: Boolean = false
   var metricsSocket: String = ""
   var proxyTags: Array<String> = arrayOf()
   /** The engine for a WireGuard/AmneziaWG or Naive server; empty for the others. */
   var engineMode: String = ""
   var engineConfig: String = ""
   var enginePort: Int = 0
+}
+
+@InvokeArg
+class KeepAwakeArgs {
+  var enabled: Boolean = false
 }
 
 @InvokeArg
@@ -84,6 +91,8 @@ class StealthArgs {
   var ipv6: Boolean = false
   var serverName: String = ""
   var serverId: String = ""
+  /** Hold a wake lock while connected (the "stay awake" setting). */
+  var keepAwake: Boolean = false
   var metricsSocket: String = ""
   var proxyTags: Array<String> = arrayOf()
   var engineMode: String = ""
@@ -151,6 +160,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         .put("sessionName", args.sessionName)
         .put("serverName", args.serverName)
         .put("serverId", args.serverId)
+        .put("keepAwake", args.keepAwake)
         .put("metricsSocket", args.metricsSocket)
         .put("proxyTags", JSONArray(args.proxyTags))
         .put("engineMode", args.engineMode)
@@ -260,6 +270,41 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
       }
     }
     invoke.resolve()
+  }
+
+  /**
+   * The "stay awake" setting changed: applies it to the running tunnel, and
+   * to the saved specs the Quick Settings tile starts from. Turning it on
+   * also asks for the battery optimization exemption (a system dialog).
+   * Resolves whether the app is exempt now.
+   */
+  @Command
+  fun setKeepAwake(invoke: Invoke) {
+    val args = invoke.parseArgs(KeepAwakeArgs::class.java)
+    for (spec in listOf(UniRayVpnService.specFile(activity), StealthService.specFile(activity))) {
+      try {
+        if (spec.exists()) spec.writeText(JSONObject(spec.readText()).put("keepAwake", args.enabled).toString())
+      } catch (e: Exception) {
+        // The next connection writes it afresh.
+      }
+    }
+    val action =
+      when (VpnState.aliveTunnel(activity)) {
+        UniRayVpnService::class.java -> UniRayVpnService::class.java to UniRayVpnService.ACTION_KEEP_AWAKE
+        StealthService::class.java -> StealthService::class.java to StealthService.ACTION_KEEP_AWAKE
+        else -> null
+      }
+    if (action != null) {
+      try {
+        activity.startService(
+          Intent(activity, action.first).setAction(action.second).putExtra(UniRayVpnService.EXTRA_ENABLED, args.enabled)
+        )
+      } catch (e: Exception) {
+        // Applied on the next connection.
+      }
+    }
+    if (args.enabled) activity.runOnUiThread { KeepAwake.requestBatteryExemption(activity) }
+    invoke.resolve(JSObject().put("batteryExempt", KeepAwake.batteryExempt(activity)))
   }
 
   @Command
@@ -487,6 +532,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
           .put("privilege", state.level.name)
           .put("serverName", args.serverName)
           .put("serverId", args.serverId)
+          .put("keepAwake", args.keepAwake)
           .put("metricsSocket", args.metricsSocket)
           .put("proxyTags", JSONArray(args.proxyTags))
           .put("engineMode", args.engineMode)

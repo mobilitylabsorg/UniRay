@@ -76,6 +76,8 @@ export interface Settings {
   perApp: { mode: PerAppMode; packages: string[] };
   stealth: boolean;
   stealthRootTun: boolean;
+  /** Android: keep the tunnel working with the screen off (a wake lock while connected). */
+  keepAwake: boolean;
   selectedServer: string | null;
   locale: string | null;
 }
@@ -183,6 +185,8 @@ export const api = {
   systemColors: () => invoke<SystemColors | null>("system_colors"),
   privilegeState: () => invoke<PrivilegeState>("privilege_state"),
   requestShizuku: () => invoke<PrivilegeState>("request_shizuku"),
+  /** Applies keepAwake to the running tunnel; turning it on asks for the battery exemption. */
+  setKeepAwake: (enabled: boolean) => invoke<{ batteryExempt: boolean }>("set_keep_awake", { enabled }),
   getLogs: () => invoke<LogLine[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),
   quit: () => invoke<void>("quit"),

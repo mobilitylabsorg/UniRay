@@ -79,6 +79,20 @@ function save(patch: Partial<Settings>) {
   return store.saveSettings(patch);
 }
 
+// Saved like the other settings (it takes effect on the next connection),
+// and applied to the running tunnel at once. Turning it on also brings up
+// Android's battery optimization dialog: without the exemption Doze still
+// cuts the app's network off with the screen off.
+const batteryExempt = ref<boolean | null>(null);
+async function saveKeepAwake(keepAwake: boolean) {
+  await save({ keepAwake });
+  try {
+    batteryExempt.value = (await api.setKeepAwake(keepAwake)).batteryExempt;
+  } catch {
+    batteryExempt.value = null;
+  }
+}
+
 function savePort() {
   const port = Number(draft.mixedPort);
   if (Number.isInteger(port) && port >= 1 && port <= 65535) {
@@ -262,6 +276,23 @@ onMounted(refreshPrivilege);
     </div>
 
     <template v-if="!store.isDesktop">
+      <div class="card mb-6">
+        <div class="flex items-center gap-3 px-4 py-3">
+          <div class="flex-1">
+            <div class="font-medium">{{ t("settings.keepAwake") }}</div>
+            <div class="text-xs text-muted">{{ t("settings.keepAwakeHint") }}</div>
+            <div v-if="store.settings.keepAwake && batteryExempt === false" class="mt-1 text-xs text-amber-500">
+              {{ t("settings.keepAwakeNoExemption") }}
+            </div>
+          </div>
+          <ToggleSwitch
+            :model-value="store.settings.keepAwake"
+            :label="t('settings.keepAwake')"
+            @update:model-value="saveKeepAwake"
+          />
+        </div>
+      </div>
+
       <div class="section-title">{{ t("settings.perApp") }}</div>
       <div class="card mb-6 divide-y divide-line">
         <label class="flex items-center gap-3 px-4 py-3">

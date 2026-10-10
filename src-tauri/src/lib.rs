@@ -108,6 +108,7 @@ pub fn run() {
             commands::system_colors,
             commands::privilege_state,
             commands::request_shizuku,
+            commands::set_keep_awake,
             commands::get_logs,
             commands::clear_logs,
             commands::quit,

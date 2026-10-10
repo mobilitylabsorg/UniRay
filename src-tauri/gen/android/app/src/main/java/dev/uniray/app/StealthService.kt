@@ -47,6 +47,8 @@ class StealthService : Service() {
     const val ACTION_START = "dev.uniray.app.action.STEALTH_START"
     const val ACTION_STOP = "dev.uniray.app.action.STEALTH_STOP"
     const val ACTION_NOTIFY = "dev.uniray.app.action.STEALTH_NOTIFY"
+    /** Turns the "stay awake" wake lock on or off ([UniRayVpnService.EXTRA_ENABLED]). */
+    const val ACTION_KEEP_AWAKE = "dev.uniray.app.action.STEALTH_KEEP_AWAKE"
     const val EXTRA_REQUEST = "request"
     const val EXTRA_SERVER = "server"
     const val EXTRA_LATENCY = "latencyMs"
@@ -100,6 +102,7 @@ class StealthService : Service() {
   private val ticker = Executors.newSingleThreadScheduledExecutor()
   private var tick: ScheduledFuture<*>? = null
   @Volatile private var running = false
+  private val keepAwake by lazy { KeepAwake(applicationContext) }
   // Set once we begin stopping, so no late refresh re-posts the notification.
   @Volatile private var stopped = false
   private var notification: NotificationCompat.Builder? = null
@@ -123,6 +126,15 @@ class StealthService : Service() {
     when (intent?.action) {
       ACTION_STOP -> {
         worker.execute { shutdown(request) }
+        return START_NOT_STICKY
+      }
+      ACTION_KEEP_AWAKE -> {
+        val enabled = intent.getBooleanExtra(UniRayVpnService.EXTRA_ENABLED, false)
+        try {
+          worker.execute { if (running) keepAwake.set(enabled) }
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+          // Being destroyed: the wake lock goes with the tunnel anyway.
+        }
         return START_NOT_STICKY
       }
       ACTION_NOTIFY -> {
@@ -158,6 +170,7 @@ class StealthService : Service() {
 
   override fun onDestroy() {
     stopped = true
+    keepAwake.set(false)
     tick?.cancel(false)
     ticker.shutdown()
     worker.execute {
@@ -214,6 +227,9 @@ class StealthService : Service() {
       return "could not set up the stealth tunnel: ${result.errText().take(200)}"
     }
     running = true
+    // Xray and the engine run as root here, but they still sleep when the
+    // device does; the wake lock is held by this, the app's, process.
+    keepAwake.set(spec.optBoolean("keepAwake"))
     return null
   }
 
@@ -236,6 +252,7 @@ class StealthService : Service() {
     if (!lvl.canStealth || lvl == Privilege.SHIZUKU_ROOT) PrivilegedShell.ensureShizukuBinder(this)
     if (!lvl.canStealth) lvl = PrivilegedShell.detect(this).level
     running = false
+    keepAwake.set(false)
     var left = ""
     for (attempt in 1..3) {
       val result = PrivilegedShell.execPrivileged(lvl, downScript())

@@ -42,6 +42,9 @@ class UniRayVpnService : VpnService() {
     const val ACTION_START = "dev.uniray.app.action.START"
     const val ACTION_STOP = "dev.uniray.app.action.STOP"
     const val ACTION_NOTIFY = "dev.uniray.app.action.NOTIFY"
+    /** Turns the "stay awake" wake lock on or off for the running tunnel ([EXTRA_ENABLED]). */
+    const val ACTION_KEEP_AWAKE = "dev.uniray.app.action.KEEP_AWAKE"
+    const val EXTRA_ENABLED = "enabled"
     /** Request id echoed in [VpnState], so the app knows its answer. */
     const val EXTRA_REQUEST = "request"
     const val EXTRA_SERVER = "server"
@@ -79,6 +82,7 @@ class UniRayVpnService : VpnService() {
   private val ticker = Executors.newSingleThreadScheduledExecutor()
   private var tick: ScheduledFuture<*>? = null
   @Volatile private var running = false
+  private val keepAwake by lazy { KeepAwake(applicationContext) }
   // Set once we begin stopping, so no late refresh re-posts the notification
   // after it has been removed (which would leave it stuck, with us gone).
   @Volatile private var stopped = false
@@ -101,6 +105,15 @@ class UniRayVpnService : VpnService() {
     when (intent?.action) {
       ACTION_STOP -> {
         worker.execute { shutdown(request) }
+        return START_NOT_STICKY
+      }
+      ACTION_KEEP_AWAKE -> {
+        val enabled = intent.getBooleanExtra(EXTRA_ENABLED, false)
+        try {
+          worker.execute { if (running) keepAwake.set(enabled) }
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+          // Being destroyed: the wake lock goes with the tunnel anyway.
+        }
         return START_NOT_STICKY
       }
       ACTION_NOTIFY -> {
@@ -143,6 +156,7 @@ class UniRayVpnService : VpnService() {
 
   override fun onDestroy() {
     stopped = true
+    keepAwake.set(false)
     tick?.cancel(false)
     ticker.shutdown()
     worker.execute {
@@ -254,10 +268,12 @@ class UniRayVpnService : VpnService() {
       engine = child
       child.start()?.let { return it }
     }
+    keepAwake.set(spec.optBoolean("keepAwake"))
     return null
   }
 
   private fun stopCore() {
+    keepAwake.set(false)
     try {
       XrayCore.stop()
       LibXray.resetDNS()

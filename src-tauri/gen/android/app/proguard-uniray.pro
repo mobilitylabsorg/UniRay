@@ -8,6 +8,7 @@
 -keep class dev.uniray.app.NotificationArgs { *; }
 -keep class dev.uniray.app.StealthArgs { *; }
 -keep class dev.uniray.app.ProbeArgs { *; }
+-keep class dev.uniray.app.KeepAwakeArgs { *; }
 -keepclassmembers enum dev.uniray.app.Privilege { *; }
 -keep class dev.uniray.app.Privilege { *; }
 -keep class dev.uniray.app.PrivilegeState { *; }

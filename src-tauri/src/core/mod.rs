@@ -13,7 +13,7 @@ mod mobile;
 pub use desktop::{measure_delays, Running};
 #[cfg(mobile)]
 pub use mobile::{
-    init_device, list_apps, measure_delays, plugin, privilege_state, request_shizuku, system_colors,
+    init_device, list_apps, measure_delays, plugin, privilege_state, request_shizuku, set_keep_awake, system_colors,
     update_notification, InstalledApp, Running,
 };
 

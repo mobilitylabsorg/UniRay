@@ -210,6 +210,11 @@ pub struct Settings {
     /// tproxy+iptables. The fallback for kernels/ROMs without TPROXY; the
     /// interface is then visible, under a neutral name.
     pub stealth_root_tun: bool,
+    /// Keep the tunnel working with the screen off: the tunnel service holds
+    /// a CPU wake lock (and a Wi-Fi lock) while connected, so the phone's
+    /// sleep does not stall it and drop the connections. Costs battery, so
+    /// off by default. Android only.
+    pub keep_awake: bool,
     pub selected_server: Option<String>,
     /// UI language, `None` follows the system.
     pub locale: Option<String>,
@@ -240,6 +245,7 @@ impl Default for Settings {
             per_app: PerApp::default(),
             stealth: false,
             stealth_root_tun: false,
+            keep_awake: false,
             selected_server: None,
             locale: None,
         }
