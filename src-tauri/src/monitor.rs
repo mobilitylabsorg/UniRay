@@ -190,7 +190,10 @@ pub fn start(app: &AppHandle) {
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(FIRST_CHECK_DELAY).await;
             loop {
+                #[cfg(mobile)]
                 let visible = app.state::<App>().visible.load(std::sync::atomic::Ordering::Relaxed);
+                #[cfg(not(mobile))]
+                let visible = true;
                 if visible {
                     let _ = check_now(&app).await;
                 }
@@ -202,7 +205,10 @@ pub fn start(app: &AppHandle) {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             loop {
+                #[cfg(mobile)]
                 let visible = app.state::<App>().visible.load(std::sync::atomic::Ordering::Relaxed);
+                #[cfg(not(mobile))]
+                let visible = true;
                 let interval = if visible { PRESENT_INTERVAL } else { Duration::from_secs(15) };
                 if visible {
                     present(&app, summary(&app)).await;

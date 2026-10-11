@@ -52,7 +52,10 @@ pub fn spawn(app: AppHandle, source: MetricsSource, proxy_tags: Vec<String>) -> 
         let mut diagnosed = false;
         let mut misses = 0u32;
         loop {
+            #[cfg(mobile)]
             let visible = app.state::<App>().visible.load(std::sync::atomic::Ordering::Relaxed);
+            #[cfg(not(mobile))]
+            let visible = true;
             let interval = if visible { INTERVAL } else { Duration::from_secs(10) };
             tokio::time::sleep(interval).await;
             if !visible {
