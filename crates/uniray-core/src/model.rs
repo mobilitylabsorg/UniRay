@@ -215,6 +215,9 @@ pub struct Settings {
     /// sleep does not stall it and drop the connections. Costs battery, so
     /// off by default. Android only.
     pub keep_awake: bool,
+    /// Block ads and trackers via geosite:category-ads-all routing rule to blackhole.
+    #[serde(default)]
+    pub block_ads: bool,
     pub selected_server: Option<String>,
     /// UI language, `None` follows the system.
     pub locale: Option<String>,
@@ -246,6 +249,7 @@ impl Default for Settings {
             stealth: false,
             stealth_root_tun: false,
             keep_awake: false,
+            block_ads: false,
             selected_server: None,
             locale: None,
         }

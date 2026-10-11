@@ -138,6 +138,8 @@ const en: typeof ru = {
       "Instead of the address above, the current network's DNS, found when connecting. It is not encrypted, and the provider may tamper with the answers",
     ipv6: "IPv6",
     ipv6Hint: "Query AAAA records",
+    blockAds: "Block ads and trackers",
+    blockAdsHint: "Blocks ads and trackers via geosite at the core level. Saves data and battery.",
     interfaceName: "Network interface name",
     interfaceNameHintDesktop: "The name the interface gets in the system. A neutral name stands out less among the ordinary interfaces.",
     interfaceNameHintMobile: "The VPN label in system settings. On Android the interface name itself is set by the kernel (tunN) and the app cannot change it.",

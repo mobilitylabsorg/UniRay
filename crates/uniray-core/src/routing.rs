@@ -16,6 +16,9 @@ pub fn rules(settings: &Settings) -> Vec<Value> {
         .map(custom_rule)
         .collect();
 
+    if settings.block_ads {
+        rules.push(json!({ "domain": ["geosite:category-ads-all"], "outboundTag": TAG_BLOCK }));
+    }
     if settings.routing_preset != RoutingPreset::Global {
         rules.push(json!({ "domain": ["geosite:private"], "outboundTag": TAG_DIRECT }));
         rules.push(json!({ "ip": ["geoip:private"], "outboundTag": TAG_DIRECT }));
@@ -84,6 +87,13 @@ mod tests {
     fn global_preset_has_no_rules() {
         let settings = Settings { routing_preset: RoutingPreset::Global, ..Default::default() };
         assert!(rules(&settings).is_empty());
+    }
+
+    #[test]
+    fn block_ads_rule_routes_ads_to_block() {
+        let settings = Settings { block_ads: true, ..Default::default() };
+        let built = rules(&settings);
+        assert_eq!(built[0], json!({ "domain": ["geosite:category-ads-all"], "outboundTag": "block" }));
     }
 
     #[test]

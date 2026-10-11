@@ -258,6 +258,17 @@ onMounted(refreshPrivilege);
           @update:model-value="(ipv6: boolean) => save({ ipv6 })"
         />
       </div>
+      <div class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.blockAds") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.blockAdsHint") }}</div>
+        </div>
+        <ToggleSwitch
+          :model-value="store.settings.blockAds"
+          :label="t('settings.blockAds')"
+          @update:model-value="(blockAds: boolean) => save({ blockAds })"
+        />
+      </div>
       <label class="block px-4 py-3">
         <span class="mb-1.5 block font-medium">{{ t("settings.interfaceName") }}</span>
         <input

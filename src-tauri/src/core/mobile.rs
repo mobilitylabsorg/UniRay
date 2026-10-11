@@ -26,8 +26,6 @@ use crate::error::{CmdError, CmdResult};
 use crate::state::write_private;
 use crate::{logs, stats};
 
-/// libXray tests at most this many configs per call.
-const PROBE_BATCH: usize = 5;
 /// Plain resolver for the core's own (Go-side) lookups, which do not resolve
 /// the proxy server - Xray's built-in DNS does that over DoH - so this only
 /// needs to be reachable. A public one, never the operator's.
@@ -232,11 +230,6 @@ pub struct InstalledApp {
 #[derive(Deserialize)]
 struct AppList {
     apps: Vec<InstalledApp>,
-}
-
-#[derive(Deserialize)]
-struct Delays {
-    delays: Vec<i64>,
 }
 
 /// What is needed to pick a running connection up again after the activity
@@ -651,43 +644,32 @@ pub async fn list_apps(app: &AppHandle) -> CmdResult<Vec<InstalledApp>> {
     Ok(call::<AppList>(app, "listApps", json!({})).await?.apps)
 }
 
-/// Measures the delay of each server with libXray's `pingBatch`. It shares
-/// the process-wide core, so it is refused while a connection is up.
+/// Measures the True TCP Handshake RTT of each server.
+/// Completing the TCP handshake measures exact network latency and reachability,
+/// and works both while connected and disconnected.
 pub async fn measure_delays(
     app: &AppHandle,
     servers: Vec<Server>,
     on_result: impl Fn(&str, i64) + Sync,
 ) -> CmdResult<()> {
-    if app.state::<App>().connection.lock().unwrap().status != Status::Disconnected {
-        return Err(CmdError::new("delayWhileConnected", "disconnect to test delays"));
-    }
     let (servers, engine_servers): (Vec<Server>, Vec<Server>) =
         servers.into_iter().partition(|server| server.source.is_xray());
-    super::probe_engines(app, &engine_servers, &on_result).await;
-    for batch in servers.chunks(PROBE_BATCH) {
-        let configs: Vec<String> = batch
-            .iter()
-            .map(|server| {
-                config::probe_outbound(server, config::TAG_PROXY)
-                    .map(|outbound| json!({ "outbounds": [outbound] }).to_string())
-                    .unwrap_or_default()
-            })
-            .collect();
-        let args = json!({ "configs": configs, "url": PROBE_URL, "timeout": PROBE_TIMEOUT.as_secs() });
-        match call::<Delays>(app, "measureDelays", args).await {
-            Ok(result) => {
-                for (index, server) in batch.iter().enumerate() {
-                    on_result(&server.id, result.delays.get(index).copied().unwrap_or(-1));
-                }
-            }
-            Err(err) if err.code == "delayWhileConnected" => return Err(err),
-            Err(err) => {
-                logs::push(app, &format!("[Warning] delay test failed: {}", err.message));
-                for server in batch {
-                    on_result(&server.id, -1);
-                }
-            }
+
+    if app.state::<App>().connection.lock().unwrap().status == Status::Disconnected {
+        super::probe_engines(app, &engine_servers, &on_result).await;
+    } else {
+        for server in &engine_servers {
+            on_result(&server.id, -1);
         }
+    }
+
+    const BATCH_SIZE: usize = 8;
+    for batch in servers.chunks(BATCH_SIZE) {
+        futures_util::future::join_all(batch.iter().map(|server| async {
+            let delay = super::tcp_rtt(&server.address, server.port, super::PROBE_TIMEOUT).await;
+            on_result(&server.id, delay);
+        }))
+        .await;
     }
     Ok(())
 }

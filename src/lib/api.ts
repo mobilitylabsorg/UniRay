@@ -78,6 +78,7 @@ export interface Settings {
   stealthRootTun: boolean;
   /** Android: keep the tunnel working with the screen off (a wake lock while connected). */
   keepAwake: boolean;
+  blockAds: boolean;
   selectedServer: string | null;
   locale: string | null;
 }
