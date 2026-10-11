@@ -5,14 +5,18 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.text.format.Formatter
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -88,6 +92,7 @@ class StealthService : Service() {
     private const val BASE_ENV = "SSL_CERT_DIR=$ANDROID_CA_DIRS"
 
     private const val REFRESH_SECONDS = 5L
+    private const val SCREEN_OFF_HEALTH_SECONDS = 60L
     private const val CHECK_INTERVAL_MS = 5 * 60 * 1000L
     private const val CHECK_URL = "https://www.cloudflare.com/cdn-cgi/trace"
     // Reads of the counters socket that fail in a row before we conclude the
@@ -115,6 +120,8 @@ class StealthService : Service() {
   private val keepAwake by lazy { KeepAwake(applicationContext) }
   // Set once we begin stopping, so no late refresh re-posts the notification.
   @Volatile private var stopped = false
+  @Volatile private var isScreenOn = true
+  private var isReceiverRegistered = false
   private var notification: NotificationCompat.Builder? = null
 
   private var level = Privilege.NONE
@@ -128,6 +135,31 @@ class StealthService : Service() {
   private var proxyTags: List<String> = emptyList()
   private var lastTraffic: Triple<Long, Long, Long>? = null
   private var missedReads = 0
+
+  private val screenReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent?) {
+      when (intent?.action) {
+        Intent.ACTION_SCREEN_OFF -> {
+          isScreenOn = false
+          keepAwake.onScreenStateChanged(false)
+          // Screen turned off: switch to slow health check without waking system_server with notifications
+          pauseTickerAndStartSlowHealth()
+        }
+        Intent.ACTION_SCREEN_ON -> {
+          isScreenOn = true
+          keepAwake.onScreenStateChanged(true)
+          // Screen turned on: immediately refresh notification once and resume 5s ticker
+          submitRefresh()
+          resumeTicker()
+        }
+      }
+    }
+  }
+
+  override fun onCreate() {
+    super.onCreate()
+    registerScreenReceiver()
+  }
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -171,7 +203,7 @@ class StealthService : Service() {
       if (error != null) {
         shutdown(request, error)
       } else {
-        startTicker()
+        if (isScreenOn) startTicker() else pauseTickerAndStartSlowHealth()
         VpnState.write(this, true, request, null)
       }
     }
@@ -179,8 +211,9 @@ class StealthService : Service() {
   }
 
   override fun onDestroy() {
+    unregisterScreenReceiver()
     stopped = true
-    keepAwake.set(false)
+    keepAwake.release()
     tick?.cancel(false)
     ticker.shutdown()
     worker.execute {
@@ -239,7 +272,7 @@ class StealthService : Service() {
     running = true
     // Xray and the engine run as root here, but they still sleep when the
     // device does; the wake lock is held by this, the app's, process.
-    keepAwake.set(spec.optBoolean("keepAwake"))
+    keepAwake.start(spec.optBoolean("keepAwake"))
     return null
   }
 
@@ -262,7 +295,7 @@ class StealthService : Service() {
     if (!lvl.canStealth || lvl == Privilege.SHIZUKU_ROOT) PrivilegedShell.ensureShizukuBinder(this)
     if (!lvl.canStealth) lvl = PrivilegedShell.detect(this).level
     running = false
-    keepAwake.set(false)
+    keepAwake.release()
     var left = ""
     for (attempt in 1..3) {
       val result = PrivilegedShell.execPrivileged(lvl, downScript())
@@ -439,6 +472,12 @@ class StealthService : Service() {
     val v6 = blockIpv6Script(ipv6)
     return """
       set -e
+      # TCP kernel optimizations: BBR, preserve congestion window after idle
+      modprobe tcp_bbr 2>/dev/null || true
+      sysctl -w net.ipv4.tcp_congestion_control=bbr 2>/dev/null || true
+      sysctl -w net.core.default_qdisc=fq 2>/dev/null || true
+      sysctl -w net.ipv4.tcp_slow_start_after_idle=0 2>/dev/null || true
+
       ip rule add fwmark $MARK lookup $TABLE 2>/dev/null || true
       ip route add local 0.0.0.0/0 dev lo table $TABLE 2>/dev/null || true
 
@@ -496,6 +535,12 @@ class StealthService : Service() {
       else blockIpv6Script(false)
     return """
       set -e
+      # TCP kernel optimizations: BBR, preserve congestion window after idle
+      modprobe tcp_bbr 2>/dev/null || true
+      sysctl -w net.ipv4.tcp_congestion_control=bbr 2>/dev/null || true
+      sysctl -w net.core.default_qdisc=fq 2>/dev/null || true
+      sysctl -w net.ipv4.tcp_slow_start_after_idle=0 2>/dev/null || true
+
       if ip link show $tun >/dev/null 2>&1; then
         echo "a network interface named $tun already exists; set another interface name in Settings" >&2
         exit 1
@@ -664,12 +709,82 @@ class StealthService : Service() {
 
   // --- Notification (mirrors the VPN service) -------------------------------
 
+  private fun resumeTicker() {
+    if (running && !stopped && isScreenOn) {
+      startTicker()
+    }
+  }
+
+  private fun pauseTickerAndStartSlowHealth() {
+    tick?.cancel(false)
+    if (!running || stopped) {
+      tick = null
+      return
+    }
+    // With screen off, check root core health only once a minute without
+    // updating notification or waking system_server/SystemUI.
+    tick = ticker.scheduleWithFixedDelay(
+      {
+        try {
+          if (isScreenOn || stopped || !running) return@scheduleWithFixedDelay
+          val traffic = TunnelMetrics.readTraffic(metricsSocket, proxyTags)
+          if (traffic == null) {
+            if (++missedReads >= DEAD_AFTER_MISSES) {
+              Log.w(TAG, "stealth core stopped answering while screen off; shutting down")
+              worker.execute { shutdown(null, "the stealth core stopped responding") }
+            }
+          } else {
+            missedReads = 0
+          }
+        } catch (e: Exception) {
+          Log.w(TAG, "stealth screen-off health check failed", e)
+        }
+      },
+      SCREEN_OFF_HEALTH_SECONDS,
+      SCREEN_OFF_HEALTH_SECONDS,
+      TimeUnit.SECONDS,
+    )
+  }
+
+  private fun registerScreenReceiver() {
+    if (isReceiverRegistered) return
+    val filter = IntentFilter().apply {
+      addAction(Intent.ACTION_SCREEN_ON)
+      addAction(Intent.ACTION_SCREEN_OFF)
+    }
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        ContextCompat.registerReceiver(this, screenReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+      } else {
+        registerReceiver(screenReceiver, filter)
+      }
+      isReceiverRegistered = true
+      isScreenOn = getSystemService(PowerManager::class.java)?.isInteractive ?: true
+    } catch (e: Exception) {
+      try {
+        registerReceiver(screenReceiver, filter)
+        isReceiverRegistered = true
+      } catch (ex: Exception) {
+        Log.w(TAG, "failed to register screen receiver", ex)
+      }
+    }
+  }
+
+  private fun unregisterScreenReceiver() {
+    if (!isReceiverRegistered) return
+    try {
+      unregisterReceiver(screenReceiver)
+    } catch (_: Exception) {}
+    isReceiverRegistered = false
+  }
+
   private fun startTicker() {
     tick?.cancel(false)
     tick =
       ticker.scheduleWithFixedDelay(
         {
           try {
+            if (!isScreenOn) return@scheduleWithFixedDelay
             if (System.currentTimeMillis() - lastCheckAt >= CHECK_INTERVAL_MS) {
               lastCheckAt = System.currentTimeMillis()
               kotlin.concurrent.thread(name = "stealth-check", isDaemon = true) {

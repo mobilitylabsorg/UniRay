@@ -36,7 +36,7 @@ class StartArgs {
   var perAppMode: String = "off"
   var packages: Array<String> = arrayOf()
   var dns: String = "8.8.8.8:53"
-  var mtu: Int = 1500
+  var mtu: Int = 1360
   /** What the VPN routes into itself, `address/length`: all but the engine's server. */
   var routes: Array<String> = arrayOf("0.0.0.0/0", "::/0")
   var sessionName: String = "VPN"
@@ -195,7 +195,12 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
       }
       when {
         answer == null -> invoke.reject("the VPN service did not answer")
-        answer.running -> invoke.resolve()
+        answer.running -> {
+          if (!KeepAwake.batteryExempt(activity) && !activity.isFinishing && !activity.isDestroyed) {
+            activity.runOnUiThread { KeepAwake.requestBatteryExemption(activity) }
+          }
+          invoke.resolve()
+        }
         else -> invoke.reject(answer.error ?: "the VPN service failed to start")
       }
     }
@@ -582,7 +587,12 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
       }
       when {
         answer == null -> invoke.reject("the stealth service did not answer")
-        answer.running -> invoke.resolve()
+        answer.running -> {
+          if (!KeepAwake.batteryExempt(activity) && !activity.isFinishing && !activity.isDestroyed) {
+            activity.runOnUiThread { KeepAwake.requestBatteryExemption(activity) }
+          }
+          invoke.resolve()
+        }
         else -> invoke.reject(answer.error ?: "the stealth service failed to start")
       }
     }

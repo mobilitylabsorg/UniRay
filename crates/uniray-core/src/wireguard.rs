@@ -163,8 +163,8 @@ impl WgConfig {
                 uapi.push_str(&format!("preshared_key={}\n", key_hex(psk)?));
             }
             uapi.push_str(&format!("endpoint={endpoint}\n"));
-            if let Some(seconds) = &peer.keepalive {
-                uapi.push_str(&format!("persistent_keepalive_interval={seconds}\n"));
+            if let Some(keepalive) = &peer.keepalive {
+                uapi.push_str(&format!("persistent_keepalive_interval={keepalive}\n"));
             }
             uapi.push_str("replace_allowed_ips=true\n");
             for ip in &peer.allowed_ips {

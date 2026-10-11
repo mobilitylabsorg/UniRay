@@ -82,6 +82,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(focused) = event {
+                window.app_handle().state::<App>().visible.store(*focused, std::sync::atomic::Ordering::Relaxed);
+            }
             // Closing the window keeps the connection up; quitting is explicit
             // (tray menu or the button in settings).
             #[cfg(desktop)]
@@ -89,8 +92,6 @@ pub fn run() {
                 let _ = window.hide();
                 api.prevent_close();
             }
-            #[cfg(mobile)]
-            let _ = (window, event);
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_state,

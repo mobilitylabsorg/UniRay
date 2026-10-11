@@ -14,6 +14,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::app::App;
 
 pub const EVENT: &str = "traffic";
+#[cfg(mobile)]
+const INTERVAL: Duration = Duration::from_secs(2);
+#[cfg(not(mobile))]
 const INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
@@ -49,7 +52,12 @@ pub fn spawn(app: AppHandle, source: MetricsSource, proxy_tags: Vec<String>) -> 
         let mut diagnosed = false;
         let mut misses = 0u32;
         loop {
-            tokio::time::sleep(INTERVAL).await;
+            let visible = app.state::<App>().visible.load(std::sync::atomic::Ordering::Relaxed);
+            let interval = if visible { INTERVAL } else { Duration::from_secs(10) };
+            tokio::time::sleep(interval).await;
+            if !visible {
+                continue;
+            }
             let Some(body) = read_vars(&http, &source).await else {
                 misses += 1;
                 if misses == 5 && !diagnosed {

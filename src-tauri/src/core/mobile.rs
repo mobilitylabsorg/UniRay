@@ -35,7 +35,59 @@ const FALLBACK_DNS: &str = "8.8.8.8";
 /// The loopback port the stealth tproxy inbound listens on; the iptables
 /// TPROXY target points here. Matches the port in the generated config.
 const STEALTH_TPROXY_PORT: u16 = 12345;
-const WATCH_INTERVAL: Duration = Duration::from_secs(1);
+/// Checked every 3 s to avoid high IPC Binder wakeups while keeping UI responsive.
+const WATCH_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Configures TCP keep-alive on all non-blackhole proxy outbounds so mobile
+/// carrier CGNAT and Wi-Fi stateful firewalls do not drop idle TCP connections after 2-3 minutes.
+/// The Linux kernel handles 0-byte keep-alive probes without waking user-space processes.
+/// Also adjusts TUN MTU to 1360 to prevent packet fragmentation over cellular networks (LTE/5G).
+fn apply_mobile_optimizations(config: &mut Value) {
+    if let Some(outbounds) = config.get_mut("outbounds").and_then(|o| o.as_array_mut()) {
+        for outbound in outbounds {
+            if outbound["protocol"].as_str() != Some("blackhole") {
+                if !outbound["streamSettings"].is_object() {
+                    outbound["streamSettings"] = json!({});
+                }
+                if !outbound["streamSettings"]["sockopt"].is_object() {
+                    outbound["streamSettings"]["sockopt"] = json!({});
+                }
+                let sockopt = &mut outbound["streamSettings"]["sockopt"];
+                if sockopt.get("tcpKeepAliveInterval").is_none() {
+                    sockopt["tcpKeepAliveInterval"] = 60.into();
+                }
+                if sockopt.get("tcpKeepAliveIdle").is_none() {
+                    sockopt["tcpKeepAliveIdle"] = 60.into();
+                }
+            }
+        }
+    }
+    if let Some(inbounds) = config.get_mut("inbounds").and_then(|i| i.as_array_mut()) {
+        for inbound in inbounds {
+            if inbound["protocol"].as_str() == Some("tun") {
+                if !inbound["settings"].is_object() {
+                    inbound["settings"] = json!({});
+                }
+                inbound["settings"]["mtu"] = json!(config::MOBILE_TUN_MTU);
+            }
+        }
+    }
+    // Set connection idle timeout in policy level 0 to 60s (default is 300s / 5 min).
+    // This cleans up dead/abandoned UDP sessions and background sockets 5x faster,
+    // releasing memory and allowing the mobile radio to return to low-power idle.
+    if !config["policy"].is_object() {
+        config["policy"] = json!({});
+    }
+    if !config["policy"]["levels"].is_object() {
+        config["policy"]["levels"] = json!({});
+    }
+    if !config["policy"]["levels"]["0"].is_object() {
+        config["policy"]["levels"]["0"] = json!({});
+    }
+    if config["policy"]["levels"]["0"].get("connIdle").is_none() {
+        config["policy"]["levels"]["0"]["connIdle"] = 60.into();
+    }
+}
 
 struct Vpn(PluginHandle<Wry>);
 
@@ -347,7 +399,8 @@ async fn start_vpn_service(
         log: log.clone(),
         engine: engine_run.as_ref().map(|run| run.runtime.clone()),
     };
-    let built = config::build(server, settings, &runtime)?;
+    let mut built = config::build(server, settings, &runtime)?;
+    apply_mobile_optimizations(&mut built.config);
     // Xray's built-in DNS resolves the servers over the configured DoH, straight
     // out the physical interface, so a resolver on the path cannot substitute
     // them. Go's own resolver still needs a plain IP; a public one when the
@@ -364,7 +417,7 @@ async fn start_vpn_service(
         per_app_mode: settings.per_app.mode,
         packages: settings.per_app.packages.clone(),
         dns: dns_endpoint,
-        mtu: config::TUN_MTU,
+        mtu: config::MOBILE_TUN_MTU,
         routes: config::tunnel_routes(runtime.engine.as_ref()),
         session_name: name.to_owned(),
         server_name: server.name.clone(),
@@ -412,7 +465,8 @@ async fn start_stealth(
         log: log.clone(),
         engine: engine_run.as_ref().map(|run| run.runtime.clone()),
     };
-    let built = config::build(server, settings, &runtime)?;
+    let mut built = config::build(server, settings, &runtime)?;
+    apply_mobile_optimizations(&mut built.config);
     // Xray runs as root, so the engine does too, accepting root's connections
     // (from /proc/net, which root reads). The setup script starts it and the
     // teardown kills it, so it must not stop with the script's stdin.
@@ -505,7 +559,9 @@ pub async fn set_keep_awake(app: &AppHandle, enabled: bool) -> CmdResult<Value> 
 fn spawn_watcher(app: AppHandle, generation: u64) -> JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         loop {
-            tokio::time::sleep(WATCH_INTERVAL).await;
+            let visible = app.state::<App>().visible.load(std::sync::atomic::Ordering::Relaxed);
+            let interval = if visible { WATCH_INTERVAL } else { Duration::from_secs(15) };
+            tokio::time::sleep(interval).await;
             let end = match service_state(&app).await {
                 Some(state) if state.running => continue,
                 Some(ServiceState { reported: true, error: Some(reason), .. }) => RunEnd::Failed(reason),

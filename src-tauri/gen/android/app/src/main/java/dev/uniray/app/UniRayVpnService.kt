@@ -4,16 +4,24 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.text.format.Formatter
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -86,7 +94,11 @@ class UniRayVpnService : VpnService() {
   // Set once we begin stopping, so no late refresh re-posts the notification
   // after it has been removed (which would leave it stuck, with us gone).
   @Volatile private var stopped = false
+  @Volatile private var isScreenOn = true
+  private var isReceiverRegistered = false
   private var tun: ParcelFileDescriptor? = null
+  private var connectivityManager: ConnectivityManager? = null
+  private var defaultNetworkCallback: ConnectivityManager.NetworkCallback? = null
   // For a WireGuard/AmneziaWG or Naive server: the engine Xray hands its traffic to.
   private var engine: Engine.Child? = null
   private var notification: NotificationCompat.Builder? = null
@@ -99,6 +111,37 @@ class UniRayVpnService : VpnService() {
   private var metricsSocket = ""
   private var proxyTags: List<String> = emptyList()
   private var lastTraffic: Triple<Long, Long, Long>? = null // time, up, down
+
+  private val screenReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent?) {
+      when (intent?.action) {
+        Intent.ACTION_SCREEN_OFF -> {
+          isScreenOn = false
+          keepAwake.onScreenStateChanged(false)
+          // Screen turned off: pause frequent 5s ticker so CPU enters deep sleep
+          pauseTicker()
+        }
+        Intent.ACTION_SCREEN_ON -> {
+          isScreenOn = true
+          keepAwake.onScreenStateChanged(true)
+          // Screen turned back on: immediately show fresh stats in notification and resume 5s ticker
+          submitRefresh()
+          resumeTicker()
+          if (running && !stopped && System.currentTimeMillis() - lastCheckAt >= 60_000L) {
+            kotlin.concurrent.thread(name = "vpn-check", isDaemon = true) {
+              checkConnection()
+              submitRefresh()
+            }
+          }
+        }
+      }
+    }
+  }
+
+  override fun onCreate() {
+    super.onCreate()
+    registerScreenReceiver()
+  }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val request = intent?.getStringExtra(EXTRA_REQUEST)
@@ -142,7 +185,7 @@ class UniRayVpnService : VpnService() {
       if (error != null) {
         shutdown(request, error)
       } else {
-        startTicker()
+        if (isScreenOn) startTicker()
         VpnState.write(this, true, request, null)
       }
     }
@@ -155,8 +198,10 @@ class UniRayVpnService : VpnService() {
   }
 
   override fun onDestroy() {
+    unregisterScreenReceiver()
+    unregisterNetworkCallback()
     stopped = true
-    keepAwake.set(false)
+    keepAwake.release()
     tick?.cancel(false)
     ticker.shutdown()
     worker.execute {
@@ -189,7 +234,7 @@ class UniRayVpnService : VpnService() {
         // The label Android shows for the VPN in system settings. A neutral
         // name is less conspicuous than the app's own name.
         .setSession(spec.optString("sessionName", getString(R.string.app_name)))
-        .setMtu(spec.optInt("mtu", 1500))
+        .setMtu(spec.optInt("mtu", 1360))
         .addAddress(ADDRESS_V4, PREFIX_V4)
         .addDnsServer(DNS_V4)
     // Everything but the engine's server (see the core's tunnel_routes).
@@ -218,7 +263,6 @@ class UniRayVpnService : VpnService() {
     } catch (e: Exception) {
       Log.w(TAG, "IPv6 is not available for the tunnel", e)
     }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
 
     val packages = spec.optJSONArray("packages")
     val mode = spec.optString("perAppMode", "off")
@@ -239,6 +283,7 @@ class UniRayVpnService : VpnService() {
 
     val descriptor = builder.establish() ?: return "the VPN permission was revoked"
     tun = descriptor
+    registerNetworkCallback()
 
     // The core's own sockets must leave through the real network, not the tunnel.
     val controller = DialerController { fd -> protect(fd.toInt()) }
@@ -268,12 +313,13 @@ class UniRayVpnService : VpnService() {
       engine = child
       child.start()?.let { return it }
     }
-    keepAwake.set(spec.optBoolean("keepAwake"))
+    keepAwake.start(spec.optBoolean("keepAwake"))
     return null
   }
 
   private fun stopCore() {
-    keepAwake.set(false)
+    unregisterNetworkCallback()
+    keepAwake.release()
     try {
       XrayCore.stop()
       LibXray.resetDNS()
@@ -343,12 +389,56 @@ class UniRayVpnService : VpnService() {
     }
   }
 
+  private fun pauseTicker() {
+    tick?.cancel(false)
+    tick = null
+  }
+
+  private fun resumeTicker() {
+    if (running && !stopped && isScreenOn) {
+      startTicker()
+    }
+  }
+
+  private fun registerScreenReceiver() {
+    if (isReceiverRegistered) return
+    val filter = IntentFilter().apply {
+      addAction(Intent.ACTION_SCREEN_ON)
+      addAction(Intent.ACTION_SCREEN_OFF)
+    }
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        ContextCompat.registerReceiver(this, screenReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+      } else {
+        registerReceiver(screenReceiver, filter)
+      }
+      isReceiverRegistered = true
+      isScreenOn = getSystemService(PowerManager::class.java)?.isInteractive ?: true
+    } catch (e: Exception) {
+      try {
+        registerReceiver(screenReceiver, filter)
+        isReceiverRegistered = true
+      } catch (ex: Exception) {
+        Log.w(TAG, "failed to register screen receiver", ex)
+      }
+    }
+  }
+
+  private fun unregisterScreenReceiver() {
+    if (!isReceiverRegistered) return
+    try {
+      unregisterReceiver(screenReceiver)
+    } catch (_: Exception) {}
+    isReceiverRegistered = false
+  }
+
   private fun startTicker() {
     tick?.cancel(false)
     tick =
       ticker.scheduleWithFixedDelay(
         {
           try {
+            if (!isScreenOn) return@scheduleWithFixedDelay
             if (System.currentTimeMillis() - lastCheckAt >= CHECK_INTERVAL_MS) {
               lastCheckAt = System.currentTimeMillis()
               kotlin.concurrent.thread(name = "vpn-check", isDaemon = true) {
@@ -473,5 +563,70 @@ class UniRayVpnService : VpnService() {
     builder.setContentTitle(serverName.ifEmpty { getString(R.string.vpn_connected) }).setContentText(text)
     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     manager.notify(NOTIFICATION_ID, builder.build())
+  }
+
+  private fun registerNetworkCallback() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP_MR1) return
+    try {
+      val cm = getSystemService(ConnectivityManager::class.java) ?: return
+      connectivityManager = cm
+      val callback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+          Log.i(TAG, "underlying network available: $network")
+          try {
+            setUnderlyingNetworks(arrayOf(network))
+          } catch (e: Exception) {
+            Log.w(TAG, "cannot set underlying network", e)
+          }
+        }
+
+        override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+          if (networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+            try {
+              setUnderlyingNetworks(arrayOf(network))
+            } catch (e: Exception) {
+              Log.w(TAG, "cannot set underlying network on capabilities change", e)
+            }
+          }
+        }
+
+        override fun onLost(network: Network) {
+          Log.i(TAG, "underlying network lost: $network")
+          try {
+            setUnderlyingNetworks(null)
+          } catch (e: Exception) {
+            Log.w(TAG, "cannot reset underlying networks", e)
+          }
+        }
+      }
+      defaultNetworkCallback = callback
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        cm.registerDefaultNetworkCallback(callback)
+      } else {
+        val request = NetworkRequest.Builder()
+          .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+          .build()
+        cm.registerNetworkCallback(request, callback)
+      }
+    } catch (e: Exception) {
+      Log.w(TAG, "failed to register network callback", e)
+      try {
+        setUnderlyingNetworks(null)
+      } catch (_: Exception) {}
+    }
+  }
+
+  private fun unregisterNetworkCallback() {
+    val cm = connectivityManager
+    val callback = defaultNetworkCallback
+    if (cm != null && callback != null) {
+      try {
+        cm.unregisterNetworkCallback(callback)
+      } catch (e: Exception) {
+        Log.w(TAG, "failed to unregister network callback", e)
+      }
+    }
+    connectivityManager = null
+    defaultNetworkCallback = null
   }
 }
