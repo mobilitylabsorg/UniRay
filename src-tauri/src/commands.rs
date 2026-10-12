@@ -100,6 +100,11 @@ pub async fn update_subscription(app: AppHandle, id: String) -> CmdResult<Import
 }
 
 #[tauri::command]
+pub async fn update_all_subscriptions(app: AppHandle) -> CmdResult<Vec<ImportReport>> {
+    subscriptions::update_all(&app).await
+}
+
+#[tauri::command]
 pub async fn delete_subscription(app: AppHandle, id: String) -> CmdResult<()> {
     let state = app.state::<App>();
     let active_belongs = {

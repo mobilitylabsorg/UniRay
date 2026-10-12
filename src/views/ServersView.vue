@@ -18,6 +18,41 @@ const importing = ref(false);
 const sharing = ref<Server | null>(null);
 const confirming = ref<{ text: string; action: () => Promise<unknown> } | null>(null);
 const updating = ref(new Set<string>());
+const updatingAll = ref(false);
+
+type SortMode = "default" | "ping" | "name";
+const searchQuery = ref("");
+const sortBy = ref<SortMode>("default");
+
+function sortServers(list: Server[]): Server[] {
+  let filtered = list;
+  const q = searchQuery.value.trim().toLowerCase();
+  if (q) {
+    filtered = filtered.filter(
+      (s) =>
+        s.name.toLowerCase().includes(q) ||
+        s.protocol.toLowerCase().includes(q) ||
+        s.address.toLowerCase().includes(q),
+    );
+  }
+  if (sortBy.value === "ping") {
+    return [...filtered].sort((a, b) => {
+      const aDelay = a.delayMs;
+      const bDelay = b.delayMs;
+      const aAlive = aDelay !== null && aDelay > 0;
+      const bAlive = bDelay !== null && bDelay > 0;
+      if (aAlive && bAlive) return aDelay! - bDelay!;
+      if (aAlive) return -1;
+      if (bAlive) return 1;
+      if (aDelay === null && bDelay !== null) return -1;
+      if (aDelay !== null && bDelay === null) return 1;
+      return 0;
+    });
+  } else if (sortBy.value === "name") {
+    return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+  }
+  return filtered;
+}
 
 interface Group {
   subscription: Subscription | null;
@@ -26,15 +61,21 @@ interface Group {
 
 /** Manually added servers first, then one group per subscription. */
 const groups = computed<Group[]>(() => {
-  const manual = store.servers.filter((server) => !server.subscriptionId);
+  const manual = sortServers(store.servers.filter((server) => !server.subscriptionId));
   const result: Group[] = manual.length > 0 ? [{ subscription: null, servers: manual }] : [];
   for (const subscription of store.subscriptions) {
-    result.push({
-      subscription,
-      servers: store.servers.filter((server) => server.subscriptionId === subscription.id),
-    });
+    const servers = sortServers(store.servers.filter((server) => server.subscriptionId === subscription.id));
+    if (servers.length > 0 || !searchQuery.value.trim()) {
+      result.push({ subscription, servers });
+    }
   }
   return result;
+});
+
+const fastestServer = computed<Server | null>(() => {
+  const alive = store.servers.filter((s) => s.delayMs !== null && s.delayMs > 0);
+  if (alive.length === 0) return null;
+  return alive.reduce((best, cur) => (cur.delayMs! < best.delayMs! ? cur : best));
 });
 
 const selectedId = computed(() => store.selectedServer?.id ?? null);
@@ -91,6 +132,27 @@ function askDeleteSubscription(subscription: Subscription) {
   };
 }
 
+async function selectFastest() {
+  if (fastestServer.value) {
+    await select(fastestServer.value);
+    store.toast(t("servers.fastestSelected", { name: fastestServer.value.name, delay: fastestServer.value.delayMs }));
+  }
+}
+
+async function updateAll() {
+  if (updatingAll.value || store.subscriptions.length === 0) return;
+  updatingAll.value = true;
+  for (const sub of store.subscriptions) {
+    updating.value.add(sub.id);
+  }
+  try {
+    await store.run(() => api.updateAllSubscriptions());
+  } finally {
+    updating.value.clear();
+    updatingAll.value = false;
+  }
+}
+
 async function confirm() {
   const pending = confirming.value;
   confirming.value = null;
@@ -102,6 +164,17 @@ async function confirm() {
   <div class="px-4 py-5">
     <header class="mb-4 flex items-center gap-2">
       <h1 class="flex-1 text-xl font-semibold">{{ t("servers.title") }}</h1>
+      <button
+        v-if="store.subscriptions.length > 1"
+        class="btn btn-quiet px-2.5"
+        :disabled="updatingAll"
+        :aria-label="t('servers.updateAll')"
+        :title="t('servers.updateAll')"
+        @click="updateAll"
+      >
+        <AppIcon name="refresh" :size="18" :class="updatingAll ? 'animate-spin' : ''" />
+        <span class="max-[480px]:hidden">{{ t("servers.updateAll") }}</span>
+      </button>
       <button
         class="btn btn-quiet px-3"
         :disabled="testing || store.servers.length === 0"
@@ -116,6 +189,71 @@ async function confirm() {
         <AppIcon name="plus" :size="18" />{{ t("servers.import") }}
       </button>
     </header>
+
+    <!-- Fastest Server Highlight Banner -->
+    <Transition name="pop">
+      <div
+        v-if="fastestServer"
+        class="card mb-4 flex items-center justify-between gap-3 border border-good/20 bg-good-soft px-3.5 py-2.5"
+      >
+        <div class="min-w-0 flex-1 flex items-center gap-2.5">
+          <span class="flex size-7 shrink-0 items-center justify-center rounded-lg bg-good/20 text-good">
+            <AppIcon name="rocket" :size="16" />
+          </span>
+          <div class="min-w-0 flex-1">
+            <div class="truncate text-xs font-semibold text-good">
+              {{ fastestServer.name }}
+            </div>
+            <div class="text-[11px] text-muted">
+              {{ t("servers.fastestAvailable", { name: fastestServer.name, delay: fastestServer.delayMs }) }}
+            </div>
+          </div>
+        </div>
+        <button
+          v-if="fastestServer.id !== selectedId"
+          class="btn btn-primary shrink-0 py-1 px-3 text-xs font-medium"
+          @click="selectFastest"
+        >
+          {{ t("servers.select") }}
+        </button>
+        <span v-else class="shrink-0 flex items-center gap-1 text-xs font-medium text-good">
+          <AppIcon name="check" :size="14" />
+          {{ t("servers.fastestActive", { delay: fastestServer.delayMs }) }}
+        </span>
+      </div>
+    </Transition>
+
+    <!-- Search & Sort Controls (when there are servers) -->
+    <div v-if="store.servers.length > 3" class="mb-4 flex items-center gap-2">
+      <div class="relative min-w-0 flex-1">
+        <AppIcon name="search" :size="16" class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+        <input
+          v-model="searchQuery"
+          class="field w-full pl-9 pr-8 text-xs h-9"
+          :placeholder="t('servers.searchPlaceholder')"
+          spellcheck="false"
+          autocapitalize="off"
+        />
+        <button
+          v-if="searchQuery"
+          class="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-ink transition-colors"
+          @click="searchQuery = ''"
+        >
+          <AppIcon name="close" :size="14" />
+        </button>
+      </div>
+      <div class="relative shrink-0">
+        <select
+          v-model="sortBy"
+          class="field h-9 text-xs font-medium pr-7 pl-2.5 cursor-pointer"
+          :aria-label="t('servers.sort')"
+        >
+          <option value="default">{{ t("servers.sortDefault") }}</option>
+          <option value="ping">{{ t("servers.sortPing") }}</option>
+          <option value="name">{{ t("servers.sortName") }}</option>
+        </select>
+      </div>
+    </div>
 
     <div v-if="groups.length === 0" class="card rise flex flex-col items-center gap-2 px-6 py-12 text-center">
       <AppIcon name="server" :size="36" class="text-muted" />

@@ -58,6 +58,7 @@ pub struct App {
     pub traffic: Mutex<Traffic>,
     /// Connection checker and system UI presenter, see `monitor`.
     pub monitor: Mutex<Option<(JoinHandle<()>, JoinHandle<()>)>>,
+    pub visible: AtomicBool,
     pub paths: Paths,
     /// Direct HTTP client, ignoring any proxy environment.
     pub http: reqwest::Client,
@@ -77,6 +78,7 @@ impl App {
             handoff: Mutex::new(None),
             traffic: Mutex::new(Traffic::default()),
             monitor: Mutex::new(None),
+            visible: AtomicBool::new(true),
             paths,
             http: reqwest::Client::builder()
                 .no_proxy()

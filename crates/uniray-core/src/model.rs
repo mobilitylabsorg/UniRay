@@ -215,9 +215,20 @@ pub struct Settings {
     /// sleep does not stall it and drop the connections. Costs battery, so
     /// off by default. Android only.
     pub keep_awake: bool,
+    /// Block ads and trackers via geosite:category-ads-all routing rule to blackhole.
+    #[serde(default)]
+    pub block_ads: bool,
+    /// How often to automatically update subscriptions in hours.
+    /// `0` disables auto-update. Defaults to 12.
+    #[serde(default = "default_auto_update_hours")]
+    pub auto_update_hours: u32,
     pub selected_server: Option<String>,
     /// UI language, `None` follows the system.
     pub locale: Option<String>,
+}
+
+fn default_auto_update_hours() -> u32 {
+    12
 }
 
 impl Default for Settings {
@@ -246,6 +257,8 @@ impl Default for Settings {
             stealth: false,
             stealth_root_tun: false,
             keep_awake: false,
+            block_ads: false,
+            auto_update_hours: 12,
             selected_server: None,
             locale: None,
         }

@@ -258,6 +258,17 @@ onMounted(refreshPrivilege);
           @update:model-value="(ipv6: boolean) => save({ ipv6 })"
         />
       </div>
+      <div class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.blockAds") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.blockAdsHint") }}</div>
+        </div>
+        <ToggleSwitch
+          :model-value="store.settings.blockAds"
+          :label="t('settings.blockAds')"
+          @update:model-value="(blockAds: boolean) => save({ blockAds })"
+        />
+      </div>
       <label class="block px-4 py-3">
         <span class="mb-1.5 block font-medium">{{ t("settings.interfaceName") }}</span>
         <input
@@ -432,6 +443,22 @@ onMounted(refreshPrivilege);
           <AppIcon name="copy" :size="18" />
         </button>
       </div>
+      <label class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.autoUpdate") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.autoUpdateHint") }}</div>
+        </div>
+        <select
+          class="field w-44 px-2 text-xs"
+          :value="store.settings.autoUpdateHours"
+          @change="save({ autoUpdateHours: Number(($event.target as HTMLSelectElement).value) })"
+        >
+          <option :value="0">{{ t("settings.autoUpdateDisabled") }}</option>
+          <option :value="6">{{ t("settings.autoUpdate6h") }}</option>
+          <option :value="12">{{ t("settings.autoUpdate12h") }}</option>
+          <option :value="24">{{ t("settings.autoUpdate24h") }}</option>
+        </select>
+      </label>
     </div>
 
     <div class="section-title">{{ t("settings.app") }}</div>

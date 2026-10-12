@@ -151,7 +151,17 @@ pub fn tail(app: AppHandle, paths: Vec<std::path::PathBuf>) -> tauri::async_runt
                     push(&app, &line);
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            let visible = app.state::<crate::app::App>().visible.load(std::sync::atomic::Ordering::Relaxed);
+            let sleep_interval = if visible {
+                if cfg!(mobile) {
+                    std::time::Duration::from_millis(1000)
+                } else {
+                    std::time::Duration::from_millis(400)
+                }
+            } else {
+                std::time::Duration::from_secs(10)
+            };
+            tokio::time::sleep(sleep_interval).await;
         }
     })
 }

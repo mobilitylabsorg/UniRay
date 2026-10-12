@@ -78,6 +78,8 @@ export interface Settings {
   stealthRootTun: boolean;
   /** Android: keep the tunnel working with the screen off (a wake lock while connected). */
   keepAwake: boolean;
+  blockAds: boolean;
+  autoUpdateHours: number;
   selectedServer: string | null;
   locale: string | null;
 }
@@ -180,6 +182,7 @@ export const api = {
   selectServer: (id: string) => invoke<void>("select_server", { id }),
   addSubscription: (url: string) => invoke<ImportReport>("add_subscription", { url }),
   updateSubscription: (id: string) => invoke<ImportReport>("update_subscription", { id }),
+  updateAllSubscriptions: () => invoke<ImportReport[]>("update_all_subscriptions"),
   deleteSubscription: (id: string) => invoke<void>("delete_subscription", { id }),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
   connect: () => invoke<void>("connect"),

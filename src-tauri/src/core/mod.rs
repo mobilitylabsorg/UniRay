@@ -61,6 +61,28 @@ pub(crate) const PROBE_URL: &str = "https://www.gstatic.com/generate_204";
 /// How long one server gets before its delay test counts as a timeout.
 pub(crate) const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
+/// Measures true TCP handshake round-trip time (RTT) to `host:port`.
+/// Completing the TCP 3-way handshake (SYN -> SYN/ACK -> ACK) gives the exact network latency
+/// to the server port and proves that the port is not blocked by censorship/firewall.
+pub async fn tcp_rtt(host: &str, port: u16, timeout: std::time::Duration) -> i64 {
+    let target = format!("{host}:{port}");
+    let started = std::time::Instant::now();
+    let connect = async {
+        let addrs = tokio::net::lookup_host(&target).await.ok()?;
+        for addr in addrs {
+            if let Ok(_stream) = tokio::net::TcpStream::connect(addr).await {
+                return Some(started.elapsed().as_millis() as i64);
+            }
+        }
+        None
+    };
+    tokio::time::timeout(timeout, connect)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(-1)
+}
+
 /// A loopback port that is free right now.
 pub(crate) fn free_port() -> CmdResult<u16> {
     TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))

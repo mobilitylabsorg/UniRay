@@ -26,8 +26,6 @@ use crate::error::{CmdError, CmdResult};
 use crate::state::write_private;
 use crate::{logs, stats};
 
-/// libXray tests at most this many configs per call.
-const PROBE_BATCH: usize = 5;
 /// Plain resolver for the core's own (Go-side) lookups, which do not resolve
 /// the proxy server - Xray's built-in DNS does that over DoH - so this only
 /// needs to be reachable. A public one, never the operator's.
@@ -35,7 +33,44 @@ const FALLBACK_DNS: &str = "8.8.8.8";
 /// The loopback port the stealth tproxy inbound listens on; the iptables
 /// TPROXY target points here. Matches the port in the generated config.
 const STEALTH_TPROXY_PORT: u16 = 12345;
-const WATCH_INTERVAL: Duration = Duration::from_secs(1);
+/// Checked every 3 s to avoid high IPC Binder wakeups while keeping UI responsive.
+const WATCH_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Configures TCP keep-alive on all non-blackhole proxy outbounds so mobile
+/// carrier CGNAT and Wi-Fi stateful firewalls do not drop idle TCP connections after 2-3 minutes.
+/// The Linux kernel handles 0-byte keep-alive probes without waking user-space processes.
+/// Also adjusts TUN MTU to 1360 to prevent packet fragmentation over cellular networks (LTE/5G).
+fn apply_mobile_optimizations(config: &mut Value) {
+    if let Some(outbounds) = config.get_mut("outbounds").and_then(|o| o.as_array_mut()) {
+        for outbound in outbounds {
+            if outbound["protocol"].as_str() != Some("blackhole") {
+                if !outbound["streamSettings"].is_object() {
+                    outbound["streamSettings"] = json!({});
+                }
+                if !outbound["streamSettings"]["sockopt"].is_object() {
+                    outbound["streamSettings"]["sockopt"] = json!({});
+                }
+                let sockopt = &mut outbound["streamSettings"]["sockopt"];
+                if sockopt.get("tcpKeepAliveInterval").is_none() {
+                    sockopt["tcpKeepAliveInterval"] = 60.into();
+                }
+                if sockopt.get("tcpKeepAliveIdle").is_none() {
+                    sockopt["tcpKeepAliveIdle"] = 60.into();
+                }
+            }
+        }
+    }
+    if let Some(inbounds) = config.get_mut("inbounds").and_then(|i| i.as_array_mut()) {
+        for inbound in inbounds {
+            if inbound["protocol"].as_str() == Some("tun") {
+                if !inbound["settings"].is_object() {
+                    inbound["settings"] = json!({});
+                }
+                inbound["settings"]["mtu"] = json!(config::MOBILE_TUN_MTU);
+            }
+        }
+    }
+}
 
 struct Vpn(PluginHandle<Wry>);
 
@@ -180,11 +215,6 @@ pub struct InstalledApp {
 #[derive(Deserialize)]
 struct AppList {
     apps: Vec<InstalledApp>,
-}
-
-#[derive(Deserialize)]
-struct Delays {
-    delays: Vec<i64>,
 }
 
 /// What is needed to pick a running connection up again after the activity
@@ -347,7 +377,8 @@ async fn start_vpn_service(
         log: log.clone(),
         engine: engine_run.as_ref().map(|run| run.runtime.clone()),
     };
-    let built = config::build(server, settings, &runtime)?;
+    let mut built = config::build(server, settings, &runtime)?;
+    apply_mobile_optimizations(&mut built.config);
     // Xray's built-in DNS resolves the servers over the configured DoH, straight
     // out the physical interface, so a resolver on the path cannot substitute
     // them. Go's own resolver still needs a plain IP; a public one when the
@@ -364,7 +395,7 @@ async fn start_vpn_service(
         per_app_mode: settings.per_app.mode,
         packages: settings.per_app.packages.clone(),
         dns: dns_endpoint,
-        mtu: config::TUN_MTU,
+        mtu: config::MOBILE_TUN_MTU,
         routes: config::tunnel_routes(runtime.engine.as_ref()),
         session_name: name.to_owned(),
         server_name: server.name.clone(),
@@ -412,7 +443,8 @@ async fn start_stealth(
         log: log.clone(),
         engine: engine_run.as_ref().map(|run| run.runtime.clone()),
     };
-    let built = config::build(server, settings, &runtime)?;
+    let mut built = config::build(server, settings, &runtime)?;
+    apply_mobile_optimizations(&mut built.config);
     // Xray runs as root, so the engine does too, accepting root's connections
     // (from /proc/net, which root reads). The setup script starts it and the
     // teardown kills it, so it must not stop with the script's stdin.
@@ -505,7 +537,9 @@ pub async fn set_keep_awake(app: &AppHandle, enabled: bool) -> CmdResult<Value> 
 fn spawn_watcher(app: AppHandle, generation: u64) -> JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         loop {
-            tokio::time::sleep(WATCH_INTERVAL).await;
+            let visible = app.state::<App>().visible.load(std::sync::atomic::Ordering::Relaxed);
+            let interval = if visible { WATCH_INTERVAL } else { Duration::from_secs(15) };
+            tokio::time::sleep(interval).await;
             let end = match service_state(&app).await {
                 Some(state) if state.running => continue,
                 Some(ServiceState { reported: true, error: Some(reason), .. }) => RunEnd::Failed(reason),
@@ -595,43 +629,32 @@ pub async fn list_apps(app: &AppHandle) -> CmdResult<Vec<InstalledApp>> {
     Ok(call::<AppList>(app, "listApps", json!({})).await?.apps)
 }
 
-/// Measures the delay of each server with libXray's `pingBatch`. It shares
-/// the process-wide core, so it is refused while a connection is up.
+/// Measures the True TCP Handshake RTT of each server.
+/// Completing the TCP handshake measures exact network latency and reachability,
+/// and works both while connected and disconnected.
 pub async fn measure_delays(
     app: &AppHandle,
     servers: Vec<Server>,
     on_result: impl Fn(&str, i64) + Sync,
 ) -> CmdResult<()> {
-    if app.state::<App>().connection.lock().unwrap().status != Status::Disconnected {
-        return Err(CmdError::new("delayWhileConnected", "disconnect to test delays"));
-    }
     let (servers, engine_servers): (Vec<Server>, Vec<Server>) =
         servers.into_iter().partition(|server| server.source.is_xray());
-    super::probe_engines(app, &engine_servers, &on_result).await;
-    for batch in servers.chunks(PROBE_BATCH) {
-        let configs: Vec<String> = batch
-            .iter()
-            .map(|server| {
-                config::probe_outbound(server, config::TAG_PROXY)
-                    .map(|outbound| json!({ "outbounds": [outbound] }).to_string())
-                    .unwrap_or_default()
-            })
-            .collect();
-        let args = json!({ "configs": configs, "url": PROBE_URL, "timeout": PROBE_TIMEOUT.as_secs() });
-        match call::<Delays>(app, "measureDelays", args).await {
-            Ok(result) => {
-                for (index, server) in batch.iter().enumerate() {
-                    on_result(&server.id, result.delays.get(index).copied().unwrap_or(-1));
-                }
-            }
-            Err(err) if err.code == "delayWhileConnected" => return Err(err),
-            Err(err) => {
-                logs::push(app, &format!("[Warning] delay test failed: {}", err.message));
-                for server in batch {
-                    on_result(&server.id, -1);
-                }
-            }
+
+    if app.state::<App>().connection.lock().unwrap().status == Status::Disconnected {
+        super::probe_engines(app, &engine_servers, &on_result).await;
+    } else {
+        for server in &engine_servers {
+            on_result(&server.id, -1);
         }
+    }
+
+    const BATCH_SIZE: usize = 8;
+    for batch in servers.chunks(BATCH_SIZE) {
+        futures_util::future::join_all(batch.iter().map(|server| async {
+            let delay = super::tcp_rtt(&server.address, server.port, super::PROBE_TIMEOUT).await;
+            on_result(&server.id, delay);
+        }))
+        .await;
     }
     Ok(())
 }

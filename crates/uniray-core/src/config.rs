@@ -25,6 +25,9 @@ pub const TAG_METRICS: &str = "metrics";
 pub const TAG_METRICS_IN: &str = "uniray-metrics";
 
 pub const TUN_MTU: u32 = 1500;
+/// TUN MTU for mobile interfaces: 1360 prevents packet fragmentation across
+/// cellular networks (LTE/5G) where carrier MTU is usually 1420-1440.
+pub const MOBILE_TUN_MTU: u32 = 1360;
 /// Default TUN interface name. A neutral, non-VPN-looking name so that, on the
 /// desktop where Xray creates the interface, it does not stand out among the
 /// system interfaces. Overridable in [`Settings::interface_name`].
