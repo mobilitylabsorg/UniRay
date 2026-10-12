@@ -27,6 +27,10 @@ const PATHS = {
   chevron: '<path d="m9 6 6 6-6 6"/>',
   external:
     '<path d="M14 5h5v5M19 5l-8 8M11 7H6a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-5"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>',
+  sort: '<path d="M3 6h18M6 12h12M9 18h6"/>',
+  rocket:
+    '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09zM12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>',
 } as const;
 
 export type IconName = keyof typeof PATHS;

@@ -13,8 +13,6 @@ use crate::app::{emit_state, App};
 use crate::error::{CmdError, CmdResult};
 use crate::logs::now_secs;
 
-/// Update interval when the panel does not advertise one.
-const DEFAULT_INTERVAL_HOURS: u32 = 12;
 const AUTO_UPDATE_CHECK: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -187,6 +185,20 @@ pub async fn remove(app: &AppHandle, id: &str) -> CmdResult<()> {
     emit_state(app);
     Ok(())
 }
+pub async fn update_all(app: &AppHandle) -> CmdResult<Vec<ImportReport>> {
+    let ids: Vec<String> = {
+        let state = app.state::<App>();
+        let store = state.store.lock().unwrap();
+        store.data.subscriptions.iter().map(|sub| sub.id.clone()).collect()
+    };
+    let mut reports = Vec::new();
+    for id in ids {
+        if let Ok(report) = update(app, &id).await {
+            reports.push(report);
+        }
+    }
+    Ok(reports)
+}
 
 /// Keeps subscriptions fresh in the background for as long as the app runs.
 pub fn spawn_auto_update(app: AppHandle) {
@@ -196,16 +208,21 @@ pub fn spawn_auto_update(app: AppHandle) {
                 let state = app.state::<App>();
                 let store = state.store.lock().unwrap();
                 let now = now_secs();
-                store
-                    .data
-                    .subscriptions
-                    .iter()
-                    .filter(|sub| {
-                        let interval = sub.update_interval_hours.unwrap_or(DEFAULT_INTERVAL_HOURS);
-                        sub.updated_at.is_none_or(|at| now - at >= i64::from(interval) * 3600)
-                    })
-                    .map(|sub| sub.id.clone())
-                    .collect()
+                let user_interval = store.data.settings.auto_update_hours;
+                if user_interval == 0 {
+                    Vec::new()
+                } else {
+                    store
+                        .data
+                        .subscriptions
+                        .iter()
+                        .filter(|sub| {
+                            let interval = sub.update_interval_hours.unwrap_or(user_interval);
+                            sub.updated_at.is_none_or(|at| now - at >= i64::from(interval) * 3600)
+                        })
+                        .map(|sub| sub.id.clone())
+                        .collect()
+                }
             };
             for id in due {
                 // Failures are recorded on the subscription and shown there.

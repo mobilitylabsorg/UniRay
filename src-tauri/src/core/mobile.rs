@@ -70,21 +70,6 @@ fn apply_mobile_optimizations(config: &mut Value) {
             }
         }
     }
-    // Set connection idle timeout in policy level 0 to 60s (default is 300s / 5 min).
-    // This cleans up dead/abandoned UDP sessions and background sockets 5x faster,
-    // releasing memory and allowing the mobile radio to return to low-power idle.
-    if !config["policy"].is_object() {
-        config["policy"] = json!({});
-    }
-    if !config["policy"]["levels"].is_object() {
-        config["policy"]["levels"] = json!({});
-    }
-    if !config["policy"]["levels"]["0"].is_object() {
-        config["policy"]["levels"]["0"] = json!({});
-    }
-    if config["policy"]["levels"]["0"].get("connIdle").is_none() {
-        config["policy"]["levels"]["0"]["connIdle"] = 60.into();
-    }
 }
 
 struct Vpn(PluginHandle<Wry>);

@@ -443,6 +443,22 @@ onMounted(refreshPrivilege);
           <AppIcon name="copy" :size="18" />
         </button>
       </div>
+      <label class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.autoUpdate") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.autoUpdateHint") }}</div>
+        </div>
+        <select
+          class="field w-44 px-2 text-xs"
+          :value="store.settings.autoUpdateHours"
+          @change="save({ autoUpdateHours: Number(($event.target as HTMLSelectElement).value) })"
+        >
+          <option :value="0">{{ t("settings.autoUpdateDisabled") }}</option>
+          <option :value="6">{{ t("settings.autoUpdate6h") }}</option>
+          <option :value="12">{{ t("settings.autoUpdate12h") }}</option>
+          <option :value="24">{{ t("settings.autoUpdate24h") }}</option>
+        </select>
+      </label>
     </div>
 
     <div class="section-title">{{ t("settings.app") }}</div>

@@ -100,6 +100,7 @@ pub fn run() {
             commands::select_server,
             commands::add_subscription,
             commands::update_subscription,
+            commands::update_all_subscriptions,
             commands::delete_subscription,
             commands::save_settings,
             commands::connect,
