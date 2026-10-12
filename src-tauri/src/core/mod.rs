@@ -57,6 +57,7 @@ pub struct ConnectionInfo {
 
 /// Delay tests fetch this through each server. Shared by every platform so that
 /// the same server reads the same everywhere.
+#[allow(dead_code)]
 pub(crate) const PROBE_URL: &str = "https://www.gstatic.com/generate_204";
 /// How long one server gets before its delay test counts as a timeout.
 pub(crate) const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
@@ -134,7 +135,7 @@ pub(crate) async fn probe_engines(app: &AppHandle, servers: &[Server], on_result
     for batch in servers.chunks(ENGINE_PROBES_AT_ONCE) {
         futures_util::future::join_all(batch.iter().map(|server| async {
             let delay = match prepare_engine(app, server, &settings).await {
-                Ok(Some(run)) => run_engine_probe(app, &run).await,
+                Ok(Some(run)) => run_engine_probe(app, &run, &settings.probe_url).await,
                 Ok(None) => -1,
                 Err(err) => {
                     logs::push(app, &format!("[Warning] delay test of {}: {}", server.name, err.message));

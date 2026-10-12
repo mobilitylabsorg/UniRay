@@ -114,6 +114,14 @@ pub enum RoutingPreset {
     BypassRu,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DelayTestMode {
+    #[default]
+    Http,
+    Tcp,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum RuleKind {
@@ -225,10 +233,44 @@ pub struct Settings {
     pub selected_server: Option<String>,
     /// UI language, `None` follows the system.
     pub locale: Option<String>,
+    /// Server delay test method: `Http` (real HTTP 204 through proxy) or `Tcp` (TCP handshake RTT).
+    #[serde(default)]
+    pub delay_test_mode: DelayTestMode,
+    /// Target URL for HTTP delay probe tests.
+    #[serde(default = "default_probe_url")]
+    pub probe_url: String,
+    /// Fragment TLS ClientHello packets to bypass ISP / TSPU DPI blocking.
+    #[serde(default)]
+    pub tls_fragment: bool,
+    /// Fragment byte length range, e.g. "100-200".
+    #[serde(default = "default_tls_fragment_length")]
+    pub tls_fragment_length: String,
+    /// Interval in milliseconds between fragments, e.g. "10-20".
+    #[serde(default = "default_tls_fragment_interval")]
+    pub tls_fragment_interval: String,
+    /// Packets to fragment: "tlshello", "1-3", etc.
+    #[serde(default = "default_tls_fragment_packets")]
+    pub tls_fragment_packets: String,
 }
 
 fn default_auto_update_hours() -> u32 {
     12
+}
+
+fn default_probe_url() -> String {
+    "http://cp.cloudflare.com/generate_204".into()
+}
+
+fn default_tls_fragment_length() -> String {
+    "100-200".into()
+}
+
+fn default_tls_fragment_interval() -> String {
+    "10-20".into()
+}
+
+fn default_tls_fragment_packets() -> String {
+    "tlshello".into()
 }
 
 impl Default for Settings {
@@ -261,6 +303,12 @@ impl Default for Settings {
             auto_update_hours: 12,
             selected_server: None,
             locale: None,
+            delay_test_mode: DelayTestMode::Http,
+            probe_url: default_probe_url(),
+            tls_fragment: false,
+            tls_fragment_length: default_tls_fragment_length(),
+            tls_fragment_interval: default_tls_fragment_interval(),
+            tls_fragment_packets: default_tls_fragment_packets(),
         }
     }
 }

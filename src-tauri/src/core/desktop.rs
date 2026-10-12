@@ -640,11 +640,23 @@ pub async fn measure_delays(
     servers: Vec<Server>,
     on_result: impl Fn(&str, i64) + Sync,
 ) -> CmdResult<()> {
+    let settings = app.state::<App>().store.lock().unwrap().data.settings.clone();
+    if settings.delay_test_mode == uniray_core::model::DelayTestMode::Tcp {
+        for batch in servers.chunks(PROBE_BATCH) {
+            join_all(batch.iter().map(|server| async {
+                let delay = super::tcp_rtt(&server.address, server.port, super::PROBE_TIMEOUT).await;
+                on_result(&server.id, delay);
+            }))
+            .await;
+        }
+        return Ok(());
+    }
+
     let (servers, engine_servers): (Vec<Server>, Vec<Server>) =
         servers.into_iter().partition(|server| server.source.is_xray());
     super::probe_engines(app, &engine_servers, &on_result).await;
     for batch in servers.chunks(PROBE_BATCH) {
-        if let Err(err) = probe_batch(app, batch, &on_result).await {
+        if let Err(err) = probe_batch(app, batch, &settings, &on_result).await {
             logs::push(app, &format!("[Warning] delay test failed: {}", err.message));
             for server in batch {
                 on_result(&server.id, -1);
@@ -654,10 +666,15 @@ pub async fn measure_delays(
     Ok(())
 }
 
-async fn probe_batch(app: &AppHandle, servers: &[Server], on_result: &(impl Fn(&str, i64) + Sync)) -> CmdResult<()> {
+async fn probe_batch(
+    app: &AppHandle,
+    servers: &[Server],
+    settings: &Settings,
+    on_result: &(impl Fn(&str, i64) + Sync),
+) -> CmdResult<()> {
     let state = app.state::<App>();
     let ports = servers.iter().map(|_| free_port()).collect::<CmdResult<Vec<u16>>>()?;
-    let probe = config::build_probe(&servers.iter().collect::<Vec<_>>(), &ports)?;
+    let probe = config::build_probe(&servers.iter().collect::<Vec<_>>(), &ports, settings)?;
     let config_path = state.paths.run_dir.join(format!("probe-{}.json", ports[0]));
     let config_bytes = serde_json::to_vec(&probe).map_err(|err| CmdError::core(err.to_string()))?;
     write_private(&config_path, &config_bytes).map_err(CmdError::io)?;
@@ -668,8 +685,9 @@ async fn probe_batch(app: &AppHandle, servers: &[Server], on_result: &(impl Fn(&
         Ok((stop, supervisor, mut exited, _)) => {
             let ready = wait_ready(&ports, &mut exited, READY_TIMEOUT).await;
             if ready.is_ok() {
+                let probe_url = &settings.probe_url;
                 join_all(servers.iter().zip(&ports).map(|(server, port)| async move {
-                    on_result(&server.id, probe_delay(*port).await);
+                    on_result(&server.id, probe_delay(*port, probe_url).await);
                 }))
                 .await;
             }
@@ -684,7 +702,7 @@ async fn probe_batch(app: &AppHandle, servers: &[Server], on_result: &(impl Fn(&
 }
 
 /// One engine delay probe, see [`super::probe_engines`].
-pub(super) async fn run_engine_probe(app: &AppHandle, run: &EngineRun) -> i64 {
+pub(super) async fn run_engine_probe(app: &AppHandle, run: &EngineRun, probe_url: &str) -> i64 {
     let state = app.state::<App>();
     let config = state.paths.run_dir.join(format!("probe-engine-{}.json", run.runtime.port));
     if write_private(&config, &run.config_for(&Peers::Pids(Vec::new()), false)).is_err() {
@@ -696,7 +714,7 @@ pub(super) async fn run_engine_probe(app: &AppHandle, run: &EngineRun) -> i64 {
         .arg("--config")
         .arg(&config)
         .arg("--probe")
-        .arg(PROBE_URL)
+        .arg(probe_url)
         .arg("--timeout")
         .arg(format!("{}s", PROBE_TIMEOUT.as_secs()))
         .stdin(Stdio::null())
@@ -716,12 +734,12 @@ pub(super) async fn run_engine_probe(app: &AppHandle, run: &EngineRun) -> i64 {
     }
 }
 
-async fn probe_delay(port: u16) -> i64 {
+async fn probe_delay(port: u16, probe_url: &str) -> i64 {
     let request = async {
         let proxy = reqwest::Proxy::all(format!("socks5h://127.0.0.1:{port}")).ok()?;
         let client = reqwest::Client::builder().proxy(proxy).build().ok()?;
         let started = Instant::now();
-        let response = client.get(PROBE_URL).send().await.ok()?;
+        let response = client.get(probe_url).send().await.ok()?;
         response.status().is_success().then(|| started.elapsed().as_millis() as i64)
     };
     tokio::time::timeout(PROBE_TIMEOUT, request)

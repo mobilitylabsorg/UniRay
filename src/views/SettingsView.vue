@@ -7,7 +7,7 @@ import AppIcon from "../components/AppIcon.vue";
 import PerAppDialog from "../components/PerAppDialog.vue";
 import ToggleSwitch from "../components/ToggleSwitch.vue";
 import { LOCALES } from "../i18n";
-import { api, type Mode, type PerAppMode, type PrivilegeState, type Settings } from "../lib/api";
+import { api, type DelayTestMode, type Mode, type PerAppMode, type PrivilegeState, type Settings } from "../lib/api";
 import { useAppStore } from "../stores/app";
 
 const store = useAppStore();
@@ -21,6 +21,10 @@ const PER_APP_MODES: { value: PerAppMode; label: string }[] = [
   { value: "allow", label: "settings.perAppAllow" },
   { value: "disallow", label: "settings.perAppDisallow" },
 ];
+const DELAY_TEST_MODES: { value: DelayTestMode; label: string }[] = [
+  { value: "http", label: "settings.delayTestModeHttp" },
+  { value: "tcp", label: "settings.delayTestModeTcp" },
+];
 
 const choosingApps = ref(false);
 
@@ -30,7 +34,18 @@ function savePerAppMode(mode: string) {
 
 // Text fields are edited locally and saved when the user leaves them, so a
 // half-typed port or address never restarts the connection.
-const draft = reactive({ mixedPort: "", remoteDns: "", directDns: "", interfaceName: "", proxyUser: "", proxyPassword: "" });
+const draft = reactive({
+  mixedPort: "",
+  remoteDns: "",
+  directDns: "",
+  interfaceName: "",
+  proxyUser: "",
+  proxyPassword: "",
+  probeUrl: "",
+  tlsFragmentLength: "",
+  tlsFragmentInterval: "",
+  tlsFragmentPackets: "",
+});
 watch(
   () => store.settings,
   (settings) => {
@@ -41,9 +56,33 @@ watch(
     draft.interfaceName = settings.interfaceName;
     draft.proxyUser = settings.proxyUser;
     draft.proxyPassword = settings.proxyPassword;
+    draft.probeUrl = settings.probeUrl;
+    draft.tlsFragmentLength = settings.tlsFragmentLength;
+    draft.tlsFragmentInterval = settings.tlsFragmentInterval;
+    draft.tlsFragmentPackets = settings.tlsFragmentPackets;
   },
   { immediate: true },
 );
+
+function saveDraft(key: "probeUrl" | "tlsFragmentLength" | "tlsFragmentInterval" | "tlsFragmentPackets") {
+  const value = draft[key].trim();
+  if (value && value !== store.settings?.[key]) {
+    save({ [key]: value });
+  } else {
+    draft[key] = store.settings?.[key] ?? "";
+  }
+}
+
+function setProbeUrlPreset(url: string) {
+  draft.probeUrl = url;
+  save({ probeUrl: url });
+}
+
+function setFragmentPreset(length: string, interval: string) {
+  draft.tlsFragmentLength = length;
+  draft.tlsFragmentInterval = interval;
+  save({ tlsFragmentLength: length, tlsFragmentInterval: interval });
+}
 
 function saveCredential(key: "proxyUser" | "proxyPassword") {
   // SOCKS5 limits both to 255 bytes; empty values are not accepted.
@@ -156,6 +195,20 @@ onMounted(refreshPrivilege);
 
     <div class="section-title">{{ t("settings.connection") }}</div>
     <div class="card mb-6 divide-y divide-line">
+      <div v-if="!store.isDesktop" class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.keepAwake") }}</div>
+          <div class="text-xs text-muted">{{ t(store.isTv ? "settings.keepAwakeTvHint" : "settings.keepAwakeHint") }}</div>
+          <div v-if="store.settings.keepAwake && batteryExempt === false" class="mt-1 text-xs text-amber-500">
+            {{ t("settings.keepAwakeNoExemption") }}
+          </div>
+        </div>
+        <ToggleSwitch
+          :model-value="store.settings.keepAwake"
+          :label="t('settings.keepAwake')"
+          @update:model-value="saveKeepAwake"
+        />
+      </div>
       <div v-if="store.tunSupported" class="px-4 py-3" role="radiogroup" :aria-label="t('settings.mode')">
         <div class="mb-2 font-medium">{{ t("settings.mode") }}</div>
         <button
@@ -286,24 +339,81 @@ onMounted(refreshPrivilege);
       </label>
     </div>
 
-    <template v-if="!store.isDesktop">
-      <div class="card mb-6">
-        <div class="flex items-center gap-3 px-4 py-3">
-          <div class="flex-1">
-            <div class="font-medium">{{ t("settings.keepAwake") }}</div>
-            <div class="text-xs text-muted">{{ t(store.isTv ? "settings.keepAwakeTvHint" : "settings.keepAwakeHint") }}</div>
-            <div v-if="store.settings.keepAwake && batteryExempt === false" class="mt-1 text-xs text-amber-500">
-              {{ t("settings.keepAwakeNoExemption") }}
-            </div>
-          </div>
-          <ToggleSwitch
-            :model-value="store.settings.keepAwake"
-            :label="t('settings.keepAwake')"
-            @update:model-value="saveKeepAwake"
-          />
+    <div class="section-title">{{ t("settings.dpiBypass") }}</div>
+    <div class="card mb-6 divide-y divide-line">
+      <div class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.tlsFragment") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.tlsFragmentHint") }}</div>
         </div>
+        <ToggleSwitch
+          :model-value="store.settings.tlsFragment"
+          :label="t('settings.tlsFragment')"
+          @update:model-value="(tlsFragment: boolean) => save({ tlsFragment })"
+        />
       </div>
+      <Transition name="pop">
+        <div v-if="store.settings.tlsFragment" class="space-y-3 px-4 py-3">
+          <div class="flex flex-wrap items-center gap-2 mb-2">
+            <span class="text-xs text-muted">Пресеты:</span>
+            <button
+              type="button"
+              class="btn btn-quiet py-1 px-2.5 text-xs"
+              @click="setFragmentPreset('100-200', '10-20')"
+            >
+              Стандарт (100-200 / 10-20)
+            </button>
+            <button
+              type="button"
+              class="btn btn-quiet py-1 px-2.5 text-xs"
+              @click="setFragmentPreset('10-30', '5-15')"
+            >
+              Агрессивный (10-30 / 5-15)
+            </button>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <label class="block">
+              <span class="mb-1 block text-xs text-muted">{{ t("settings.tlsFragmentPackets") }}</span>
+              <input
+                v-model="draft.tlsFragmentPackets"
+                class="field selectable font-mono text-xs"
+                spellcheck="false"
+                autocapitalize="off"
+                placeholder="tlshello"
+                @blur="saveDraft('tlsFragmentPackets')"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-xs text-muted">{{ t("settings.tlsFragmentLength") }}</span>
+              <input
+                v-model="draft.tlsFragmentLength"
+                class="field selectable font-mono text-xs"
+                spellcheck="false"
+                autocapitalize="off"
+                placeholder="100-200"
+                @blur="saveDraft('tlsFragmentLength')"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-xs text-muted">{{ t("settings.tlsFragmentInterval") }}</span>
+              <input
+                v-model="draft.tlsFragmentInterval"
+                class="field selectable font-mono text-xs"
+                spellcheck="false"
+                autocapitalize="off"
+                placeholder="10-20"
+                @blur="saveDraft('tlsFragmentInterval')"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+            </label>
+          </div>
+        </div>
+      </Transition>
+    </div>
 
+    <template v-if="!store.isDesktop">
       <div class="section-title">{{ t("settings.perApp") }}</div>
       <div class="card mb-6 divide-y divide-line">
         <label class="flex items-center gap-3 px-4 py-3">
@@ -419,6 +529,55 @@ onMounted(refreshPrivilege);
           @update:model-value="(directDnsFromNetwork: boolean) => save({ directDnsFromNetwork })"
         />
       </div>
+    </div>
+
+    <div class="section-title">{{ t("settings.delayTesting") }}</div>
+    <div class="card mb-6 divide-y divide-line">
+      <label class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.delayTestMode") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.delayTestModeHint") }}</div>
+        </div>
+        <select
+          class="field w-52 px-2 text-xs"
+          :value="store.settings.delayTestMode"
+          @change="save({ delayTestMode: ($event.target as HTMLSelectElement).value as DelayTestMode })"
+        >
+          <option v-for="item in DELAY_TEST_MODES" :key="item.value" :value="item.value">{{ t(item.label) }}</option>
+        </select>
+      </label>
+      <Transition name="pop">
+        <div v-if="store.settings.delayTestMode === 'http'" class="px-4 py-3">
+          <label class="block">
+            <span class="mb-1 block font-medium">{{ t("settings.probeUrl") }}</span>
+            <input
+              v-model="draft.probeUrl"
+              class="field selectable font-mono text-xs"
+              spellcheck="false"
+              autocapitalize="off"
+              @blur="saveDraft('probeUrl')"
+              @keydown.enter="($event.target as HTMLInputElement).blur()"
+            />
+            <span class="mt-1 block text-xs text-muted">{{ t("settings.probeUrlHint") }}</span>
+          </label>
+          <div class="mt-2.5 flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="btn btn-quiet py-1 px-2.5 text-xs"
+              @click="setProbeUrlPreset('http://cp.cloudflare.com/generate_204')"
+            >
+              Cloudflare (HTTP)
+            </button>
+            <button
+              type="button"
+              class="btn btn-quiet py-1 px-2.5 text-xs"
+              @click="setProbeUrlPreset('https://www.gstatic.com/generate_204')"
+            >
+              Google (HTTPS)
+            </button>
+          </div>
+        </div>
+      </Transition>
     </div>
 
     <div class="section-title">{{ t("settings.subscriptions") }}</div>
