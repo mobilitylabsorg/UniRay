@@ -89,6 +89,7 @@ export interface Settings {
   tlsFragmentLength: string;
   tlsFragmentInterval: string;
   tlsFragmentPackets: string;
+  tlsFingerprint: string;
 }
 
 /** Elevated access the device offers; only `root`/`shizukuRoot` can do stealth. */

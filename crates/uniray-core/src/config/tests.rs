@@ -274,6 +274,27 @@ fn tls_fragment_emits_fragment_outbound_and_wires_dialer_proxy() {
     assert_eq!(probe["outbounds"][0]["streamSettings"]["sockopt"]["dialerProxy"], "fragment");
 }
 
+#[test]
+fn tls_fingerprint_overrides_client_hello_fingerprint() {
+    let server = parse_link(VLESS).unwrap();
+
+    // Default "auto" leaves it untouched
+    let default_built = build(&server, &Settings::default(), &proxy_runtime()).unwrap();
+    let default_stream = &default_built.config["outbounds"][0]["streamSettings"];
+    assert_eq!(default_stream.get("tlsSettings").and_then(|s| s.get("fingerprint")), None);
+
+    // Explicit fingerprint applies to tlsSettings
+    let mut settings = Settings::default();
+    settings.tls_fingerprint = "randomized".into();
+    let built = build(&server, &settings, &proxy_runtime()).unwrap();
+    let stream = &built.config["outbounds"][0]["streamSettings"];
+    assert_eq!(stream["tlsSettings"]["fingerprint"], "randomized");
+
+    // Also applies to probe configs
+    let probe = build_probe(&[&server], &[20001], &settings).unwrap();
+    assert_eq!(probe["outbounds"][0]["streamSettings"]["tlsSettings"]["fingerprint"], "randomized");
+}
+
 /// The shape Remnawave and similar panels use for balancer groups.
 fn balancer_config() -> Value {
     json!({

@@ -25,6 +25,16 @@ const DELAY_TEST_MODES: { value: DelayTestMode; label: string }[] = [
   { value: "http", label: "settings.delayTestModeHttp" },
   { value: "tcp", label: "settings.delayTestModeTcp" },
 ];
+const TLS_FINGERPRINTS = [
+  { value: "auto", label: "settings.fpAuto" },
+  { value: "chrome", label: "settings.fpChrome" },
+  { value: "firefox", label: "settings.fpFirefox" },
+  { value: "safari", label: "settings.fpSafari" },
+  { value: "ios", label: "settings.fpIos" },
+  { value: "edge", label: "settings.fpEdge" },
+  { value: "random", label: "settings.fpRandom" },
+  { value: "randomized", label: "settings.fpRandomized" },
+];
 
 const choosingApps = ref(false);
 
@@ -411,6 +421,19 @@ onMounted(refreshPrivilege);
           </div>
         </div>
       </Transition>
+      <label class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.tlsFingerprint") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.tlsFingerprintHint") }}</div>
+        </div>
+        <select
+          class="field w-48 px-2 text-xs"
+          :value="store.settings.tlsFingerprint || 'auto'"
+          @change="save({ tlsFingerprint: ($event.target as HTMLSelectElement).value })"
+        >
+          <option v-for="fp in TLS_FINGERPRINTS" :key="fp.value" :value="fp.value">{{ t(fp.label) }}</option>
+        </select>
+      </label>
     </div>
 
     <template v-if="!store.isDesktop">

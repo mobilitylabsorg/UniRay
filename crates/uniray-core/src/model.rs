@@ -251,6 +251,9 @@ pub struct Settings {
     /// Packets to fragment: "tlshello", "1-3", etc.
     #[serde(default = "default_tls_fragment_packets")]
     pub tls_fragment_packets: String,
+    /// uTLS fingerprint for TLS/Reality handshakes: "auto", "chrome", "firefox", "safari", "ios", "edge", "random", "randomized".
+    #[serde(default = "default_tls_fingerprint")]
+    pub tls_fingerprint: String,
 }
 
 fn default_auto_update_hours() -> u32 {
@@ -271,6 +274,10 @@ fn default_tls_fragment_interval() -> String {
 
 fn default_tls_fragment_packets() -> String {
     "tlshello".into()
+}
+
+fn default_tls_fingerprint() -> String {
+    "auto".into()
 }
 
 impl Default for Settings {
@@ -309,6 +316,7 @@ impl Default for Settings {
             tls_fragment_length: default_tls_fragment_length(),
             tls_fragment_interval: default_tls_fragment_interval(),
             tls_fragment_packets: default_tls_fragment_packets(),
+            tls_fingerprint: default_tls_fingerprint(),
         }
     }
 }
