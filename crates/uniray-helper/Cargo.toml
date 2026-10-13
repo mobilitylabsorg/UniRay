@@ -3,6 +3,8 @@ name = "uniray-helper"
 description = "Privileged supervisor that runs Xray for UniRay's TUN mode"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

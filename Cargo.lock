@@ -3869,6 +3869,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sys-locale"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "sysproxy"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4687,12 +4696,14 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sys-locale",
  "sysproxy",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tiny_http",
  "tokio",
  "uniray-core",
  "windows-sys 0.61.2",
@@ -4703,6 +4714,7 @@ name = "uniray-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "flate2",
  "percent-encoding",
  "serde",
  "serde_json",

@@ -3,12 +3,16 @@ name = "uniray-core"
 description = "Platform-independent logic of UniRay: share links, subscriptions, Xray config generation"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 base64 = "0.22"
+# AmneziaVPN `vpn://` keys are zlib-compressed.
+flate2 = "1"
 percent-encoding = "2"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }

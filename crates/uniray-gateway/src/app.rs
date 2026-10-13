@@ -2,8 +2,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
@@ -12,10 +12,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uniray_core::config::{self, LogSink, Runtime, Tun};
+use uniray_core::engine as core_engine;
 use uniray_core::hwid::{self, Device};
 use uniray_core::model::{new_id, Mode, RoutingPreset, Server, ServerSource, Settings, Subscription};
 use uniray_core::{links, subscription};
 
+use crate::engine::{self, Engine};
 use crate::net;
 use crate::options::Options;
 
@@ -50,8 +52,21 @@ pub struct State {
 
 struct Core {
     child: Child,
+    /// For a server Xray cannot run itself.
+    engine: Option<Engine>,
     metrics_port: u16,
     proxy_tags: Vec<String>,
+}
+
+impl Core {
+    /// What ended, once Xray or the engine has.
+    fn exited(&mut self) -> Option<String> {
+        if let Ok(Some(status)) = self.child.try_wait() {
+            return Some(format!("xray stopped ({status})"));
+        }
+        let status = self.engine.as_mut()?.exited()?;
+        Some(format!("the engine stopped ({status})"))
+    }
 }
 
 /// What survives a restart when `DATA_DIR` is mounted.
@@ -114,6 +129,19 @@ impl App {
         logs.push_back(line);
     }
 
+    /// The servers this image can run: WireGuard, AmneziaWG and Naive need
+    /// the engine, Naive `naive` as well; without them such servers are left
+    /// out with a note.
+    fn supported(&self, servers: Vec<Server>) -> Vec<Server> {
+        let (supported, other): (Vec<Server>, Vec<Server>) =
+            servers.into_iter().partition(|server| runnable(&server.source, &self.options.engine, &self.options.naive));
+        for server in &other {
+            let missing = if self.options.engine.is_file() { &self.options.naive } else { &self.options.engine };
+            self.log(format!("uniray: skipped {} ({}): no {}", server.name, server.protocol, missing.display()));
+        }
+        supported
+    }
+
     /// Share links from `SRV*`, kept apart from the subscriptions.
     fn load_links(&self) {
         let text = self.options.links.join("\n");
@@ -121,10 +149,11 @@ impl App {
         for error in &imported.errors {
             self.log(format!("uniray: skipped a link: {error}"));
         }
+        let servers = self.supported(imported.servers);
         let mut state = self.state.lock().unwrap();
         state.servers.retain(|server| server.subscription_id.is_some());
         let position = 0;
-        state.servers.splice(position..position, imported.servers);
+        state.servers.splice(position..position, servers);
     }
 
     // ---- subscriptions -------------------------------------------------
@@ -198,7 +227,7 @@ impl App {
             .unwrap_or(state.servers.len());
         state.servers.retain(|server| server.subscription_id.as_deref() != Some(&id));
         let position = position.min(state.servers.len());
-        let new = subscription::reconcile(&old, parsed.servers, &id);
+        let new = subscription::reconcile(&old, self.supported(parsed.servers), &id);
         let count = new.len();
         state.servers.splice(position..position, new);
         drop(state);
@@ -313,8 +342,23 @@ impl App {
             config::proxy_everything(provider, &self.options.remote_dns);
         }
 
+        // Resolves the server's name, which the bypass rule needs as an
+        // address. The gateway's tunnel is IPv4 only.
+        let engine_run = core_engine::prepare(&server, free_port()?, false, &self.options.naive).map_err(|err| err.to_string())?;
+        for warning in engine_run.iter().flat_map(|run| &run.warnings) {
+            self.log(warning.clone());
+        }
+
         let metrics_port = free_port()?;
-        let routes = net::tunnel_routes(&net::system_nameservers());
+        // The engine's own connections to its server leave by the normal
+        // interface, not through Xray: less work for a small router, and no
+        // chance of them looping back into the engine.
+        let mut excluded = net::system_nameservers();
+        excluded.extend(engine_run.iter().flat_map(|run| &run.runtime.bypass).filter_map(|bypass| match bypass.addr.ip() {
+            IpAddr::V4(ip) => Some(ip),
+            IpAddr::V6(_) => None,
+        }));
+        let routes = net::tunnel_routes(&excluded);
         let settings = Settings {
             mode: Mode::Tun,
             mixed_port: self.options.mixed_port,
@@ -330,6 +374,7 @@ impl App {
             mixed_port: Some(self.options.mixed_port),
             metrics_port: Some(metrics_port), metrics_socket: None,
             log: LogSink::Stdout,
+            engine: engine_run.as_ref().map(|run| run.runtime.clone()),
         };
         let built = config::build(&server, &settings, &runtime).map_err(|err| err.to_string())?;
 
@@ -369,8 +414,21 @@ impl App {
             thread::sleep(Duration::from_millis(100));
         }
 
+        // Started after Xray, so that its config names Xray's process. Xray
+        // connects to it only for traffic.
+        let engine = match &engine_run {
+            Some(run) => match Engine::start(self, &self.options.engine, run, child.id(), &self.run_dir) {
+                Ok(engine) => Some(engine),
+                Err(err) => {
+                    terminate(&mut child);
+                    return Err(err);
+                }
+            },
+            None => None,
+        };
+
         self.log(format!("uniray: connected to {}", server.name));
-        *self.core.lock().unwrap() = Some(Core { child, metrics_port, proxy_tags: built.proxy_tags });
+        *self.core.lock().unwrap() = Some(Core { child, engine, metrics_port, proxy_tags: built.proxy_tags });
         let mut state = self.state.lock().unwrap();
         state.status = Status::Running;
         state.since = Some(now_secs());
@@ -379,17 +437,10 @@ impl App {
 
     pub fn stop_core(&self) {
         let Some(mut core) = self.core.lock().unwrap().take() else { return };
-        // SIGTERM lets Xray remove its routes and interface.
-        // SAFETY: the pid is our unreaped child.
-        unsafe {
-            libc::kill(core.child.id() as libc::pid_t, libc::SIGTERM);
+        terminate(&mut core.child);
+        if let Some(engine) = core.engine.as_mut() {
+            engine.stop();
         }
-        let deadline = Instant::now() + STOP_GRACE;
-        while Instant::now() < deadline && matches!(core.child.try_wait(), Ok(None)) {
-            thread::sleep(Duration::from_millis(50));
-        }
-        let _ = core.child.kill();
-        let _ = core.child.wait();
         let mut state = self.state.lock().unwrap();
         state.status = Status::Stopped;
         state.since = None;
@@ -401,19 +452,11 @@ impl App {
             let mut backoff = Duration::from_secs(2);
             loop {
                 thread::sleep(Duration::from_secs(2));
-                let exited = {
-                    let mut core = self.core.lock().unwrap();
-                    match core.as_mut().map(|core| core.child.try_wait()) {
-                        Some(Ok(Some(status))) => {
-                            core.take();
-                            Some(status)
-                        }
-                        _ => None,
-                    }
-                };
+                // The rest of the core is stopped by the restart.
+                let exited = self.core.lock().unwrap().as_mut().and_then(Core::exited);
                 let failed = self.state.lock().unwrap().status == Status::Failed;
-                if let Some(status) = exited {
-                    self.log(format!("uniray: xray stopped ({status}), restarting in {}s", backoff.as_secs()));
+                if let Some(what) = exited {
+                    self.log(format!("uniray: {what}, restarting in {}s", backoff.as_secs()));
                 } else if !failed {
                     backoff = Duration::from_secs(2);
                     continue;
@@ -425,7 +468,7 @@ impl App {
         });
     }
 
-    fn forward_output(&'static self, stream: Option<impl Read + Send + 'static>) {
+    pub fn forward_output(&'static self, stream: Option<impl Read + Send + 'static>) {
         let Some(stream) = stream else { return };
         thread::spawn(move || {
             for line in BufReader::new(stream).lines().map_while(Result::ok) {
@@ -457,15 +500,22 @@ impl App {
 
     // ---- delay -----------------------------------------------------------
 
-    /// TCP handshake time to every server, measured past the tunnel.
+    /// TCP handshake time to every server, measured past the tunnel. A
+    /// WireGuard server has no TCP to time: the engine brings its tunnel up
+    /// and times a request through it.
     pub fn ping_all(&'static self) {
-        let targets: Vec<(String, String, u16)> = {
+        let (targets, tunnels): (Vec<(String, String, u16)>, Vec<Server>) = {
             let mut state = self.state.lock().unwrap();
             if state.pinging {
                 return;
             }
             state.pinging = true;
-            state.servers.iter().map(|server| (server.id.clone(), server.address.clone(), server.port)).collect()
+            let (tunnels, others): (Vec<&Server>, Vec<&Server>) =
+                state.servers.iter().partition(|server| matches!(server.source, ServerSource::WireGuard(_)));
+            (
+                others.iter().map(|server| (server.id.clone(), server.address.clone(), server.port)).collect(),
+                tunnels.into_iter().cloned().collect(),
+            )
         };
         thread::spawn(move || {
             for chunk in targets.chunks(8) {
@@ -486,15 +536,27 @@ impl App {
                     .collect();
                 for handle in handles {
                     if let Ok((id, delay)) = handle.join() {
-                        let mut state = self.state.lock().unwrap();
-                        if let Some(server) = state.servers.iter_mut().find(|server| server.id == id) {
-                            server.delay_ms = Some(delay.map_or(-1, |ms| ms as i64));
-                        }
+                        self.set_delay(&id, delay);
                     }
                 }
             }
+            // One at a time: each is a whole tunnel, in a container of 64 MB.
+            for server in &tunnels {
+                let delay = core_engine::prepare(server, 0, false, &self.options.naive)
+                    .ok()
+                    .flatten()
+                    .and_then(|run| engine::probe(&self.options.engine, &run, &self.run_dir, &server.id));
+                self.set_delay(&server.id, delay);
+            }
             self.state.lock().unwrap().pinging = false;
         });
+    }
+
+    fn set_delay(&self, id: &str, delay: Option<u64>) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(server) = state.servers.iter_mut().find(|server| server.id == id) {
+            server.delay_ms = Some(delay.map_or(-1, |ms| ms as i64));
+        }
     }
 
     // ---- views and persistence ------------------------------------------
@@ -622,6 +684,31 @@ fn device(options: &Options, uplink: Option<&str>, saved: &mut Saved) -> Device 
     }
 }
 
+/// Whether the image has what `source` runs on.
+fn runnable(source: &ServerSource, engine: &Path, naive: &Path) -> bool {
+    match source {
+        ServerSource::Outbound(_) | ServerSource::Config(_) => true,
+        ServerSource::WireGuard(_) => engine.is_file(),
+        ServerSource::Naive(_) => engine.is_file() && naive.is_file(),
+    }
+}
+
+/// SIGTERM, which lets Xray remove its routes and interface, then a kill.
+fn terminate(child: &mut Child) {
+    if matches!(child.try_wait(), Ok(None)) {
+        // SAFETY: the pid is our child, not yet reaped.
+        unsafe {
+            libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + STOP_GRACE;
+        while Instant::now() < deadline && matches!(child.try_wait(), Ok(None)) {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 fn free_port() -> Result<u16, String> {
     TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .and_then(|listener| listener.local_addr())
@@ -636,4 +723,35 @@ fn host_of(url: &str) -> String {
 
 pub fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_servers_need_their_binaries() {
+        let dir = std::env::temp_dir().join(format!("uniray-gateway-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (engine, naive) = (dir.join("uniray-engine"), dir.join("naive"));
+        let server = |link: &str| links::parse_many(link).servers.remove(0).source;
+        let vless = server("vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443?security=none#v");
+        let wireguard = server(
+            "wireguard://YNXtAzepDqRv9H52osJVDQnznT5AM11eCK3ESpwSt04=@203.0.113.1:51820\
+             ?publickey=Z1XXLsKYkYxuiYjJIkRvtIKFepCYHTgON%2BGfPFp9rhs%3D&address=10.0.0.2%2F32#w",
+        );
+        let naive_server = server("naive+https://user:pass@example.com:443#n");
+
+        // Neither binary: Xray's servers only.
+        assert!(runnable(&vless, &engine, &naive));
+        assert!(!runnable(&wireguard, &engine, &naive));
+        assert!(!runnable(&naive_server, &engine, &naive));
+        // The engine: WireGuard and AmneziaWG; Naive needs naive as well.
+        std::fs::write(&engine, b"").unwrap();
+        assert!(runnable(&wireguard, &engine, &naive));
+        assert!(!runnable(&naive_server, &engine, &naive));
+        std::fs::write(&naive, b"").unwrap();
+        assert!(runnable(&naive_server, &engine, &naive));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

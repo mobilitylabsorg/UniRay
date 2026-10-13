@@ -3,13 +3,13 @@
 //! The emitted format targets Xray-core 26.9: `streamSettings.method`, flat
 //! outbound `settings`, the built-in `tun` inbound and `metrics.listen`.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use serde_json::{json, Map, Value};
 
 use crate::error::{Error, Result};
 use crate::model::{Server, ServerSource, Settings};
-use crate::routing;
+use crate::{routes, routing};
 
 pub const TAG_PROXY: &str = "proxy";
 pub const TAG_DIRECT: &str = "direct";
@@ -25,6 +25,9 @@ pub const TAG_METRICS: &str = "metrics";
 pub const TAG_METRICS_IN: &str = "uniray-metrics";
 
 pub const TUN_MTU: u32 = 1500;
+/// TUN MTU for mobile interfaces: 1360 prevents packet fragmentation across
+/// cellular networks (LTE/5G) where carrier MTU is usually 1420-1440.
+pub const MOBILE_TUN_MTU: u32 = 1360;
 /// Default TUN interface name. A neutral, non-VPN-looking name so that, on the
 /// desktop where Xray creates the interface, it does not stand out among the
 /// system interfaces. Overridable in [`Settings::interface_name`].
@@ -47,6 +50,12 @@ pub enum Tun {
     /// LAN clients whose traffic is forwarded through it leave by the normal
     /// interface instead of looping back in. IPv4 only.
     Gateway { name: String, routes: Vec<String> },
+    /// Xray creates the interface and gives it its addresses; the caller
+    /// routes traffic into it (Android stealth mode's root TUN). Android picks
+    /// routes through per-network policy rules that Xray's own route setup
+    /// does not know, and the caller keeps the core's own connections out of
+    /// the tunnel by their uid rather than by binding them to an interface.
+    Routed { name: String },
     /// No interface at all: a transparent-proxy (TPROXY) inbound on `port`,
     /// fed by the iptables rules the caller installs. Capturing traffic this
     /// way needs CAP_NET_ADMIN, so the core runs as a privileged standalone
@@ -80,6 +89,51 @@ pub struct Runtime {
     /// connect. Takes precedence over `metrics_port`.
     pub metrics_socket: Option<String>,
     pub log: LogSink,
+    /// The engine running the server when Xray cannot (WireGuard, AmneziaWG).
+    pub engine: Option<Engine>,
+}
+
+/// A local engine (`engine/` in the repository) that runs a server Xray does
+/// not speak. Xray stays in front - capture, routing, DNS, counters - and its
+/// `proxy` outbound is SOCKS5 to the engine on loopback, with a password made
+/// for this run. The engine also accepts only Xray's own process.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Engine {
+    pub port: u16,
+    pub user: String,
+    pub pass: String,
+    /// Where the engine itself connects: the server. Sent `direct`, so that
+    /// its packets, when the TUN captures them, do not loop back into it.
+    pub bypass: Vec<Bypass>,
+    /// The engine carries no UDP (NaiveProxy): refuse it up front rather than
+    /// let every datagram fail inside the engine.
+    pub block_udp: bool,
+    /// The server's name, when the engine connects by one (NaiveProxy's TLS
+    /// carries it). Sniffing must not put it in place of the address: the
+    /// `bypass` rule matches the address, and a connection routed by the name
+    /// would go to `proxy`, back into the engine, in a loop.
+    pub sniff_excluded: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bypass {
+    pub addr: SocketAddr,
+    /// `"udp"`, `"tcp"` or `"tcp,udp"`.
+    pub network: &'static str,
+}
+
+impl Engine {
+    fn outbound(&self) -> Value {
+        json!({
+            "protocol": "socks",
+            // In TUN mode Xray binds its sockets to the physical interface,
+            // except those whose source is loopback. A UDP socket's source is
+            // the wildcard unless given, and bound so, its datagrams to the
+            // engine on 127.0.0.1 would never arrive.
+            "sendThrough": "127.0.0.1",
+            "settings": { "address": "127.0.0.1", "port": self.port, "user": self.user, "pass": self.pass },
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -91,13 +145,25 @@ pub struct Built {
 
 pub fn build(server: &Server, settings: &Settings, runtime: &Runtime) -> Result<Built> {
     match &server.source {
-        ServerSource::Outbound(outbound) => Ok(from_outbound(outbound, settings, runtime)),
+        ServerSource::Outbound(outbound) => Ok(from_outbound(outbound, settings, runtime, None)),
         ServerSource::Config(config) => from_config(config, settings, runtime),
+        ServerSource::WireGuard(_) | ServerSource::Naive(_) => {
+            let engine = runtime.engine.as_ref().ok_or_else(no_engine)?;
+            Ok(from_outbound(&engine.outbound(), settings, runtime, Some(engine)))
+        }
     }
 }
 
-fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime) -> Built {
+fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime, engine: Option<&Engine>) -> Built {
     let ip_strategy = if settings.ipv6 { "UseIP" } else { "UseIPv4" };
+    // Without UDP through the proxy, plain DNS to the remote server goes over
+    // TCP instead (Xray's `tcp://`); DoH and the like are TCP already.
+    let remote_dns = match settings.remote_dns.strip_prefix("udp://") {
+        _ if !engine.is_some_and(|engine| engine.block_udp) => settings.remote_dns.clone(),
+        Some(address) => format!("tcp://{address}"),
+        None if !settings.remote_dns.contains("://") => format!("tcp://{}", settings.remote_dns),
+        None => settings.remote_dns.clone(),
+    };
 
     let mut proxy = outbound.clone();
     proxy["tag"] = TAG_PROXY.into();
@@ -126,13 +192,20 @@ fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime) -> Bu
         outbounds.push(json!({ "tag": TAG_DNS_OUT, "protocol": "dns" }));
         rules.push(dns_hijack_rule(TAG_DNS_OUT));
     }
+    if let Some(engine) = engine {
+        rules.extend(engine.bypass.iter().map(bypass_rule));
+    }
     rules.push(dns_server_rule(&settings.direct_dns, TAG_DIRECT));
-    rules.push(dns_server_rule(&settings.remote_dns, TAG_PROXY));
+    rules.push(dns_server_rule(&remote_dns, TAG_PROXY));
     rules.extend(routing::rules(settings));
+    if engine.is_some_and(|engine| engine.block_udp) {
+        // Last, so that UDP the user routes `direct` still goes there.
+        rules.push(json!({ "network": "udp", "outboundTag": TAG_BLOCK }));
+    }
 
     let mut direct_domains = routing::direct_domains(settings);
     direct_domains.extend(server_domain.map(|domain| format!("full:{domain}")));
-    let mut dns_servers = vec![json!(settings.remote_dns)];
+    let mut dns_servers = vec![json!(remote_dns)];
     if !direct_domains.is_empty() {
         dns_servers.insert(
             0,
@@ -316,7 +389,10 @@ fn retarget_inbound_tags(rule: &mut Value, provider_tags: &[String], our_tags: &
 }
 
 fn inbounds(settings: &Settings, runtime: &Runtime) -> Vec<Value> {
-    let sniffing = json!({ "enabled": true, "destOverride": ["http", "tls", "quic"] });
+    let mut sniffing = json!({ "enabled": true, "destOverride": ["http", "tls", "quic"] });
+    if let Some(engine) = runtime.engine.as_ref().filter(|engine| !engine.sniff_excluded.is_empty()) {
+        sniffing["domainsExcluded"] = engine.sniff_excluded.clone().into();
+    }
     let mut inbounds = Vec::new();
     if let Some(port) = runtime.mixed_port {
         inbounds.push(json!({
@@ -341,7 +417,7 @@ fn inbounds(settings: &Settings, runtime: &Runtime) -> Vec<Value> {
                 "dns": ["1.1.1.1"],
                 // Both families are captured even with IPv6 lookups off, so
                 // that IPv6 traffic cannot bypass the tunnel.
-                "autoSystemRoutingTable": ["0.0.0.0/0", "::/0"],
+                "autoSystemRoutingTable": tunnel_routes(runtime.engine.as_ref()),
                 "autoOutboundsInterface": "auto",
             },
             "sniffing": sniffing,
@@ -358,6 +434,19 @@ fn inbounds(settings: &Settings, runtime: &Runtime) -> Vec<Value> {
             },
             "sniffing": sniffing,
         })),
+        Some(Tun::Routed { name }) => inbounds.push(json!({
+            "tag": TAG_TUN,
+            "protocol": "tun",
+            "settings": {
+                "name": name,
+                "mtu": TUN_MTU,
+                // Without IPv6 the caller blocks it rather than routing it
+                // here, and an IPv6 address would fail where the system has
+                // IPv6 turned off.
+                "gateway": if settings.ipv6 { vec![TUN_ADDRESS_V4, TUN_ADDRESS_V6] } else { vec![TUN_ADDRESS_V4] },
+            },
+            "sniffing": sniffing,
+        })),
         Some(Tun::External { name }) => inbounds.push(json!({
             "tag": TAG_TUN,
             "protocol": "tun",
@@ -371,7 +460,11 @@ fn inbounds(settings: &Settings, runtime: &Runtime) -> Vec<Value> {
             // Tagged like the TUN so the shared routing - the DNS hijack and
             // the retargeted provider rules - applies to it unchanged.
             "tag": TAG_TUN,
-            "listen": "0.0.0.0",
+            // Loopback only, so the network cannot reach it; the TPROXY rules
+            // deliver to it with `--on-ip 127.0.0.1`. It takes no password -
+            // the kernel hands it connections, there is no handshake - so the
+            // caller also refuses direct connections to it.
+            "listen": "127.0.0.1",
             "port": port,
             "protocol": "dokodemo-door",
             // `followRedirect` recovers each packet's original destination from
@@ -451,6 +544,34 @@ fn object_entry_value<'a>(config: &'a mut Value, key: &str) -> &'a mut Value {
 /// Answers DNS queries arriving through the TUN with the built-in DNS.
 fn dns_hijack_rule(dns_outbound: &str) -> Value {
     json!({ "inboundTag": [TAG_TUN], "port": "53", "outboundTag": dns_outbound })
+}
+
+/// What a TUN that takes all traffic routes into itself: both address
+/// families but the addresses the engine connects to. The engine (and the
+/// naive it runs) is a process of its own, its sockets bound to no interface:
+/// its packets to the server then leave by the system's routes instead of
+/// passing through Xray a second time on their way out.
+pub fn tunnel_routes(engine: Option<&Engine>) -> Vec<String> {
+    let holes: Vec<(IpAddr, u8)> = engine
+        .iter()
+        .flat_map(|engine| &engine.bypass)
+        .map(|bypass| (bypass.addr.ip(), if bypass.addr.is_ipv4() { 32 } else { 128 }))
+        .collect();
+    let mut routes = routes::all_but(false, &holes);
+    routes.extend(routes::all_but(true, &holes));
+    routes
+}
+
+/// Lets the engine's own connections to `bypass` out past the tunnel.
+fn bypass_rule(bypass: &Bypass) -> Value {
+    let ip = bypass.addr.ip();
+    let prefix = if ip.is_ipv4() { 32 } else { 128 };
+    json!({
+        "ip": [format!("{ip}/{prefix}")],
+        "port": bypass.addr.port().to_string(),
+        "network": bypass.network,
+        "outboundTag": TAG_DIRECT,
+    })
 }
 
 /// Sends the built-in DNS client's own queries to `server` through `outbound`.
@@ -587,6 +708,17 @@ pub fn exit_server<'a>(servers: &'a [Server], connected: &Server, tag: &str) -> 
         .find(|server| server.id != connected.id && server.address == address && server.port == port)
 }
 
+/// A WireGuard/AmneziaWG or Naive server was built without its engine running.
+fn no_engine() -> Error {
+    Error::InvalidConfig("the engine for this server is not running".into())
+}
+
+/// WireGuard, AmneziaWG and Naive servers run on the engine; asking for an
+/// Xray outbound of one is a mistake of the caller.
+fn not_xray() -> Error {
+    Error::InvalidConfig("this server does not run on Xray (WireGuard, AmneziaWG or Naive)".into())
+}
+
 /// The outbound a delay probe should go through, tagged `tag`.
 pub fn probe_outbound(server: &Server, tag: &str) -> Result<Value> {
     let mut outbound = match &server.source {
@@ -596,6 +728,7 @@ pub fn probe_outbound(server: &Server, tag: &str) -> Result<Value> {
             .and_then(|outbounds| outbounds.first())
             .cloned()
             .ok_or_else(|| Error::InvalidConfig("no outbounds".into()))?,
+        ServerSource::WireGuard(_) | ServerSource::Naive(_) => return Err(not_xray()),
     };
     outbound["tag"] = tag.into();
     Ok(outbound)

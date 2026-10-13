@@ -79,7 +79,8 @@ pub fn last_problem(logs: &VecDeque<LogLine>, mark: u64) -> Option<String> {
     recent()
         .find(|line| line.level == "error")
         .or_else(|| recent().find(|line| line.level == "warning"))
-        .or_else(|| recent().next())
+        // A connection the core accepted explains nothing about its end.
+        .or_else(|| recent().find(|line| line.level != "access"))
         .map(|line| line.text.clone())
 }
 
@@ -125,9 +126,9 @@ fn strip_timestamp(raw: &str) -> &str {
 }
 
 /// Follows log files of a core whose output we do not get on a pipe (the
-/// in-process core on mobile, the elevated one on Windows), feeding new lines
-/// to [`push`] until the returned task is aborted.
-#[cfg(any(mobile, windows))]
+/// in-process core on mobile, the elevated one on Windows and macOS), feeding
+/// new lines to [`push`] until the returned task is aborted.
+#[cfg(any(mobile, windows, target_os = "macos"))]
 pub fn tail(app: AppHandle, paths: Vec<std::path::PathBuf>) -> tauri::async_runtime::JoinHandle<()> {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -150,7 +151,17 @@ pub fn tail(app: AppHandle, paths: Vec<std::path::PathBuf>) -> tauri::async_runt
                     push(&app, &line);
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            let visible = app.state::<crate::app::App>().visible.load(std::sync::atomic::Ordering::Relaxed);
+            let sleep_interval = if visible {
+                if cfg!(mobile) {
+                    std::time::Duration::from_millis(1000)
+                } else {
+                    std::time::Duration::from_millis(400)
+                }
+            } else {
+                std::time::Duration::from_secs(10)
+            };
+            tokio::time::sleep(sleep_interval).await;
         }
     })
 }
@@ -217,6 +228,14 @@ mod tests {
         assert_eq!(last_problem(&logs, 2).as_deref(), Some("a later warning"));
         assert_eq!(last_problem(&logs, 3).as_deref(), Some("bye"));
         assert_eq!(last_problem(&logs, 4), None);
+        // Access lines are traffic, not a reason.
+        let logs: VecDeque<LogLine> = [
+            line(1, "info", "started"),
+            line(2, "access", "from 10.0.0.45:41314 accepted tcp:149.154.167.92:5222 [tun -> proxy]"),
+        ]
+        .into();
+        assert_eq!(last_problem(&logs, 1).as_deref(), Some("started"));
+        assert_eq!(last_problem(&logs, 2), None);
         assert_eq!(last_problem(&VecDeque::new(), 0), None);
     }
 }

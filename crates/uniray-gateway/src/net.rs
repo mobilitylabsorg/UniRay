@@ -3,7 +3,9 @@
 
 use std::ffi::CString;
 use std::io::Write;
-use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+
+use uniray_core::routes;
 use std::time::{Duration, Instant};
 
 /// Never sent into the tunnel: local networks (the LAN whose traffic the
@@ -25,44 +27,9 @@ const LOCAL_V4: [&str; 9] = [
 /// ranges and `also_exclude` (e.g. the container's own DNS servers, so that
 /// its system resolver never depends on the tunnel it serves).
 pub fn tunnel_routes(also_exclude: &[Ipv4Addr]) -> Vec<String> {
-    let mut excluded: Vec<(u32, u8)> = LOCAL_V4.iter().filter_map(|cidr| parse_cidr(cidr)).collect();
-    excluded.extend(also_exclude.iter().map(|ip| (u32::from(*ip), 32)));
-    let mut blocks = vec![(0u32, 0u8)];
-    for hole in excluded {
-        blocks = blocks.into_iter().flat_map(|block| subtract(block, hole)).collect();
-    }
-    blocks.sort();
-    blocks
-        .into_iter()
-        .map(|(net, len)| format!("{}/{len}", Ipv4Addr::from(net)))
-        .collect()
-}
-
-fn parse_cidr(cidr: &str) -> Option<(u32, u8)> {
-    let (ip, len) = cidr.split_once('/')?;
-    let len: u8 = len.parse().ok().filter(|len| *len <= 32)?;
-    Some((u32::from(ip.parse::<Ipv4Addr>().ok()?) & mask(len), len))
-}
-
-fn mask(len: u8) -> u32 {
-    if len == 0 { 0 } else { u32::MAX << (32 - len) }
-}
-
-fn contains(outer: (u32, u8), inner: (u32, u8)) -> bool {
-    outer.1 <= inner.1 && inner.0 & mask(outer.1) == outer.0
-}
-
-/// `block` minus `hole`, as the fewest prefixes.
-fn subtract(block: (u32, u8), hole: (u32, u8)) -> Vec<(u32, u8)> {
-    if contains(hole, block) {
-        return Vec::new();
-    }
-    if !contains(block, hole) {
-        return vec![block];
-    }
-    let (net, len) = block;
-    let halves = [(net, len + 1), (net | 1 << (31 - len), len + 1)];
-    halves.into_iter().flat_map(|half| subtract(half, hole)).collect()
+    let mut holes: Vec<(IpAddr, u8)> = LOCAL_V4.iter().filter_map(|cidr| routes::parse_cidr(cidr)).collect();
+    holes.extend(also_exclude.iter().map(|ip| (IpAddr::V4(*ip), 32)));
+    routes::all_but(false, &holes)
 }
 
 /// Nameservers of the container (`dns=` of the RouterOS container).
@@ -184,8 +151,7 @@ mod tests {
     use super::*;
 
     fn covered(routes: &[String], ip: &str) -> bool {
-        let ip = u32::from(ip.parse::<Ipv4Addr>().unwrap());
-        routes.iter().any(|route| contains(parse_cidr(route).unwrap(), (ip, 32)))
+        routes.iter().any(|route| routes::covers(route, ip.parse().unwrap()))
     }
 
     #[test]
@@ -207,15 +173,5 @@ mod tests {
         assert!(!covered(&routes, "1.1.1.1"));
         assert!(covered(&routes, "1.1.1.2"));
         assert!(covered(&routes, "1.0.0.1"));
-    }
-
-    #[test]
-    fn prefixes_do_not_overlap() {
-        let routes: Vec<(u32, u8)> = tunnel_routes(&[]).iter().map(|route| parse_cidr(route).unwrap()).collect();
-        for (i, a) in routes.iter().enumerate() {
-            for b in &routes[i + 1..] {
-                assert!(!contains(*a, *b) && !contains(*b, *a), "{a:?} overlaps {b:?}");
-            }
-        }
     }
 }

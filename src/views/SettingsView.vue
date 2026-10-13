@@ -79,6 +79,20 @@ function save(patch: Partial<Settings>) {
   return store.saveSettings(patch);
 }
 
+// Saved like the other settings (it takes effect on the next connection),
+// and applied to the running tunnel at once. Turning it on also brings up
+// Android's battery optimization dialog: without the exemption Doze still
+// cuts the app's network off with the screen off.
+const batteryExempt = ref<boolean | null>(null);
+async function saveKeepAwake(keepAwake: boolean) {
+  await save({ keepAwake });
+  try {
+    batteryExempt.value = (await api.setKeepAwake(keepAwake)).batteryExempt;
+  } catch {
+    batteryExempt.value = null;
+  }
+}
+
 function savePort() {
   const port = Number(draft.mixedPort);
   if (Number.isInteger(port) && port >= 1 && port <= 65535) {
@@ -115,6 +129,13 @@ const privilegeLabel = computed(() => PRIVILEGE_LABELS[privilege.value?.level ??
 const canStealth = computed(
   () => privilege.value?.level === "root" || privilege.value?.level === "shizukuRoot",
 );
+// A hint, not a lock: a kernel can list TPROXY and still handle it badly
+// (some custom ROMs), and the root TUN is the way out then.
+const stealthRootTunHint = computed(() => {
+  if (privilege.value?.hasTproxy === true) return "settings.stealthRootTunTproxySupported";
+  if (privilege.value?.hasTproxy === false) return "settings.stealthRootTunTproxyMissing";
+  return "settings.stealthRootTunHint";
+});
 
 async function refreshPrivilege() {
   if (store.isDesktop) return;
@@ -146,10 +167,12 @@ onMounted(refreshPrivilege);
           @click="save({ mode })"
         >
           <span
-            class="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2"
+            class="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors duration-200"
             :class="store.settings.mode === mode ? 'border-accent bg-accent text-accent-ink' : 'border-line'"
           >
-            <AppIcon v-if="store.settings.mode === mode" name="check" :size="12" />
+            <Transition name="pop">
+              <AppIcon v-if="store.settings.mode === mode" name="check" :size="12" />
+            </Transition>
           </span>
           <span>
             <span class="block text-sm font-medium">{{ t(mode === "proxy" ? "home.modeProxy" : "home.modeTun") }}</span>
@@ -181,32 +204,34 @@ onMounted(refreshPrivilege);
             @update:model-value="(proxyAuth: boolean) => save({ proxyAuth })"
           />
         </div>
-        <div v-if="store.settings.proxyAuth" class="mt-3 grid grid-cols-2 gap-2">
-          <label class="block">
-            <span class="mb-1 block text-xs text-muted">{{ t("settings.proxyUser") }}</span>
-            <input
-              v-model="draft.proxyUser"
-              class="field selectable font-mono text-xs"
-              spellcheck="false"
-              autocapitalize="off"
-              autocomplete="off"
-              @blur="saveCredential('proxyUser')"
-              @keydown.enter="($event.target as HTMLInputElement).blur()"
-            />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-xs text-muted">{{ t("settings.proxyPassword") }}</span>
-            <input
-              v-model="draft.proxyPassword"
-              class="field selectable font-mono text-xs"
-              spellcheck="false"
-              autocapitalize="off"
-              autocomplete="off"
-              @blur="saveCredential('proxyPassword')"
-              @keydown.enter="($event.target as HTMLInputElement).blur()"
-            />
-          </label>
-        </div>
+        <Transition name="pop">
+          <div v-if="store.settings.proxyAuth" class="mt-3 grid grid-cols-2 gap-2">
+            <label class="block">
+              <span class="mb-1 block text-xs text-muted">{{ t("settings.proxyUser") }}</span>
+              <input
+                v-model="draft.proxyUser"
+                class="field selectable font-mono text-xs"
+                spellcheck="false"
+                autocapitalize="off"
+                autocomplete="off"
+                @blur="saveCredential('proxyUser')"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-xs text-muted">{{ t("settings.proxyPassword") }}</span>
+              <input
+                v-model="draft.proxyPassword"
+                class="field selectable font-mono text-xs"
+                spellcheck="false"
+                autocapitalize="off"
+                autocomplete="off"
+                @blur="saveCredential('proxyPassword')"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+            </label>
+          </div>
+        </Transition>
         <button class="btn btn-quiet mt-3 w-full" @click="copyProxyAddress">
           <AppIcon name="copy" :size="16" />{{ t("settings.proxyCopy") }}
         </button>
@@ -233,6 +258,17 @@ onMounted(refreshPrivilege);
           @update:model-value="(ipv6: boolean) => save({ ipv6 })"
         />
       </div>
+      <div class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.blockAds") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.blockAdsHint") }}</div>
+        </div>
+        <ToggleSwitch
+          :model-value="store.settings.blockAds"
+          :label="t('settings.blockAds')"
+          @update:model-value="(blockAds: boolean) => save({ blockAds })"
+        />
+      </div>
       <label class="block px-4 py-3">
         <span class="mb-1.5 block font-medium">{{ t("settings.interfaceName") }}</span>
         <input
@@ -251,6 +287,23 @@ onMounted(refreshPrivilege);
     </div>
 
     <template v-if="!store.isDesktop">
+      <div class="card mb-6">
+        <div class="flex items-center gap-3 px-4 py-3">
+          <div class="flex-1">
+            <div class="font-medium">{{ t("settings.keepAwake") }}</div>
+            <div class="text-xs text-muted">{{ t(store.isTv ? "settings.keepAwakeTvHint" : "settings.keepAwakeHint") }}</div>
+            <div v-if="store.settings.keepAwake && batteryExempt === false" class="mt-1 text-xs text-amber-500">
+              {{ t("settings.keepAwakeNoExemption") }}
+            </div>
+          </div>
+          <ToggleSwitch
+            :model-value="store.settings.keepAwake"
+            :label="t('settings.keepAwake')"
+            @update:model-value="saveKeepAwake"
+          />
+        </div>
+      </div>
+
       <div class="section-title">{{ t("settings.perApp") }}</div>
       <div class="card mb-6 divide-y divide-line">
         <label class="flex items-center gap-3 px-4 py-3">
@@ -263,19 +316,24 @@ onMounted(refreshPrivilege);
             <option v-for="item in PER_APP_MODES" :key="item.value" :value="item.value">{{ t(item.label) }}</option>
           </select>
         </label>
-        <button
-          v-if="store.settings.perApp.mode !== 'off'"
-          class="flex w-full items-center gap-3 px-4 py-3 text-left"
-          @click="choosingApps = true"
-        >
-          <span class="flex-1">
-            <span class="block font-medium">{{ t("settings.perAppChoose") }}</span>
-            <span class="block text-xs text-muted">
-              {{ t("settings.perAppSelected", { count: store.settings.perApp.packages.length }) }}
+        <Transition name="pop">
+          <button
+            v-if="store.settings.perApp.mode !== 'off'"
+            class="flex w-full items-center gap-3 px-4 py-3 text-left"
+            @click="choosingApps = true"
+          >
+            <span class="flex-1">
+              <span class="block font-medium">{{ t("settings.perAppChoose") }}</span>
+              <span class="block text-xs text-muted">
+                {{ t("settings.perAppSelected", { count: store.settings.perApp.packages.length }) }}
+              </span>
             </span>
-          </span>
-          <AppIcon name="chevron" class="text-muted" />
-        </button>
+            <AppIcon name="chevron" class="text-muted" />
+          </button>
+        </Transition>
+        <div v-if="store.settings.stealth && canStealth" class="px-4 py-2.5 text-xs text-amber-500 bg-amber-500/10">
+          {{ t("settings.perAppStealthWarning") }}
+        </div>
       </div>
 
       <div class="section-title">{{ t("settings.stealth") }}</div>
@@ -308,17 +366,19 @@ onMounted(refreshPrivilege);
             @update:model-value="(stealth: boolean) => save({ stealth })"
           />
         </div>
-        <div v-if="store.settings.stealth && canStealth" class="flex items-center gap-3 px-4 py-3">
-          <div class="flex-1">
-            <div class="font-medium">{{ t("settings.stealthRootTun") }}</div>
-            <div class="text-xs text-muted">{{ t("settings.stealthRootTunHint") }}</div>
+        <Transition name="pop">
+          <div v-if="store.settings.stealth && canStealth" class="flex items-center gap-3 px-4 py-3">
+            <div class="flex-1">
+              <div class="font-medium">{{ t("settings.stealthRootTun") }}</div>
+              <div class="text-xs text-muted">{{ t(stealthRootTunHint) }}</div>
+            </div>
+            <ToggleSwitch
+              :model-value="store.settings.stealthRootTun"
+              :label="t('settings.stealthRootTun')"
+              @update:model-value="(stealthRootTun: boolean) => save({ stealthRootTun })"
+            />
           </div>
-          <ToggleSwitch
-            :model-value="store.settings.stealthRootTun"
-            :label="t('settings.stealthRootTun')"
-            @update:model-value="(stealthRootTun: boolean) => save({ stealthRootTun })"
-          />
-        </div>
+        </Transition>
       </div>
     </template>
 
@@ -339,7 +399,8 @@ onMounted(refreshPrivilege);
         <span class="mb-1.5 block font-medium">{{ t("settings.directDns") }}</span>
         <input
           v-model="draft.directDns"
-          class="field selectable font-mono text-xs"
+          class="field selectable font-mono text-xs transition-opacity disabled:opacity-50"
+          :disabled="store.settings.directDnsFromNetwork"
           spellcheck="false"
           autocapitalize="off"
           @blur="saveDns('directDns')"
@@ -347,6 +408,17 @@ onMounted(refreshPrivilege);
         />
         <span class="mt-1.5 block text-xs text-muted">{{ t("settings.directDnsHint") }}</span>
       </label>
+      <div class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.directDnsFromNetwork") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.directDnsFromNetworkHint") }}</div>
+        </div>
+        <ToggleSwitch
+          :model-value="store.settings.directDnsFromNetwork"
+          :label="t('settings.directDnsFromNetwork')"
+          @update:model-value="(directDnsFromNetwork: boolean) => save({ directDnsFromNetwork })"
+        />
+      </div>
     </div>
 
     <div class="section-title">{{ t("settings.subscriptions") }}</div>
@@ -371,6 +443,22 @@ onMounted(refreshPrivilege);
           <AppIcon name="copy" :size="18" />
         </button>
       </div>
+      <label class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.autoUpdate") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.autoUpdateHint") }}</div>
+        </div>
+        <select
+          class="field w-44 px-2 text-xs"
+          :value="store.settings.autoUpdateHours"
+          @change="save({ autoUpdateHours: Number(($event.target as HTMLSelectElement).value) })"
+        >
+          <option :value="0">{{ t("settings.autoUpdateDisabled") }}</option>
+          <option :value="6">{{ t("settings.autoUpdate6h") }}</option>
+          <option :value="12">{{ t("settings.autoUpdate12h") }}</option>
+          <option :value="24">{{ t("settings.autoUpdate24h") }}</option>
+        </select>
+      </label>
     </div>
 
     <div class="section-title">{{ t("settings.app") }}</div>
@@ -405,6 +493,8 @@ onMounted(refreshPrivilege);
     <button v-if="store.isDesktop" class="btn btn-danger w-full" @click="api.quit()">
       <AppIcon name="power" :size="18" />{{ t("settings.quit") }}
     </button>
-    <PerAppDialog v-if="choosingApps" @close="choosingApps = false" />
+    <Transition name="sheet">
+      <PerAppDialog v-if="choosingApps" @close="choosingApps = false" />
+    </Transition>
   </div>
 </template>

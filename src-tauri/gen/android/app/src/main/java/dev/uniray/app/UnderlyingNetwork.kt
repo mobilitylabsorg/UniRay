@@ -13,21 +13,26 @@ import java.net.Inet4Address
  * servers through it there.
  */
 object UnderlyingNetwork {
-  class Info(val type: String, val dns: List<String>)
+  /** [address]: this device's IPv4 address in it, for the TV import page. */
+  class Info(val type: String, val dns: List<String>, val address: String? = null)
 
   fun current(context: Context): Info {
-    val manager = context.getSystemService(ConnectivityManager::class.java)
+    val manager = context.getSystemService(ConnectivityManager::class.java) ?: return Info("none", emptyList())
     @Suppress("DEPRECATION")
     val candidates =
-      manager.allNetworks.mapNotNull { network ->
-        val caps = manager.getNetworkCapabilities(network) ?: return@mapNotNull null
-        if (
-          !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
-            !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-        ) {
-          return@mapNotNull null
+      try {
+        manager.allNetworks.mapNotNull { network ->
+          val caps = manager.getNetworkCapabilities(network) ?: return@mapNotNull null
+          if (
+            !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+              !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+          ) {
+            return@mapNotNull null
+          }
+          Triple(network, caps, rank(caps))
         }
-        Triple(network, caps, rank(caps))
+      } catch (e: Exception) {
+        emptyList()
       }
     // Android itself prefers a working Wi-Fi or Ethernet over mobile data.
     val best =
@@ -45,13 +50,27 @@ object UnderlyingNetwork {
         best.second.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
         else -> "other"
       }
-    val servers = manager.getLinkProperties(best.first)?.dnsServers.orEmpty()
+    val servers =
+      try {
+        manager.getLinkProperties(best.first)?.dnsServers.orEmpty()
+      } catch (e: Exception) {
+        emptyList()
+      }
     // IPv4 first: the tunnel itself is IPv4.
     val dns =
       servers
         .sortedBy { if (it is Inet4Address) 0 else 1 }
         .mapNotNull { it.hostAddress?.substringBefore('%') }
-    return Info(type, dns)
+    val address =
+      try {
+        manager.getLinkProperties(best.first)?.linkAddresses.orEmpty()
+          .map { it.address }
+          .firstOrNull { it is Inet4Address && !it.isLoopbackAddress && !it.isLinkLocalAddress }
+          ?.hostAddress
+      } catch (e: Exception) {
+        null
+      }
+    return Info(type, dns, address)
   }
 
   private fun rank(caps: NetworkCapabilities): Int =

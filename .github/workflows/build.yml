@@ -1,0 +1,468 @@
+# Builds the app for Linux (AppImage), Windows (installer + portable zip),
+# macOS (DMG, Apple Silicon and Intel) and Android (APK), and the MikroTik
+# gateway container (armv7, arm64). Every run uploads the packages as workflow
+# artifacts; a pushed `v*` tag also publishes them as a GitHub release.
+#
+# Runners: everything but macOS runs on our own Linux runner (labels
+# self-hosted + uniray), one job at a time, Windows cross-compiled with
+# cargo-xwin. Its workspace and caches stay between runs, so the checkout
+# keeps the build outputs and no GitHub cache is used. The runner needs
+# passwordless sudo (system packages, the engine's network-namespace tests)
+# and Docker with buildx (the gateway image); its .env limits parallelism for
+# a small machine (CARGO_BUILD_JOBS, GRADLE_OPTS). macOS needs a Mac:
+# GitHub's macOS runner, only for tags and manual runs, as its minutes are
+# costly.
+#
+# macOS signing: without secrets the app is signed ad-hoc, which macOS opens
+# only after the user allows it (see README). To sign and notarize, add
+# APPLE_CERTIFICATE (the .p12, base64), APPLE_CERTIFICATE_PASSWORD,
+# APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD (an app-specific password)
+# and APPLE_TEAM_ID; Tauri picks them up by these names.
+#
+# Android signing: without secrets the APK is signed with a throwaway debug
+# key, so each build installs only over itself. For updates that install over
+# each other, add these repository secrets:
+#   ANDROID_KEYSTORE           the keystore file, base64-encoded
+#   ANDROID_KEYSTORE_PASSWORD  its password (used for the key too)
+#   ANDROID_KEY_ALIAS          the key's alias
+
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# A new push replaces the running build of the same branch or pull request,
+# which would otherwise hold the one runner; builds of tags always finish.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux (AppImage)
+    # An AppImage runs on systems at least as new as the glibc it was built
+    # against, so the runner should be an older system (Ubuntu 22.04).
+    runs-on: [self-hosted, uniray]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Keeps target/ and the downloaded sidecars from earlier runs.
+          clean: false
+
+      - name: System libraries
+        timeout-minutes: 15
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          # Tauri's list for Debian and Ubuntu, which GitHub's runners carry
+          # already (linuxdeploy's plugins call `file`), and what the engine
+          # tests use.
+          sudo apt-get -o Acquire::Retries=3 install -y build-essential curl wget file libssl-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf libfuse2 \
+            desktop-file-utils xdg-utils iproute2 iptables python3
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+          cache: false
+
+      - run: pnpm install --frozen-lockfile
+      - name: Sidecars (Xray, helper, engine, naive)
+        run: bash scripts/prepare-sidecars.sh --release
+        env:
+          # fetch-naive.sh reads the naiveproxy release through the API.
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # The engine against the real amneziawg-go server, in network namespaces,
+      # alone and behind Xray and the helper as the app runs them.
+      - name: Engine tests
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          cargo build --release -p uniray-core --example engine_configs
+          cd engine
+          go vet ./...
+          go test ./...
+          bin=$(mktemp -d)
+          go build -o "$bin/uniray-engine" .
+          go build -o "$bin/amneziawg-go" github.com/amnezia-vpn/amneziawg-go/v3
+          go build -o "$bin/keygen" ./e2e/keygen
+          sudo CHAIN_XRAY="$GITHUB_WORKSPACE/src-tauri/binaries/uniray-xray-$triple" \
+            CHAIN_HELPER="$GITHUB_WORKSPACE/target/release/uniray-helper" \
+            CHAIN_ASSETS="$GITHUB_WORKSPACE/src-tauri/resources" \
+            CHAIN_CONFIGS="$GITHUB_WORKSPACE/target/release/examples/engine_configs" \
+            NAIVE_BIN="$GITHUB_WORKSPACE/src-tauri/binaries/uniray-naive-$triple" \
+            bash e2e/e2e.sh "$bin/uniray-engine" "$bin/amneziawg-go" "$bin/keygen"
+          rm -rf "$bin"
+
+      # Includes the tests that run generated configs through the real Xray.
+      - name: Tests
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          UNIRAY_XRAY_BIN=$PWD/src-tauri/binaries/uniray-xray-$triple \
+          XRAY_LOCATION_ASSET=$PWD/src-tauri/resources \
+          cargo test --workspace
+
+      # --verbose: when linuxdeploy fails, its output says why.
+      - name: Build
+        run: |
+          rm -rf target/release/bundle/appimage
+          pnpm tauri build --bundles appimage --verbose
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uniray-linux
+          path: target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Windows
+    # Cross-compiled on the Linux runner: cargo-xwin brings the Windows SDK
+    # and CRT, NSIS makes the installer.
+    runs-on: [self-hosted, uniray]
+    env:
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+
+      # tauri-cli on Linux looks for the tray's appindicator library even when
+      # it builds for Windows ("Can't detect any appindicator library").
+      - name: System tools
+        timeout-minutes: 15
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y nsis clang lld llvm zip libayatana-appindicator3-dev
+          # Headers Tauri's installer needs from a newer NSIS than Ubuntu
+          # 22.04's (see scripts/nsis/README.md).
+          sudo cp -r scripts/nsis/Win /usr/share/nsis/Include/
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-xwin
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+          cache: false
+
+      - run: pnpm install --frozen-lockfile
+      - name: Sidecars (Xray, Wintun, helper, engine, naive)
+        run: bash scripts/prepare-sidecars.sh --release "$TARGET"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Build
+        run: |
+          rm -rf "target/$TARGET/release/bundle/nsis"
+          pnpm tauri build --runner cargo-xwin --target "$TARGET" --bundles nsis
+
+      # The same files the installer puts down, for running without installing.
+      - name: Portable zip
+        run: |
+          release="target/$TARGET/release"
+          rm -rf portable && mkdir -p portable/UniRay
+          cp "$release"/{uniray,uniray-xray,uniray-helper,uniray-engine,uniray-naive}.exe \
+            "$release/wintun.dll" "$release/LICENSE-Wintun" portable/UniRay/
+          cp -r "$release/resources" portable/UniRay/
+          (cd portable && zip -qr UniRay-windows-x64-portable.zip UniRay)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uniray-windows
+          path: |
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            portable/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  android:
+    name: Android (APK)
+    runs-on: [self-hosted, uniray]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+        with:
+          # The default list includes `tools`, which the SDK repository no
+          # longer has. The platform and build tools come with the Gradle build.
+          packages: platform-tools
+      - name: NDK
+        run: |
+          sdkmanager --install "ndk;27.2.12479018"
+          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+          cache: false
+
+      - run: pnpm install --frozen-lockfile
+      # Per ABI: arm64 for phones, armv7 for most Android TV boxes (32-bit
+      # Android even on 64-bit chips). Each goes to jniLibs/<abi>/, and each
+      # APK carries only its own.
+      - name: Xray for Android (libXray, stealth binaries, geo files) and the engine
+        run: |
+          android=src-tauri/gen/android/app/src/main
+          # Where the stealth Xray used to be; the workspace stays between runs.
+          rm -rf "$android/assets/stealth"
+          bash scripts/fetch-libxray-android.sh
+          for target in aarch64-linux-android armv7-linux-androideabi; do
+            case "$target" in
+              aarch64-*) abi=arm64-v8a ;;
+              armv7-*) abi=armeabi-v7a ;;
+            esac
+            bash scripts/fetch-xray-android.sh "$target"
+            bash scripts/build-engine.sh "$target" "$android/jniLibs/$abi/libuniray_engine.so"
+            bash scripts/fetch-naive.sh "$target" "$android/jniLibs/$abi/libnaive.so"
+          done
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Signing key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          android=src-tauri/gen/android
+          # The workspace stays between runs: no key from an earlier one.
+          rm -f "$android/keystore.properties"
+          if [ -z "$KEYSTORE" ]; then
+            echo "No ANDROID_KEYSTORE secret: the APK is signed with a debug key."
+            exit 0
+          fi
+          echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.jks"
+          {
+            echo "storeFile=$RUNNER_TEMP/release.jks"
+            echo "password=$PASSWORD"
+            echo "keyAlias=$ALIAS"
+          } > "$android/keystore.properties"
+
+      # One APK per ABI (the arm64 and arm flavors), the same app for phones
+      # and TVs. One after the other: built together, Gradle runs both Rust
+      # release builds (LTO) at once, and that does not fit in 4 GB (the
+      # runner itself got killed).
+      - name: Build
+        run: |
+          rm -rf apk && mkdir -p apk
+          out=src-tauri/gen/android/app/build/outputs/apk
+          for pair in aarch64:arm64:arm64 armv7:arm:armv7; do
+            IFS=: read -r target flavor name <<< "$pair"
+            # Gradle's own part takes a minute or two; what an interrupted run
+            # left of it is not worth trusting. Rust's output (target/) stays.
+            rm -rf src-tauri/gen/android/app/build src-tauri/gen/android/build
+            pnpm tauri android build --apk --split-per-abi --target "$target"
+            cp "$out/$flavor"/release/*.apk "apk/UniRay-android-$name.apk"
+          done
+          ls -l apk
+
+      - name: Collect
+        if: always()
+        run: |
+          # Not left for the next run on this machine, whatever the build did.
+          rm -f src-tauri/gen/android/keystore.properties "$RUNNER_TEMP/release.jks"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uniray-android
+          path: apk/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: macOS (${{ matrix.arch }})
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-apple-darwin
+          # Built on the Apple Silicon runner as well: Rust and the Xcode
+          # toolchain cross-compile to Intel.
+          - arch: x64
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+          cache-dependency-path: engine/go.sum
+
+      - run: pnpm install --frozen-lockfile
+      - name: Sidecars (Xray, helper, engine, naive)
+        run: bash scripts/prepare-sidecars.sh --release ${{ matrix.target }}
+        env:
+          # fetch-naive.sh reads the naiveproxy release through the API.
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # Tauri signs and notarizes when these are set; an empty one would make
+      # it try and fail, so only the ones that exist are passed on.
+      - name: Signing identity
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            # Ad-hoc: the bundle gets a valid signature that seals its contents,
+            # just not one from an identified developer. Left unsigned, the
+            # binaries carry only the linker's signature and the sealed bundle
+            # does not match it, so macOS calls the app damaged.
+            echo "No APPLE_CERTIFICATE secret: signing ad-hoc."
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            value="${!name}"
+            if [ -n "$value" ]; then
+              echo "::add-mask::$value"
+              { echo "$name<<__END__"; echo "$value"; echo "__END__"; } >> "$GITHUB_ENV"
+            fi
+          done
+
+      - name: Build
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles dmg
+
+      - name: Collect
+        run: |
+          mkdir -p dmg
+          cp target/${{ matrix.target }}/release/bundle/dmg/*.dmg dmg/UniRay-macos-${{ matrix.arch }}.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uniray-macos-${{ matrix.arch }}
+          path: dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+  gateway:
+    name: MikroTik gateway
+    runs-on: [self-hosted, uniray]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-musleabihf,aarch64-unknown-linux-musl
+      # Zig cross-compiles the C in the dependencies (ring) for musl; cargo-zigbuild
+      # finds it as `python3 -m ziglang`. In a venv kept on the runner: the
+      # system Python refuses pip installs (PEP 668).
+      - name: Zig
+        timeout-minutes: 15
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          # binutils: readelf, which checks naive's libraries.
+          sudo apt-get -o Acquire::Retries=3 install -y python3-venv binutils
+          venv="$HOME/.cache/uniray-ci/zig"
+          [ -x "$venv/bin/python3" ] || python3 -m venv "$venv"
+          "$venv/bin/pip" install -q ziglang==0.16.0
+          echo "$venv/bin" >> "$GITHUB_PATH"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - uses: docker/setup-buildx-action@v3
+      # The engine, for AmneziaWG/WireGuard servers.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+          cache: false
+
+      # Images RouterOS imports as files: build/uniray-gateway-<arch>.tar and
+      # -lowmem.tar (the engine with bounded buffers, for a 64 MB container).
+      - name: Build
+        run: |
+          rm -f build/uniray-gateway-*.tar
+          bash scripts/build-gateway.sh linux/arm/v7 linux/arm64
+        env:
+          # fetch-naive.sh, should the pinned naive change.
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uniray-gateway
+          path: build/uniray-gateway-*.tar
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Release
+    # Without macOS when its runner could not build it.
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') && !cancelled() &&
+      needs.linux.result == 'success' && needs.windows.result == 'success' &&
+      needs.android.result == 'success' && needs.gateway.result == 'success'
+    needs: [linux, windows, macos, android, gateway]
+    runs-on: [self-hosted, uniray]
+    permissions:
+      contents: write
+    steps:
+      - run: rm -rf dist
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true

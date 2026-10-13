@@ -5,4 +5,8 @@
     <string name="vpn_speed">↓ %1$s/с  ↑ %2$s/с</string>
     <string name="vpn_latency">%1$d мс</string>
     <string name="vpn_no_connection">нет связи</string>
+    <string name="qs_tile_label">UniRay</string>
+    <string name="qs_tile_disconnected">Отключено</string>
+    <string name="qs_tile_connecting">Подключение…</string>
+    <string name="qs_tile_disconnecting">Отключение…</string>
 </resources>

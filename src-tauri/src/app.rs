@@ -29,6 +29,12 @@ pub struct Paths {
     pub xray: PathBuf,
     #[cfg(desktop)]
     pub helper: PathBuf,
+    /// Runs the servers Xray cannot (WireGuard, AmneziaWG), see `core::engine`.
+    #[cfg(desktop)]
+    pub engine: PathBuf,
+    /// NaiveProxy's client, which the engine runs for a Naive server.
+    #[cfg(desktop)]
+    pub naive: PathBuf,
 }
 
 pub struct App {
@@ -43,10 +49,16 @@ pub struct App {
     pub generation: AtomicU64,
     pub logs: Mutex<VecDeque<LogLine>>,
     pub testing: AtomicBool,
+    /// Running on a TV (Android TV / Google TV): the frontend switches to its
+    /// remote-control layout. Set once the device info is in.
+    pub tv: AtomicBool,
+    /// The TV's import page while its dialog is open (handoff.rs).
+    pub handoff: Mutex<Option<crate::handoff::Handoff>>,
     /// The latest traffic sample of the live connection.
     pub traffic: Mutex<Traffic>,
     /// Connection checker and system UI presenter, see `monitor`.
     pub monitor: Mutex<Option<(JoinHandle<()>, JoinHandle<()>)>>,
+    pub visible: AtomicBool,
     pub paths: Paths,
     /// Direct HTTP client, ignoring any proxy environment.
     pub http: reqwest::Client,
@@ -62,8 +74,11 @@ impl App {
             generation: AtomicU64::new(0),
             logs: Mutex::new(VecDeque::new()),
             testing: AtomicBool::new(false),
+            tv: AtomicBool::new(false),
+            handoff: Mutex::new(None),
             traffic: Mutex::new(Traffic::default()),
             monitor: Mutex::new(None),
+            visible: AtomicBool::new(true),
             paths,
             http: reqwest::Client::builder()
                 .no_proxy()
@@ -106,6 +121,8 @@ pub struct Snapshot {
     pub platform: &'static str,
     /// A delay test is in progress.
     pub testing: bool,
+    /// A TV: remote-control layout.
+    pub tv: bool,
 }
 
 pub fn snapshot(app: &AppHandle) -> Snapshot {
@@ -127,10 +144,13 @@ pub fn snapshot(app: &AppHandle) -> Snapshot {
         version: device.app_version.clone(),
         platform: std::env::consts::OS,
         testing: state.testing.load(Ordering::Relaxed),
+        tv: state.tv.load(Ordering::Relaxed),
     }
 }
 
 /// Tells the frontend that the state changed.
 pub fn emit_state(app: &AppHandle) {
     let _ = app.emit(STATE_EVENT, snapshot(app));
+    #[cfg(desktop)]
+    crate::tray::refresh(app);
 }

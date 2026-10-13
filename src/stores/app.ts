@@ -39,8 +39,11 @@ export const useAppStore = defineStore("app", () => {
   const connection = computed(() => snapshot.value?.connection ?? null);
   const status = computed(() => connection.value?.status ?? "disconnected");
   const isDesktop = computed(() => !["android", "ios"].includes(snapshot.value?.platform ?? ""));
-  /** TUN needs the elevated helper: pkexec on Linux, UAC on Windows. */
-  const tunSupported = computed(() => ["linux", "windows"].includes(snapshot.value?.platform ?? ""));
+  /** Android TV: D-pad navigation and the 10-foot layout. */
+  const isTv = computed(() => snapshot.value?.tv === true);
+  /** TUN needs the elevated helper: pkexec on Linux, UAC on Windows, the
+   * administrator prompt on macOS. */
+  const tunSupported = computed(() => ["linux", "windows", "macos"].includes(snapshot.value?.platform ?? ""));
 
   /** The server a connection would use: the selected one, else the first. */
   const selectedServer = computed<Server | null>(() => {
@@ -86,7 +89,7 @@ export const useAppStore = defineStore("app", () => {
     const { t, te } = i18n.global;
     const key = `errors.${error.code}`;
     const title = te(key) ? t(key) : t("errors.other");
-    const detailed = ["core", "network", "http", "invalidLink", "invalidConfig", "invalidSettings", "other", "io"];
+    const detailed = ["core", "coreStopped", "teardown", "network", "http", "invalidLink", "invalidConfig", "invalidSettings", "other", "io"];
     return detailed.includes(error.code) && error.message ? `${title}: ${error.message}` : title;
   }
 
@@ -127,6 +130,7 @@ export const useAppStore = defineStore("app", () => {
     connection,
     status,
     isDesktop,
+    isTv,
     tunSupported,
     selectedServer,
     traffic,

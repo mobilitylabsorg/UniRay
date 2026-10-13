@@ -4,7 +4,7 @@
 use std::sync::atomic::Ordering;
 
 use tauri::{AppHandle, Manager};
-use uniray_core::model::Settings;
+use uniray_core::model::{Server, Settings};
 use uniray_core::subscription;
 
 use crate::app::{emit_state, snapshot, App, Snapshot};
@@ -100,6 +100,11 @@ pub async fn update_subscription(app: AppHandle, id: String) -> CmdResult<Import
 }
 
 #[tauri::command]
+pub async fn update_all_subscriptions(app: AppHandle) -> CmdResult<Vec<ImportReport>> {
+    subscriptions::update_all(&app).await
+}
+
+#[tauri::command]
 pub async fn delete_subscription(app: AppHandle, id: String) -> CmdResult<()> {
     let state = app.state::<App>();
     let active_belongs = {
@@ -154,6 +159,8 @@ fn affects_core(settings: &Settings) -> Settings {
         send_hwid: false,
         locale: None,
         selected_server: None,
+        // Applied to the running tunnel without a reconnect (set_keep_awake).
+        keep_awake: false,
         ..settings.clone()
     }
 }
@@ -178,11 +185,11 @@ pub async fn test_delays(app: AppHandle, ids: Option<Vec<String>>) -> CmdResult<
     }
     let servers = {
         let mut store = state.store.lock().unwrap();
-        let wanted = |id: &String| ids.as_ref().is_none_or(|ids| ids.contains(id));
-        for server in store.data.servers.iter_mut().filter(|server| wanted(&server.id)) {
+        let wanted = |server: &Server| ids.as_ref().is_none_or(|ids| ids.contains(&server.id));
+        for server in store.data.servers.iter_mut().filter(|server| wanted(server)) {
             server.delay_ms = None;
         }
-        store.data.servers.iter().filter(|server| wanted(&server.id)).cloned().collect::<Vec<_>>()
+        store.data.servers.iter().filter(|server| wanted(server)).cloned().collect::<Vec<_>>()
     };
     emit_state(&app);
 
@@ -256,6 +263,55 @@ pub async fn request_shizuku(app: AppHandle) -> CmdResult<serde_json::Value> {
 #[tauri::command]
 pub async fn request_shizuku() -> CmdResult<serde_json::Value> {
     Ok(serde_json::json!({ "level": "none", "shizukuAvailable": false, "shizukuGranted": false }))
+}
+
+/// Starts the TV's import page (handoff.rs) and returns its URL, for the
+/// QR code. Whatever is sent there is imported like pasted text; the
+/// frontend hears of it through the `handoff` event.
+#[cfg(mobile)]
+#[tauri::command]
+pub async fn handoff_start(app: AppHandle) -> CmdResult<String> {
+    use tauri::Emitter;
+    let ip = core::lan_address(&app).await?;
+    let handle = app.clone();
+    let handoff = crate::handoff::start(ip, move |text| {
+        let report = tauri::async_runtime::block_on(import(handle.clone(), text)).map_err(|err| err.message)?;
+        let added = report.added;
+        let _ = handle.emit("handoff", report);
+        Ok(added)
+    })
+    .map_err(|err| CmdError::new("handoff", err))?;
+    let url = handoff.url.clone();
+    *app.state::<App>().handoff.lock().unwrap() = Some(handoff);
+    Ok(url)
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn handoff_start() -> CmdResult<String> {
+    Err(CmdError::new("unsupported", "importing from a phone is for the TV app"))
+}
+
+/// Stops the TV's import page, if it is up.
+#[tauri::command]
+pub fn handoff_stop(app: AppHandle) {
+    app.state::<App>().handoff.lock().unwrap().take();
+}
+
+/// Applies the "stay awake with the screen off" setting to the running
+/// tunnel and, when turning it on, asks for the battery optimization
+/// exemption. Android only.
+#[cfg(mobile)]
+#[tauri::command]
+pub async fn set_keep_awake(app: AppHandle, enabled: bool) -> CmdResult<serde_json::Value> {
+    core::set_keep_awake(&app, enabled).await
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn set_keep_awake(enabled: bool) -> CmdResult<serde_json::Value> {
+    let _ = enabled;
+    Ok(serde_json::json!({ "batteryExempt": true }))
 }
 
 /// Checks that traffic gets through the tunnel, and where it comes out.

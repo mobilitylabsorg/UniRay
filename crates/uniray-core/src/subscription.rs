@@ -166,8 +166,12 @@ pub fn parse_body(body: &str) -> (Vec<Server>, Vec<String>) {
 }
 
 fn parse_plain(text: &str) -> Option<(Vec<Server>, Vec<String>)> {
-    if text.starts_with('[') || text.starts_with('{') {
-        let doc: Value = serde_json::from_str(text).ok()?;
+    // A pasted WireGuard/AmneziaWG `.conf` starts with `[Interface]`, which
+    // is not JSON: only text that parses as JSON is taken for a config.
+    if let Some(doc) = (text.starts_with('[') || text.starts_with('{'))
+        .then(|| serde_json::from_str::<Value>(text).ok())
+        .flatten()
+    {
         let configs = match doc {
             Value::Array(configs) => configs,
             config => vec![config],
@@ -182,7 +186,8 @@ fn parse_plain(text: &str) -> Option<(Vec<Server>, Vec<String>)> {
         }
         return Some((servers, errors));
     }
-    if text.lines().any(|line| links::is_link(line.trim())) {
+    let has_conf = text.lines().any(|line| line.trim().eq_ignore_ascii_case("[interface]"));
+    if has_conf || text.lines().any(|line| links::is_link(line.trim())) {
         let imported = links::parse_many(text);
         return Some((imported.servers, imported.errors));
     }

@@ -13,6 +13,7 @@ fn proxy_runtime() -> Runtime {
         mixed_port: Some(10808),
         metrics_port: Some(10809), metrics_socket: None,
         log: LogSink::Files { error: "/tmp/error.log".into(), access: "/tmp/access.log".into() },
+        engine: None,
     }
 }
 
@@ -148,7 +149,8 @@ fn transparent_inbound_captures_with_tproxy_and_shares_the_routing() {
     assert_eq!(tags(&config, "inbounds"), ["tun"]);
     let inbound = &config["inbounds"][0];
     assert_eq!(inbound["protocol"], "dokodemo-door");
-    assert_eq!(inbound["listen"], "0.0.0.0");
+    // Not reachable from the network.
+    assert_eq!(inbound["listen"], "127.0.0.1");
     assert_eq!(inbound["port"], 12345);
     assert_eq!(inbound["settings"], json!({ "network": "tcp,udp", "followRedirect": true }));
     assert_eq!(inbound["streamSettings"]["sockopt"]["tproxy"], "tproxy");
@@ -311,6 +313,28 @@ fn gateway_tun_routes_only_the_given_prefixes() {
 }
 
 #[test]
+fn routed_tun_leaves_routing_to_the_caller() {
+    let server = parse_link(VLESS).unwrap();
+    let runtime = Runtime { tun: Some(Tun::Routed { name: "uniray0".into() }), mixed_port: None, ..proxy_runtime() };
+    let config = build(&server, &Settings::default(), &runtime).unwrap().config;
+    let tun = &config["inbounds"][0];
+    assert_eq!(tun["tag"], "tun");
+    assert_eq!(tun["settings"]["name"], "uniray0");
+    // IPv6 off by default: only the v4 address, so systems without IPv6 work.
+    assert_eq!(tun["settings"]["gateway"], json!([TUN_ADDRESS_V4]));
+    // No routes and no interface binding: Android's policy routing is the
+    // caller's to set up, and Xray's automatic setup would get it wrong.
+    assert!(tun["settings"].get("autoSystemRoutingTable").is_none());
+    assert!(tun["settings"].get("autoOutboundsInterface").is_none());
+    // DNS arriving through the tunnel is still answered by the core.
+    assert_eq!(config["routing"]["rules"][0]["outboundTag"], "dns-out");
+
+    let settings = Settings { ipv6: true, ..Default::default() };
+    let config = build(&server, &settings, &runtime).unwrap().config;
+    assert_eq!(config["inbounds"][0]["settings"]["gateway"], json!([TUN_ADDRESS_V4, TUN_ADDRESS_V6]));
+}
+
+#[test]
 fn proxy_everything_drops_split_routing_and_geodata() {
     let mut config = json!({
         "outbounds": [
@@ -460,6 +484,7 @@ fn metrics_can_live_on_a_unix_socket() {
         metrics_port: Some(10809),
         metrics_socket: Some("/data/user/0/app/files/run/m.sock".into()),
         log: LogSink::Stdout,
+        engine: None,
     };
     let config = build(&server, &Settings::default(), &runtime).unwrap().config;
     // No port anywhere: the metrics service is reached through the socket.
@@ -468,4 +493,101 @@ fn metrics_can_live_on_a_unix_socket() {
     assert_eq!(config["inbounds"][1]["listen"], "/data/user/0/app/files/run/m.sock");
     assert_eq!(config["routing"]["rules"][0], json!({ "inboundTag": ["uniray-metrics"], "outboundTag": "metrics" }));
     assert_eq!(config["policy"]["system"]["statsOutboundUplink"], true);
+}
+
+fn engine_server() -> Server {
+    let conf = "[Interface]\nPrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\nAddress = 10.8.0.2/32\nJc = 4\n\
+                [Peer]\nPublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\nEndpoint = 203.0.113.9:51820\nAllowedIPs = 0.0.0.0/0\n";
+    crate::wireguard::server_from_conf(conf).unwrap()
+}
+
+fn engine(block_udp: bool) -> Engine {
+    Engine {
+        port: 40123,
+        user: "u".into(),
+        pass: "p".into(),
+        bypass: vec![Bypass { addr: "203.0.113.9:51820".parse().unwrap(), network: "udp" }],
+        block_udp,
+        sniff_excluded: Vec::new(),
+    }
+}
+
+#[test]
+fn engine_servers_go_through_a_socks_outbound() {
+    let server = engine_server();
+    // Without its engine there is nothing to build.
+    assert!(build(&server, &Settings::default(), &proxy_runtime()).is_err());
+
+    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into() }), engine: Some(engine(false)), ..proxy_runtime() };
+    let built = build(&server, &Settings::default(), &runtime).unwrap();
+    let config = built.config;
+    assert_eq!(built.proxy_tags, ["proxy"]);
+    assert_eq!(
+        config["outbounds"][0],
+        json!({ "tag": "proxy", "protocol": "socks", "sendThrough": "127.0.0.1",
+                "settings": { "address": "127.0.0.1", "port": 40123, "user": "u", "pass": "p" } })
+    );
+    let rules = config["routing"]["rules"].as_array().unwrap();
+    // The engine's own packets to the server leave directly, right after the
+    // DNS hijack, ahead of every user rule.
+    assert_eq!(rules[0]["port"], "53");
+    assert_eq!(
+        rules[1],
+        json!({ "ip": ["203.0.113.9/32"], "port": "51820", "network": "udp", "outboundTag": "direct" })
+    );
+    assert!(!rules.iter().any(|rule| rule["outboundTag"] == "block" && rule["network"] == "udp"));
+    // Nothing to keep from sniffing.
+    assert!(config["inbounds"].as_array().unwrap().iter().all(|inbound| inbound["sniffing"].get("domainsExcluded").is_none()));
+}
+
+#[test]
+fn the_tun_leaves_the_engine_servers_address_out() {
+    let tun_routes = |engine: Engine| {
+        let runtime = Runtime { tun: Some(Tun::Managed { name: "utun9".into() }), engine: Some(engine), ..proxy_runtime() };
+        let config = build(&engine_server(), &Settings::default(), &runtime).unwrap().config;
+        let tun = config["inbounds"].as_array().unwrap().iter().find(|inbound| inbound["tag"] == "tun").unwrap().clone();
+        serde_json::from_value::<Vec<String>>(tun["settings"]["autoSystemRoutingTable"].clone()).unwrap()
+    };
+    let routes = tun_routes(engine(false));
+    let covered = |ip: &str| routes.iter().any(|route| crate::routes::covers(route, ip.parse().unwrap()));
+    assert!(!covered("203.0.113.9"), "the engine's server goes the system's way");
+    assert!(covered("203.0.113.8") && covered("1.1.1.1") && covered("2606:4700::1111"));
+    assert_eq!(tunnel_routes(None), ["0.0.0.0/0", "::/0"]);
+}
+
+#[test]
+fn sniffing_keeps_the_engine_servers_address() {
+    // naive's own TLS to the server carries its name; sniffed, the name would
+    // replace the address the bypass rule matches, and the connection would go
+    // to the proxy: back into the engine.
+    let engine = Engine { sniff_excluded: vec!["naive.example.com".into()], ..engine(true) };
+    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into() }), engine: Some(engine), ..proxy_runtime() };
+    let config = build(&engine_server(), &Settings::default(), &runtime).unwrap().config;
+    let inbounds = config["inbounds"].as_array().unwrap();
+    assert!(inbounds.iter().any(|inbound| inbound["tag"] == "tun"));
+    for inbound in inbounds.iter().filter(|inbound| inbound.get("sniffing").is_some()) {
+        assert_eq!(inbound["sniffing"]["domainsExcluded"], json!(["naive.example.com"]), "{}", inbound["tag"]);
+    }
+}
+
+#[test]
+fn engine_without_udp_blocks_it_last() {
+    let runtime = Runtime { engine: Some(engine(true)), ..proxy_runtime() };
+    let config = build(&engine_server(), &Settings::default(), &runtime).unwrap().config;
+    let rules = config["routing"]["rules"].as_array().unwrap();
+    assert_eq!(rules.last().unwrap(), &json!({ "network": "udp", "outboundTag": "block" }));
+    // The default remote DNS (DoH) needs no UDP.
+    assert_eq!(config["dns"]["servers"].as_array().unwrap().last().unwrap(), "https://1.1.1.1/dns-query");
+
+    // Plain DNS through the proxy goes over TCP then.
+    for (remote, expected) in [("8.8.8.8", "tcp://8.8.8.8"), ("udp://9.9.9.9:53", "tcp://9.9.9.9:53"), ("tcp://1.0.0.1", "tcp://1.0.0.1")] {
+        let settings = Settings { remote_dns: remote.into(), ..Settings::default() };
+        let config = build(&engine_server(), &settings, &runtime).unwrap().config;
+        assert_eq!(config["dns"]["servers"].as_array().unwrap().last().unwrap(), expected);
+    }
+    // Not when UDP goes through.
+    let settings = Settings { remote_dns: "8.8.8.8".into(), ..Settings::default() };
+    let runtime = Runtime { engine: Some(engine(false)), ..proxy_runtime() };
+    let config = build(&engine_server(), &settings, &runtime).unwrap().config;
+    assert_eq!(config["dns"]["servers"].as_array().unwrap().last().unwrap(), "8.8.8.8");
 }

@@ -130,6 +130,7 @@ fn traffic_flows_and_is_counted() {
         mixed_port: Some(mixed_port),
         metrics_port: Some(metrics_port), metrics_socket: None,
         log: LogSink::Stdout,
+        engine: None,
     };
     let built = build(&server, &settings, &runtime).unwrap();
     let _client = start_xray(&xray, &dir, "client.json", &built.config);
@@ -157,6 +158,54 @@ fn traffic_flows_and_is_counted() {
         assert!(Instant::now() < deadline, "no traffic counted: {}", vars["stats"]);
         thread::sleep(Duration::from_millis(100));
     }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The counters socket (Android) is a tunnel inbound, which Xray closes only
+/// after the client ends its side. A reader that waits for EOF must do so.
+#[cfg(unix)]
+#[test]
+fn metrics_socket_answers_and_closes() {
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+
+    let Ok(xray) = std::env::var("UNIRAY_XRAY_BIN") else {
+        eprintln!("UNIRAY_XRAY_BIN is not set, skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("uniray-xray-sock-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("m.sock");
+
+    let server = parse_link(&format!("vless://{UUID}@127.0.0.1:{}?type=tcp&security=none#local", free_port())).unwrap();
+    let runtime = Runtime {
+        tun: None,
+        mixed_port: Some(free_port()),
+        metrics_port: None,
+        metrics_socket: Some(socket.to_string_lossy().into_owned()),
+        log: LogSink::Stdout,
+        engine: None,
+    };
+    let settings = Settings { routing_preset: RoutingPreset::Global, ..Default::default() };
+    let built = build(&server, &settings, &runtime).unwrap();
+    let _client = start_xray(&xray, &dir, "client.json", &built.config);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut stream = loop {
+        match UnixStream::connect(&socket) {
+            Ok(stream) => break stream,
+            Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+            Err(err) => panic!("metrics socket did not open: {err}"),
+        }
+    };
+    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    stream.write_all(b"GET /debug/vars HTTP/1.0\r\nHost: localhost\r\n\r\n").unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).expect("the core closes the socket after answering");
+    assert!(response.starts_with("HTTP/1.0 200"), "unexpected response: {response}");
+    assert!(response.contains("\"stats\""), "no stats in: {response}");
 
     std::fs::remove_dir_all(&dir).ok();
 }

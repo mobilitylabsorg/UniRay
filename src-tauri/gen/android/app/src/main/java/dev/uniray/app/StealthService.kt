@@ -5,14 +5,18 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.text.format.Formatter
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -30,11 +34,13 @@ import org.json.JSONObject
  * shell ([PrivilegedShell]). Two ways in:
  *
  *  - **tproxy** (primary): iptables TPROXY rules hand TCP+UDP to a
- *    dokodemo-door inbound. No interface at all, so `tun0`, `TRANSPORT_VPN`
- *    and the VpnService record an on-device scanner looks for are all absent.
- *  - **roottun** (fallback): Xray, being root, creates its own TUN and
- *    installs the routes itself (the desktop "managed" path). The interface
- *    exists but under a neutral name, and there is still no VpnService.
+ *    dokodemo-door inbound on loopback, which nothing may connect to
+ *    directly. No interface at all, so `tun0`, `TRANSPORT_VPN` and the
+ *    VpnService record an on-device scanner looks for are all absent.
+ *  - **roottun** (fallback): the Linux build of Xray, being root, creates
+ *    its own TUN, and policy rules route into it (see [rootTunUpScript]).
+ *    The interface exists but under a neutral name, and there is still no
+ *    VpnService.
  *
  * Like [UniRayVpnService] it lives in the `:vpn` process so it outlives the
  * app's UI, keeps its own notification current, and reports across processes
@@ -45,6 +51,8 @@ class StealthService : Service() {
     const val ACTION_START = "dev.uniray.app.action.STEALTH_START"
     const val ACTION_STOP = "dev.uniray.app.action.STEALTH_STOP"
     const val ACTION_NOTIFY = "dev.uniray.app.action.STEALTH_NOTIFY"
+    /** Turns the "stay awake" wake lock on or off ([UniRayVpnService.EXTRA_ENABLED]). */
+    const val ACTION_KEEP_AWAKE = "dev.uniray.app.action.STEALTH_KEEP_AWAKE"
     const val EXTRA_REQUEST = "request"
     const val EXTRA_SERVER = "server"
     const val EXTRA_LATENCY = "latencyMs"
@@ -66,8 +74,25 @@ class StealthService : Service() {
     private const val TABLE = "7847"
     private const val CHAIN_PRE = "UNIRAY_PRE"
     private const val CHAIN_OUT = "UNIRAY_OUT"
+    // Refuses direct connections to the capture port (filter table).
+    private const val CHAIN_GUARD = "UNIRAY_GUARD"
+    // The root TUN mode's routing table, and the priority of the rule that
+    // sends everything but root's traffic to it: ahead of Android's own rules,
+    // which start at 10000 (only the local table's rule, 0, comes earlier).
+    private const val TUN_TABLE = "7848"
+    private const val TUN_RULE_PREF = "9000"
+    // Root CAs for the Linux build of Xray, which looks only in the desktop
+    // places: the updatable store (Android 14+), then the system one.
+    private const val ANDROID_CA_DIRS = "/apex/com.android.conscrypt/cacerts:/system/etc/security/cacerts"
+    /**
+     * For every Xray it launches: a Linux build (the root TUN one, and the
+     * tproxy one on 32-bit ARM) knows no Android CA store and no temp dir;
+     * the Android build reads the same and is not bothered.
+     */
+    private const val BASE_ENV = "SSL_CERT_DIR=$ANDROID_CA_DIRS"
 
     private const val REFRESH_SECONDS = 5L
+    private const val SCREEN_OFF_HEALTH_SECONDS = 60L
     private const val CHECK_INTERVAL_MS = 5 * 60 * 1000L
     private const val CHECK_URL = "https://www.cloudflare.com/cdn-cgi/trace"
     // Reads of the counters socket that fail in a row before we conclude the
@@ -77,14 +102,26 @@ class StealthService : Service() {
     fun specFile(context: Context) = File(context.filesDir, "run/stealth.json")
 
     fun stealthDir(context: Context) = File(context.filesDir, "stealth")
+
+    /**
+     * Xray for tproxy: the Android build (the static Linux one on 32-bit ARM,
+     * which has no Android build). Shipped as the native library
+     * libxray.so, copied here under this name.
+     */
+    private const val XRAY_TPROXY = "xray"
+    /** The Linux build, for the root TUN: only it creates a TUN itself (libxray_tun.so). */
+    private const val XRAY_TUN = "xray-tun"
   }
 
   private val worker = Executors.newSingleThreadExecutor()
   private val ticker = Executors.newSingleThreadScheduledExecutor()
   private var tick: ScheduledFuture<*>? = null
   @Volatile private var running = false
+  private val keepAwake by lazy { KeepAwake(applicationContext) }
   // Set once we begin stopping, so no late refresh re-posts the notification.
   @Volatile private var stopped = false
+  @Volatile private var isScreenOn = true
+  private var isReceiverRegistered = false
   private var notification: NotificationCompat.Builder? = null
 
   private var level = Privilege.NONE
@@ -99,6 +136,31 @@ class StealthService : Service() {
   private var lastTraffic: Triple<Long, Long, Long>? = null
   private var missedReads = 0
 
+  private val screenReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent?) {
+      when (intent?.action) {
+        Intent.ACTION_SCREEN_OFF -> {
+          isScreenOn = false
+          keepAwake.onScreenStateChanged(false)
+          // Screen turned off: switch to slow health check without waking system_server with notifications
+          pauseTickerAndStartSlowHealth()
+        }
+        Intent.ACTION_SCREEN_ON -> {
+          isScreenOn = true
+          keepAwake.onScreenStateChanged(true)
+          // Screen turned on: immediately refresh notification once and resume 5s ticker
+          submitRefresh()
+          resumeTicker()
+        }
+      }
+    }
+  }
+
+  override fun onCreate() {
+    super.onCreate()
+    registerScreenReceiver()
+  }
+
   override fun onBind(intent: Intent?): IBinder? = null
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -106,6 +168,15 @@ class StealthService : Service() {
     when (intent?.action) {
       ACTION_STOP -> {
         worker.execute { shutdown(request) }
+        return START_NOT_STICKY
+      }
+      ACTION_KEEP_AWAKE -> {
+        val enabled = intent.getBooleanExtra(UniRayVpnService.EXTRA_ENABLED, false)
+        try {
+          worker.execute { if (running) keepAwake.set(enabled) }
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+          // Being destroyed: the wake lock goes with the tunnel anyway.
+        }
         return START_NOT_STICKY
       }
       ACTION_NOTIFY -> {
@@ -130,23 +201,25 @@ class StealthService : Service() {
           e.message ?: e.toString()
         }
       if (error != null) {
-        shutdown(null)
+        shutdown(request, error)
       } else {
-        startTicker()
+        if (isScreenOn) startTicker() else pauseTickerAndStartSlowHealth()
+        VpnState.write(this, true, request, null)
       }
-      VpnState.write(this, error == null, request, error)
     }
     return START_NOT_STICKY
   }
 
   override fun onDestroy() {
+    unregisterScreenReceiver()
     stopped = true
+    keepAwake.release()
     tick?.cancel(false)
     ticker.shutdown()
     worker.execute {
       if (running) {
-        stopCore()
-        VpnState.write(this, false, null, null)
+        val left = stopCore()
+        VpnState.write(this, false, null, left)
       }
     }
     worker.shutdown()
@@ -170,59 +243,99 @@ class StealthService : Service() {
     missedReads = 0
 
     if (!level.canStealth) return "stealth needs root; this device offers none"
+    // This service lives in :vpn, where Shizuku's binder does not arrive on its own.
+    if (level == Privilege.SHIZUKU_ROOT) PrivilegedShell.ensureShizukuBinder(this)
 
     val dir = installAssets()
     val configFile = File(dir, "config.json").apply { writeText(config) }
     val port = spec.optInt("port", 12345)
     val ipv6 = spec.optBoolean("ipv6", false)
+    val tunName = spec.optString("tunName").ifEmpty { "uniray0" }
+
+    // Whatever an earlier run left behind (a crash, a lost teardown) would
+    // otherwise sit in front of the new rules.
+    PrivilegedShell.execPrivileged(level, downScript())
+    rules(level)?.let { rulesBeforeFile().writeText(it.joinToString("\n")) }
+    // After the cleanup, which removes an engine config it finds.
+    val engine = engineScript(dir, spec, config)
 
     val up =
-      if (mode == MODE_ROOT_TUN) rootTunUpScript(dir, configFile)
-      else tproxyUpScript(dir, configFile, port, ipv6)
+      if (mode == MODE_ROOT_TUN) rootTunUpScript(dir, configFile, tunName, ipv6, engine)
+      else tproxyUpScript(dir, configFile, port, ipv6, engine)
     val result = PrivilegedShell.execPrivileged(level, up)
     if (!result.ok) {
       Log.e(TAG, "stealth up failed: ${result.errText()}")
       // Leave nothing half-set-up behind.
-      PrivilegedShell.execPrivileged(level, downScript(ipv6))
+      PrivilegedShell.execPrivileged(level, downScript())
       return "could not set up the stealth tunnel: ${result.errText().take(200)}"
     }
     running = true
+    // Xray and the engine run as root here, but they still sleep when the
+    // device does; the wake lock is held by this, the app's, process.
+    keepAwake.start(spec.optBoolean("keepAwake"))
     return null
   }
 
-  private fun stopCore() {
+  /**
+   * Tears the tunnel down and checks that nothing of it is left: a rule left
+   * in place sends all traffic to a core that is gone, which takes the whole
+   * connection with it. Returns what could not be removed, if anything.
+   */
+  private fun stopCore(): String? {
     val spec = try {
       JSONObject(specFile(this).readText())
     } catch (e: Exception) {
       null
     }
-    val ipv6 = spec?.optBoolean("ipv6", false) ?: false
     // The teardown must run even in a fresh process that never ran startCore
     // (so `level` is NONE) - otherwise the iptables rules, routes and the root
     // xray leak. Recover the level from the spec, or re-detect, as a fallback.
     var lvl = level
     if (!lvl.canStealth) lvl = parseLevel(spec?.optString("privilege").orEmpty())
+    if (!lvl.canStealth || lvl == Privilege.SHIZUKU_ROOT) PrivilegedShell.ensureShizukuBinder(this)
     if (!lvl.canStealth) lvl = PrivilegedShell.detect(this).level
-    val result = PrivilegedShell.execPrivileged(lvl, downScript(ipv6))
-    if (!result.ok) Log.w(TAG, "stealth down reported: ${result.errText()}")
     running = false
+    keepAwake.release()
+    var left = ""
+    for (attempt in 1..3) {
+      val result = PrivilegedShell.execPrivileged(lvl, downScript())
+      if (!result.ok) Log.w(TAG, "stealth down reported: ${result.errText()}")
+      val check = PrivilegedShell.execPrivileged(lvl, leftoversScript())
+      left = if (check.ok) check.outText().trim() else "unknown (${check.errText().take(100)})"
+      if (left.isEmpty()) {
+        logRuleChanges(lvl, spec)
+        return null
+      }
+      Log.w(TAG, "stealth teardown left: $left (attempt $attempt)")
+      Thread.sleep(500)
+    }
+    return "could not remove the stealth network setup (${left.replace('\n', ',')}); restart the phone to clear it"
   }
 
-  private fun shutdown(request: String?) {
+  /** Stops everything; [request] is the stop request being answered, if any,
+   * and [reason] why the tunnel went down when nobody asked. */
+  private fun shutdown(request: String?, reason: String? = null) {
     stopped = true
     tick?.cancel(false)
-    stopCore()
+    val teardown = stopCore()
     clearNotification()
-    VpnState.write(this, false, request, null)
+    VpnState.write(this, false, request, teardown ?: reason)
     stopSelf()
   }
 
   /**
-   * Removes the notification for good, on the ticker thread after any queued
-   * refresh, so nothing re-posts it; [stopped] blocks later refreshes.
+   * Removes the notification for good. Runs the removal on the ticker thread,
+   * after any refresh already running or queued there, so nothing re-posts it
+   * afterwards; [stopped] keeps later refreshes from posting at all. The
+   * ticker itself keeps running: this instance may be started again, and only
+   * [onDestroy] shuts it down.
    */
   private fun clearNotification() {
+    stopped = true
     val drop = Runnable {
+      // Started again meanwhile: the notification is the new run's.
+      if (!stopped) return@Runnable
+      notification = null
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
         stopForeground(STOP_FOREGROUND_REMOVE)
       } else {
@@ -232,8 +345,8 @@ class StealthService : Service() {
     }
     try {
       ticker.execute(drop)
-      ticker.shutdown()
     } catch (e: java.util.concurrent.RejectedExecutionException) {
+      // The ticker is shut down already (onDestroy): nothing can re-post.
       drop.run()
     }
   }
@@ -248,7 +361,7 @@ class StealthService : Service() {
     }
   }
 
-  /** Unpacks the standalone xray binary and the geo databases into the app's
+  /** Unpacks the standalone xray binaries and the geo databases into the app's
    * private dir, once per installed version. Returns the stealth dir. */
   private fun installAssets(): File {
     val dir = stealthDir(this).apply { mkdirs() }
@@ -257,10 +370,15 @@ class StealthService : Service() {
     val version = packageManager.getPackageInfo(packageName, 0).lastUpdateTime.toString()
     if (stamp.exists() && stamp.readText() == version) return dir
 
-    val xray = File(dir, "xray")
-    assets.open("stealth/xray").use { input -> xray.outputStream().use { input.copyTo(it) } }
-    xray.setExecutable(true, false)
-    xray.setReadable(true, false)
+    // Native libraries of this APK's ABI, extracted at install
+    // (scripts/fetch-xray-android.sh); run from a copy in the private dir.
+    val libs = File(applicationInfo.nativeLibraryDir)
+    for ((name, lib) in listOf(XRAY_TPROXY to "libxray.so", XRAY_TUN to "libxray_tun.so")) {
+      val xray = File(dir, name)
+      File(libs, lib).inputStream().use { input -> xray.outputStream().use { input.copyTo(it) } }
+      xray.setExecutable(true, false)
+      xray.setReadable(true, false)
+    }
     for (name in listOf("geoip.dat", "geosite.dat")) {
       assets.open(name).use { input -> File(geo, name).outputStream().use { input.copyTo(it) } }
     }
@@ -274,100 +392,313 @@ class StealthService : Service() {
   // idempotent (every delete tolerates "not there").
 
   private fun paths(dir: File) =
-    Triple(File(dir, "xray").absolutePath, File(filesDir, "geo").absolutePath, File(dir, "xray.pid").absolutePath)
+    Pair(File(filesDir, "geo").absolutePath, File(dir, "xray.pid").absolutePath)
 
-  /** Launch xray detached, wait for the counters socket, open it to the app. */
-  private fun launch(dir: File, configFile: File): String {
-    val (xray, geo, pid) = paths(dir)
+  /**
+   * Launch [binary] (one of the xray builds in [dir]) detached with [env] in
+   * front, wait for the counters socket, open it to the app.
+   */
+  private fun launch(dir: File, configFile: File, binary: String = XRAY_TPROXY, env: String = ""): String {
+    val (geo, pid) = paths(dir)
+    val xray = File(dir, binary).absolutePath
     val log = File(dir, "xray.log").absolutePath
     val sock = metricsSocket
     return """
       cd ${dir.absolutePath}
-      XRAY_LOCATION_ASSET=$geo setsid $xray run -c ${configFile.absolutePath} >$log 2>&1 &
+      # A socket or lock left by an earlier core, maybe not openable by this
+      # one; root may remove it whoever made it.
+      rm -f "$sock" "$sock.lock"
+      $env $BASE_ENV TMPDIR=${dir.absolutePath} XRAY_LOCATION_ASSET=$geo setsid $xray run -c ${configFile.absolutePath} >$log 2>&1 &
       echo ${'$'}! > $pid
-      for i in ${'$'}(seq 1 40); do [ -S "$sock" ] && chmod 666 "$sock" && break; sleep 0.1; done
+      for i in ${'$'}(seq 1 80); do [ -S "$sock" ] && chmod 666 "$sock" && break; sleep 0.1; done
+      if ! kill -0 ${'$'}(cat $pid 2>/dev/null) 2>/dev/null; then
+        echo "the core did not start:" >&2
+        tail -n 10 $log >&2
+        exit 1
+      fi
+    """.trimIndent()
+  }
+
+  /**
+   * For a WireGuard/AmneziaWG or Naive server: starts the engine as root, detached
+   * (the teardown kills it), and lets only root - Xray - reach its port; the
+   * engine itself also accepts only root's connections. Runs before Xray.
+   * Empty for the other servers.
+   */
+  private fun engineScript(dir: File, spec: JSONObject, config: String): String {
+    val mode = spec.optString("engineMode")
+    if (mode.isEmpty()) return ""
+    val port = spec.optInt("enginePort")
+    val configFile = File(dir, "engine.json").apply { writeText(Engine.withNaive(this@StealthService, spec.getString("engineConfig"))) }
+    val out = File(dir, "engine.out").absolutePath
+    val log = Engine.logFile(config, File(dir, "engine.log")).absolutePath
+    val pid = File(dir, "engine.pid").absolutePath
+    val engine = Engine.binary(this).absolutePath
+    return """
+      iptables -w -t filter -N $CHAIN_GUARD 2>/dev/null || true
+      iptables -w -t filter -C OUTPUT -j $CHAIN_GUARD 2>/dev/null || iptables -w -t filter -A OUTPUT -j $CHAIN_GUARD
+      iptables -w -t filter -A $CHAIN_GUARD -d 127.0.0.0/8 -p tcp --dport $port -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset
+      setsid $engine $mode --config ${configFile.absolutePath} </dev/null >$out 2>>$log &
+      echo ${'$'}! > $pid
+      for i in ${'$'}(seq 1 100); do grep -q '^ready ' $out 2>/dev/null && break; sleep 0.1; done
+      if ! grep -q '^ready ' $out 2>/dev/null; then
+        echo "the engine did not start:" >&2
+        tail -n 5 $log >&2
+        exit 1
+      fi
     """.trimIndent()
   }
 
   private val privateNets =
     listOf("0.0.0.0/8", "10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4", "240.0.0.0/4")
 
-  private fun tproxyUpScript(dir: File, configFile: File, port: Int, ipv6: Boolean): String {
-    val returns = privateNets.joinToString("\n") { "iptables -t mangle -A $CHAIN_PRE -d $it -j RETURN" }
-    val returnsOut = privateNets.joinToString("\n") { "iptables -t mangle -A $CHAIN_OUT -d $it -j RETURN" }
-    // Without IPv6 support, drop global unicast v6 egress so it cannot bypass
-    // the v4 tunnel. (ULA/link-local stay for on-device and LAN use.)
-    val v6 =
-      if (ipv6) ""
-      else
-        """
-        ip6tables -t filter -N $CHAIN_OUT 2>/dev/null || ip6tables -t filter -F $CHAIN_OUT
-        ip6tables -t filter -A $CHAIN_OUT -o lo -j RETURN
-        ip6tables -t filter -A $CHAIN_OUT -d fc00::/7 -j RETURN
-        ip6tables -t filter -A $CHAIN_OUT -d fe80::/10 -j RETURN
-        ip6tables -t filter -A $CHAIN_OUT -d 2000::/3 -j DROP
-        ip6tables -t filter -A OUTPUT -j $CHAIN_OUT
-        """.trimIndent()
+  /** Without IPv6 support, drops global unicast v6 egress so it cannot bypass
+   * the v4 tunnel. (ULA/link-local stay for on-device and LAN use.) */
+  private fun blockIpv6Script(ipv6: Boolean): String =
+    if (ipv6) ""
+    else
+      """
+      ip6tables -w -t filter -N $CHAIN_OUT 2>/dev/null || ip6tables -w -t filter -F $CHAIN_OUT
+      ip6tables -w -t filter -A $CHAIN_OUT -o lo -j RETURN
+      ip6tables -w -t filter -A $CHAIN_OUT -d fc00::/7 -j RETURN
+      ip6tables -w -t filter -A $CHAIN_OUT -d fe80::/10 -j RETURN
+      ip6tables -w -t filter -A $CHAIN_OUT -d 2000::/3 -j DROP
+      ip6tables -w -t filter -A OUTPUT -j $CHAIN_OUT
+      """.trimIndent()
+
+  private fun tproxyUpScript(dir: File, configFile: File, port: Int, ipv6: Boolean, engine: String): String {
+    val returns = privateNets.joinToString("\n") { "iptables -w -t mangle -A $CHAIN_PRE -d $it -j RETURN" }
+    val returnsOut = privateNets.joinToString("\n") { "iptables -w -t mangle -A $CHAIN_OUT -d $it -j RETURN" }
+    val v6 = blockIpv6Script(ipv6)
     return """
       set -e
+      # TCP kernel optimizations: BBR, preserve congestion window after idle
+      modprobe tcp_bbr 2>/dev/null || true
+      sysctl -w net.ipv4.tcp_congestion_control=bbr 2>/dev/null || true
+      sysctl -w net.core.default_qdisc=fq 2>/dev/null || true
+      sysctl -w net.ipv4.tcp_slow_start_after_idle=0 2>/dev/null || true
+
       ip rule add fwmark $MARK lookup $TABLE 2>/dev/null || true
       ip route add local 0.0.0.0/0 dev lo table $TABLE 2>/dev/null || true
 
-      iptables -t mangle -N $CHAIN_PRE 2>/dev/null || iptables -t mangle -F $CHAIN_PRE
-      iptables -t mangle -N $CHAIN_OUT 2>/dev/null || iptables -t mangle -F $CHAIN_OUT
+      iptables -w -t mangle -N $CHAIN_PRE 2>/dev/null || iptables -w -t mangle -F $CHAIN_PRE
+      iptables -w -t mangle -N $CHAIN_OUT 2>/dev/null || iptables -w -t mangle -F $CHAIN_OUT
       $returns
-      iptables -t mangle -A $CHAIN_PRE -p tcp -j TPROXY --on-port $port --tproxy-mark $MARK
-      iptables -t mangle -A $CHAIN_PRE -p udp -j TPROXY --on-port $port --tproxy-mark $MARK
-      iptables -t mangle -A PREROUTING -j $CHAIN_PRE
+      iptables -w -t mangle -A $CHAIN_PRE -p tcp -j TPROXY --on-ip 127.0.0.1 --on-port $port --tproxy-mark $MARK
+      iptables -w -t mangle -A $CHAIN_PRE -p udp -j TPROXY --on-ip 127.0.0.1 --on-port $port --tproxy-mark $MARK
+      iptables -w -t mangle -A PREROUTING -j $CHAIN_PRE
 
-      iptables -t mangle -A $CHAIN_OUT -m owner --uid-owner 0 -j RETURN
+      iptables -w -t mangle -A $CHAIN_OUT -m owner --uid-owner 0 -j RETURN
       $returnsOut
-      iptables -t mangle -A $CHAIN_OUT -p tcp -j MARK --set-mark $MARK
-      iptables -t mangle -A $CHAIN_OUT -p udp -j MARK --set-mark $MARK
-      iptables -t mangle -A OUTPUT -j $CHAIN_OUT
+      iptables -w -t mangle -A $CHAIN_OUT -p tcp -j MARK --set-mark $MARK
+      iptables -w -t mangle -A $CHAIN_OUT -p udp -j MARK --set-mark $MARK
+      iptables -w -t mangle -A OUTPUT -j $CHAIN_OUT
+
+      # The capture port takes no password: the kernel hands it connections,
+      # there is no handshake. So nothing may connect to it directly - any app
+      # could otherwise find it, and the core would dial itself. Redirected
+      # traffic keeps its real destination and never matches.
+      iptables -w -t filter -N $CHAIN_GUARD 2>/dev/null || iptables -w -t filter -F $CHAIN_GUARD
+      iptables -w -t filter -A $CHAIN_GUARD -d 127.0.0.0/8 -p tcp --dport $port -j REJECT --reject-with tcp-reset
+      iptables -w -t filter -A $CHAIN_GUARD -d 127.0.0.0/8 -p udp --dport $port -j DROP
+      iptables -w -t filter -A OUTPUT -j $CHAIN_GUARD
 
       $v6
+
+      $engine
 
       ${launch(dir, configFile)}
     """.trimIndent()
   }
 
-  private fun rootTunUpScript(dir: File, configFile: File): String {
-    // Xray creates and configures its own TUN (it has CAP_NET_ADMIN as root):
-    // nothing to set up here beyond making /dev/net/tun usable and launching.
+  /**
+   * Root TUN: the Linux build of Xray creates [tun] and gives it its
+   * addresses; this script routes into it. Android picks routes through
+   * policy rules, one table per network, so Xray's own route setup (the main
+   * table) would never be consulted. Instead a rule ahead of Android's sends
+   * everything except root's traffic to a table whose default route is the
+   * TUN. The core runs as root, so its own connections keep using Android's
+   * routing and do not loop back in, the same exemption the tproxy mode makes.
+   */
+  private fun rootTunUpScript(dir: File, configFile: File, tun: String, ipv6: Boolean, engine: String): String {
+    val log = File(dir, "xray.log").absolutePath
+    val savedRpFilter = File(dir, "rp_filter.saved").absolutePath
+    val throws = privateNets.joinToString("\n") { "ip route add throw $it table $TUN_TABLE" }
+    val v6 =
+      if (ipv6)
+        """
+        ip -6 route add default dev $tun table $TUN_TABLE
+        ip -6 route add throw fc00::/7 table $TUN_TABLE
+        ip -6 route add throw fe80::/10 table $TUN_TABLE
+        ip -6 rule add not uidrange 0-0 lookup $TUN_TABLE pref $TUN_RULE_PREF
+        """.trimIndent()
+      else blockIpv6Script(false)
     return """
       set -e
-      [ -e /dev/net/tun ] || { mkdir -p /dev/net; mknod /dev/net/tun c 10 200; }
-      ${launch(dir, configFile)}
-    """.trimIndent()
-  }
+      # TCP kernel optimizations: BBR, preserve congestion window after idle
+      modprobe tcp_bbr 2>/dev/null || true
+      sysctl -w net.ipv4.tcp_congestion_control=bbr 2>/dev/null || true
+      sysctl -w net.core.default_qdisc=fq 2>/dev/null || true
+      sysctl -w net.ipv4.tcp_slow_start_after_idle=0 2>/dev/null || true
 
-  private fun downScript(ipv6: Boolean): String {
-    val pid = File(stealthDir(this), "xray.pid").absolutePath
-    val xray = File(stealthDir(this), "xray").absolutePath
-    val v6 =
-      if (ipv6) ""
-      else
-        """
-        ip6tables -t filter -D OUTPUT -j $CHAIN_OUT 2>/dev/null || true
-        ip6tables -t filter -F $CHAIN_OUT 2>/dev/null || true
-        ip6tables -t filter -X $CHAIN_OUT 2>/dev/null || true
-        """.trimIndent()
-    return """
-      [ -f $pid ] && kill ${'$'}(cat $pid) 2>/dev/null || true
-      pkill -f "$xray run" 2>/dev/null || true
-      rm -f $pid 2>/dev/null || true
-      iptables -t mangle -D OUTPUT -j $CHAIN_OUT 2>/dev/null || true
-      iptables -t mangle -D PREROUTING -j $CHAIN_PRE 2>/dev/null || true
-      iptables -t mangle -F $CHAIN_OUT 2>/dev/null || true
-      iptables -t mangle -F $CHAIN_PRE 2>/dev/null || true
-      iptables -t mangle -X $CHAIN_OUT 2>/dev/null || true
-      iptables -t mangle -X $CHAIN_PRE 2>/dev/null || true
-      ip rule del fwmark $MARK lookup $TABLE 2>/dev/null || true
-      ip route flush table $TABLE 2>/dev/null || true
+      if ip link show $tun >/dev/null 2>&1; then
+        echo "a network interface named $tun already exists; set another interface name in Settings" >&2
+        exit 1
+      fi
+      [ -e /dev/net/tun ] || { mkdir -p /dev/net; mknod /dev/net/tun c 10 200; }
+
+      $engine
+
+      ${launch(dir, configFile, XRAY_TUN)}
+
+      for i in ${'$'}(seq 1 50); do ip link show $tun 2>/dev/null | grep -q '[<,]UP[,>]' && break; sleep 0.1; done
+      if ! ip link show $tun 2>/dev/null | grep -q '[<,]UP[,>]'; then
+        echo "the core did not bring up $tun:" >&2
+        tail -n 5 $log >&2
+        exit 1
+      fi
+
+      # Replies come in on the TUN from addresses Android routes elsewhere;
+      # strict reverse-path filtering would drop them. Relaxed to loose for
+      # the session, restored on teardown.
+      [ -f $savedRpFilter ] || cat /proc/sys/net/ipv4/conf/all/rp_filter > $savedRpFilter
+      [ "${'$'}(cat /proc/sys/net/ipv4/conf/all/rp_filter)" = 1 ] && echo 2 > /proc/sys/net/ipv4/conf/all/rp_filter
+      echo 0 > /proc/sys/net/ipv4/conf/$tun/rp_filter
+
+      ip route add default dev $tun table $TUN_TABLE
+      $throws
+      ip rule add not uidrange 0-0 lookup $TUN_TABLE pref $TUN_RULE_PREF
+
       $v6
     """.trimIndent()
   }
+
+  /**
+   * Removes everything either mode sets up, whatever mode ran and whatever
+   * the IPv6 setting was: idempotent, so it also clears what an earlier run
+   * left behind. `-w` waits for the xtables lock, which Android's netd holds
+   * often; without it a delete fails quietly and leaves traffic going to a
+   * core that is gone. Jumps are deleted until none is left, in case a rule
+   * was added twice.
+   */
+  private fun downScript(): String {
+    val pid = File(stealthDir(this), "xray.pid").absolutePath
+    val enginePid = File(stealthDir(this), "engine.pid").absolutePath
+    val dir = stealthDir(this).absolutePath
+    // The counters socket, also in a fresh process that never started.
+    val sock = metricsSocket.ifEmpty { File(applicationInfo.dataDir, "run/m.sock").absolutePath }
+    val savedRpFilter = File(stealthDir(this), "rp_filter.saved").absolutePath
+    // Order matters: the rules go first, so that traffic is the system's again
+    // before anything else can go wrong; then the processes.
+    //
+    // Every delete names what is ours exactly. A rule is matched by its table
+    // too, never by its priority alone: the system or the ROM may have rules
+    // of its own at the same priority, and deleting those cut the phone off
+    // the network until a reboot.
+    //
+    // A pid file is trusted only when the process is still ours: an old one
+    // may name a pid the system has since given to something else.
+    //
+    // The `[y]` keeps pkill from matching this very script: Shizuku runs it as
+    // `sh -c <script>`, so the script's text is the shell's command line, and
+    // a plain "…/xray run" would make pkill kill the shell running it. The
+    // bracket matches "xray", not its own spelling.
+    return """
+      while iptables -w -t mangle -D OUTPUT -j $CHAIN_OUT 2>/dev/null; do :; done
+      while iptables -w -t mangle -D PREROUTING -j $CHAIN_PRE 2>/dev/null; do :; done
+      iptables -w -t mangle -F $CHAIN_OUT 2>/dev/null || true
+      iptables -w -t mangle -F $CHAIN_PRE 2>/dev/null || true
+      iptables -w -t mangle -X $CHAIN_OUT 2>/dev/null || true
+      iptables -w -t mangle -X $CHAIN_PRE 2>/dev/null || true
+      while iptables -w -t filter -D OUTPUT -j $CHAIN_GUARD 2>/dev/null; do :; done
+      iptables -w -t filter -F $CHAIN_GUARD 2>/dev/null || true
+      iptables -w -t filter -X $CHAIN_GUARD 2>/dev/null || true
+      while ip6tables -w -t filter -D OUTPUT -j $CHAIN_OUT 2>/dev/null; do :; done
+      ip6tables -w -t filter -F $CHAIN_OUT 2>/dev/null || true
+      ip6tables -w -t filter -X $CHAIN_OUT 2>/dev/null || true
+      while ip rule del fwmark $MARK lookup $TABLE 2>/dev/null; do :; done
+      ip route flush table $TABLE 2>/dev/null || true
+      while ip rule del pref $TUN_RULE_PREF lookup $TUN_TABLE 2>/dev/null; do :; done
+      while ip -6 rule del pref $TUN_RULE_PREF lookup $TUN_TABLE 2>/dev/null; do :; done
+      ip route flush table $TUN_TABLE 2>/dev/null || true
+      ip -6 route flush table $TUN_TABLE 2>/dev/null || true
+      if [ -f $savedRpFilter ]; then cat $savedRpFilter > /proc/sys/net/ipv4/conf/all/rp_filter; rm -f $savedRpFilter; fi
+
+      ours() { [ -n "${'$'}1" ] && tr '\0' ' ' < /proc/${'$'}1/cmdline 2>/dev/null | grep -qE "${'$'}2"; }
+      for file in $pid $enginePid; do
+        p=${'$'}(cat ${'$'}file 2>/dev/null)
+        ours "${'$'}p" "$dir/xra[y]|libuniray_engin[e]" && kill ${'$'}p 2>/dev/null
+        rm -f ${'$'}file
+      done
+      pkill -f "$dir/xra[y] run" 2>/dev/null || true
+      pkill -f "$dir/xra[y]-tun run" 2>/dev/null || true
+      pkill -f "libuniray_engin[e].so" 2>/dev/null || true
+      pkill -f "libnaiv[e].so" 2>/dev/null || true
+      rm -f $dir/engine.json $dir/engine.out 2>/dev/null || true
+      # The root core's socket and its lock: the next core may run as the app
+      # (VPN mode), which could neither open nor remove root's.
+      rm -f "$sock" "$sock.lock" 2>/dev/null || true
+      true
+    """.trimIndent()
+  }
+
+  /** The routing rules, both families, for [logRuleChanges]. */
+  private fun rules(level: Privilege): List<String>? {
+    val result = PrivilegedShell.execPrivileged(level, "ip rule 2>/dev/null; ip -6 rule 2>/dev/null | sed 's/^/v6 /'")
+    return if (result.ok) result.out.map { it.trim().replace(Regex("\\s+"), " ") }.filter { it.isNotEmpty() } else null
+  }
+
+  private fun rulesBeforeFile() = File(stealthDir(this), "rules.before")
+
+  /**
+   * Compares the routing rules after a teardown with those from before the
+   * connection and reports what changed in the app's log, with whether the
+   * internet is reachable now. Nothing of ours may be left, and nothing of
+   * the system's may be missing; when the phone has no internet after a
+   * disconnect, this says why. (A change of network while connected also
+   * changes the system's rules; that shows here too.)
+   */
+  private fun logRuleChanges(level: Privilege, spec: JSONObject?) {
+    val before = try {
+      rulesBeforeFile().readLines().filter { it.isNotEmpty() }
+    } catch (e: Exception) {
+      return
+    }
+    val after = rules(level) ?: return
+    val ours = Regex("lookup ($TABLE|$TUN_TABLE)\\b")
+    val missing = before.filter { it !in after && !ours.containsMatchIn(it) }
+    val left = after.filter { ours.containsMatchIn(it) }
+    val log = spec?.optString("config")?.let { Engine.logFile(it, File(stealthDir(this), "teardown.log")) }
+    val lines = mutableListOf<String>()
+    if (missing.isNotEmpty()) lines += "[Warning] stealth: routing rules gone since connecting: ${missing.joinToString(" | ")}"
+    if (left.isNotEmpty()) lines += "[Warning] stealth: routing rules of ours left: ${left.joinToString(" | ")}"
+    val probe = PrivilegedShell.execPrivileged(level, "ip route get 1.1.1.1 2>&1 | head -1; ping -c 1 -W 3 1.1.1.1 >/dev/null 2>&1 && echo reachable || echo unreachable")
+    val reach = probe.out.map { it.trim() }.filter { it.isNotEmpty() }
+    val reachable = reach.lastOrNull() == "reachable"
+    lines += "[${if (reachable) "Info" else "Warning"}] stealth: after teardown 1.1.1.1 is ${reach.lastOrNull() ?: "unknown"} (${reach.firstOrNull().orEmpty()})"
+    Log.i(TAG, lines.joinToString("\n"))
+    try {
+      log?.appendText(lines.joinToString("\n", postfix = "\n"))
+    } catch (e: Exception) {
+      // The log is a convenience.
+    }
+    rulesBeforeFile().delete()
+  }
+
+  /** Prints what of the setup is still in place; nothing when all is gone. */
+  private fun leftoversScript(): String =
+    """
+    iptables -w -t mangle -S 2>/dev/null | grep -q -e $CHAIN_OUT -e $CHAIN_PRE && echo "iptables rules"
+    iptables -w -t filter -S 2>/dev/null | grep -q $CHAIN_GUARD && echo "iptables guard"
+    ip6tables -w -t filter -S 2>/dev/null | grep -q $CHAIN_OUT && echo "ip6tables rules"
+    ip rule 2>/dev/null | grep -qE "lookup ($TABLE|$TUN_TABLE)( |${'$'})" && echo "routing rules"
+    ip -6 rule 2>/dev/null | grep -qE "lookup $TUN_TABLE( |${'$'})" && echo "IPv6 routing rules"
+    pgrep -f "xra[y] run" >/dev/null 2>&1 && echo "xray"
+    pgrep -f "xra[y]-tun run" >/dev/null 2>&1 && echo "xray-tun"
+    pgrep -f "libuniray_engin[e].so" >/dev/null 2>&1 && echo "the engine"
+    pgrep -f "libnaiv[e].so" >/dev/null 2>&1 && echo "naive"
+    true
+    """.trimIndent()
 
   private fun parseLevel(name: String): Privilege =
     try {
@@ -378,13 +709,89 @@ class StealthService : Service() {
 
   // --- Notification (mirrors the VPN service) -------------------------------
 
+  private fun resumeTicker() {
+    if (running && !stopped && isScreenOn) {
+      startTicker()
+    }
+  }
+
+  private fun pauseTickerAndStartSlowHealth() {
+    tick?.cancel(false)
+    if (!running || stopped) {
+      tick = null
+      return
+    }
+    // With screen off, check root core health only once a minute without
+    // updating notification or waking system_server/SystemUI.
+    tick = ticker.scheduleWithFixedDelay(
+      {
+        try {
+          if (isScreenOn || stopped || !running) return@scheduleWithFixedDelay
+          val traffic = TunnelMetrics.readTraffic(metricsSocket, proxyTags)
+          if (traffic == null) {
+            if (++missedReads >= DEAD_AFTER_MISSES) {
+              Log.w(TAG, "stealth core stopped answering while screen off; shutting down")
+              worker.execute { shutdown(null, "the stealth core stopped responding") }
+            }
+          } else {
+            missedReads = 0
+          }
+        } catch (e: Exception) {
+          Log.w(TAG, "stealth screen-off health check failed", e)
+        }
+      },
+      SCREEN_OFF_HEALTH_SECONDS,
+      SCREEN_OFF_HEALTH_SECONDS,
+      TimeUnit.SECONDS,
+    )
+  }
+
+  private fun registerScreenReceiver() {
+    if (isReceiverRegistered) return
+    val filter = IntentFilter().apply {
+      addAction(Intent.ACTION_SCREEN_ON)
+      addAction(Intent.ACTION_SCREEN_OFF)
+    }
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        ContextCompat.registerReceiver(this, screenReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+      } else {
+        registerReceiver(screenReceiver, filter)
+      }
+      isReceiverRegistered = true
+      isScreenOn = getSystemService(PowerManager::class.java)?.isInteractive ?: true
+    } catch (e: Exception) {
+      try {
+        registerReceiver(screenReceiver, filter)
+        isReceiverRegistered = true
+      } catch (ex: Exception) {
+        Log.w(TAG, "failed to register screen receiver", ex)
+      }
+    }
+  }
+
+  private fun unregisterScreenReceiver() {
+    if (!isReceiverRegistered) return
+    try {
+      unregisterReceiver(screenReceiver)
+    } catch (_: Exception) {}
+    isReceiverRegistered = false
+  }
+
   private fun startTicker() {
     tick?.cancel(false)
     tick =
       ticker.scheduleWithFixedDelay(
         {
           try {
-            if (System.currentTimeMillis() - lastCheckAt >= CHECK_INTERVAL_MS) checkConnection()
+            if (!isScreenOn) return@scheduleWithFixedDelay
+            if (System.currentTimeMillis() - lastCheckAt >= CHECK_INTERVAL_MS) {
+              lastCheckAt = System.currentTimeMillis()
+              kotlin.concurrent.thread(name = "stealth-check", isDaemon = true) {
+                checkConnection()
+                submitRefresh()
+              }
+            }
             refreshNotification()
           } catch (e: Exception) {
             Log.w(TAG, "notification refresh failed", e)
@@ -460,7 +867,7 @@ class StealthService : Service() {
       // The root core answers on the socket; several misses mean it is gone.
       if (++missedReads >= DEAD_AFTER_MISSES) {
         Log.w(TAG, "stealth core stopped answering; shutting down")
-        worker.execute { shutdown(null) }
+        worker.execute { shutdown(null, "the stealth core stopped responding") }
       }
     } else {
       missedReads = 0

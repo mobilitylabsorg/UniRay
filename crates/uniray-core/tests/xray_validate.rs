@@ -10,7 +10,7 @@ use std::process::Command;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde_json::{json, Value};
-use uniray_core::config::{build, build_probe, LogSink, Runtime, Tun};
+use uniray_core::config::{self, build, build_probe, Bypass, LogSink, Runtime, Tun};
 use uniray_core::links::parse_link;
 use uniray_core::model::{new_id, RoutingPreset, Rule, RuleAction, RuleKind, Server, Settings};
 use uniray_core::subscription::parse_response;
@@ -102,6 +102,8 @@ fn settings_variants() -> Vec<Settings> {
             proxy_password: "pass".into(),
             ..Default::default()
         },
+        // The network's own DNS as the direct one (provider's DNS).
+        Settings { direct_dns: "192.168.1.1".into(), direct_dns_from_network: true, ..Default::default() },
         Settings {
             routing_preset: RoutingPreset::BypassRu,
             remote_dns: "https://dns.google/dns-query".into(),
@@ -123,15 +125,16 @@ fn runtimes(dir: &Path) -> Vec<Runtime> {
     let log = |name: &str| dir.join(name).to_string_lossy().into_owned();
     let files = LogSink::Files { error: log("error.log"), access: log("access.log") };
     vec![
-        Runtime { tun: None, mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout },
-        Runtime { tun: Some(Tun::Managed { name: "uniraytest0".into() }), mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout },
-        Runtime { tun: Some(Tun::External { name: "rmnet3".into() }), mixed_port: None, metrics_port: None, metrics_socket: Some("@uniray-validate-metrics".into()), log: files },
-        Runtime { tun: Some(Tun::Transparent { port: 28082 }), mixed_port: None, metrics_port: None, metrics_socket: Some("@uniray-validate-tproxy".into()), log: LogSink::Stdout },
+        Runtime { tun: None, mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout, engine: None },
+        Runtime { tun: Some(Tun::Managed { name: "uniraytest0".into() }), mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout, engine: None },
+        Runtime { tun: Some(Tun::External { name: "rmnet3".into() }), mixed_port: None, metrics_port: None, metrics_socket: Some("@uniray-validate-metrics".into()), log: files, engine: None },
+        Runtime { tun: Some(Tun::Transparent { port: 28082 }), mixed_port: None, metrics_port: None, metrics_socket: Some("@uniray-validate-tproxy".into()), log: LogSink::Stdout, engine: None },
         Runtime {
             tun: Some(Tun::Gateway { name: "uniray0".into(), routes: vec!["8.0.0.0/7".into(), "11.0.0.0/8".into(), "12.0.0.0/6".into()] }),
             mixed_port: Some(28080),
             metrics_port: Some(28081), metrics_socket: None,
             log: LogSink::Stdout,
+            engine: None,
         },
     ]
 }
@@ -173,6 +176,49 @@ fn xray_accepts_generated_configs() {
                 checked += 1;
             }
         }
+    }
+
+    // WireGuard/AmneziaWG: the proxy is a socks outbound to the engine.
+    let conf = "[Interface]\nPrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\nAddress = 10.8.0.2/32\nJc = 4\nH1 = 100-200\n\
+                [Peer]\nPublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\nEndpoint = 203.0.113.9:51820\n";
+    let wireguard = uniray_core::wireguard::server_from_conf(conf).unwrap();
+    for block_udp in [false, true] {
+        let engine = config::Engine {
+            port: 28090,
+            user: "uniray".into(),
+            pass: "secret".into(),
+            bypass: vec![
+                Bypass { addr: "203.0.113.9:51820".parse().unwrap(), network: "udp" },
+                Bypass { addr: "[2001:db8::9]:443".parse().unwrap(), network: "tcp,udp" },
+            ],
+            block_udp,
+            sniff_excluded: Vec::new(),
+        };
+        for (runtime_index, runtime) in runtimes.iter().enumerate() {
+            let runtime = Runtime { engine: Some(engine.clone()), ..runtime.clone() };
+            let built = build(&wireguard, &settings[1], &runtime).unwrap();
+            xray_accepts(&xray, &dir, &format!("engine (udp blocked: {block_udp}, runtime #{runtime_index})"), &built.config);
+            checked += 1;
+        }
+    }
+
+    // Naive: no UDP through the engine, plain remote DNS over TCP.
+    let naive = parse_link("naive+https://me:pw@203.0.113.9:443#N").unwrap();
+    let engine = config::Engine {
+        port: 28091,
+        user: "uniray".into(),
+        pass: "secret".into(),
+        bypass: vec![Bypass { addr: "203.0.113.9:443".parse().unwrap(), network: "tcp,udp" }],
+        block_udp: true,
+        sniff_excluded: vec!["naive.example.com".into()],
+    };
+    let plain_dns = Settings { remote_dns: "8.8.8.8".into(), ..Default::default() };
+    for (runtime_index, runtime) in runtimes.iter().enumerate() {
+        let runtime = Runtime { engine: Some(engine.clone()), ..runtime.clone() };
+        let built = build(&naive, &plain_dns, &runtime).unwrap();
+        assert_eq!(built.config["dns"]["servers"][0], "tcp://8.8.8.8");
+        xray_accepts(&xray, &dir, &format!("naive (runtime #{runtime_index})"), &built.config);
+        checked += 1;
     }
 
     let refs: Vec<&Server> = servers.iter().collect();

@@ -14,6 +14,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::app::App;
 
 pub const EVENT: &str = "traffic";
+#[cfg(mobile)]
+const INTERVAL: Duration = Duration::from_secs(2);
+#[cfg(not(mobile))]
 const INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
@@ -31,6 +34,7 @@ pub struct Traffic {
 #[derive(Clone, Debug)]
 pub enum MetricsSource {
     /// A loopback port (desktop).
+    #[cfg(desktop)]
     Port(u16),
     /// A Unix socket in the app's private directory (Android): no port for
     /// other apps to find.
@@ -48,7 +52,15 @@ pub fn spawn(app: AppHandle, source: MetricsSource, proxy_tags: Vec<String>) -> 
         let mut diagnosed = false;
         let mut misses = 0u32;
         loop {
-            tokio::time::sleep(INTERVAL).await;
+            #[cfg(mobile)]
+            let visible = app.state::<App>().visible.load(std::sync::atomic::Ordering::Relaxed);
+            #[cfg(not(mobile))]
+            let visible = true;
+            let interval = if visible { INTERVAL } else { Duration::from_secs(10) };
+            tokio::time::sleep(interval).await;
+            if !visible {
+                continue;
+            }
             let Some(body) = read_vars(&http, &source).await else {
                 misses += 1;
                 if misses == 5 && !diagnosed {
@@ -87,7 +99,10 @@ pub fn spawn(app: AppHandle, source: MetricsSource, proxy_tags: Vec<String>) -> 
 
 /// The body of `GET /debug/vars`.
 async fn read_vars(http: &reqwest::Client, source: &MetricsSource) -> Option<Vec<u8>> {
+    #[cfg(mobile)]
+    let _ = http; // the socket is read by hand
     match source {
+        #[cfg(desktop)]
         MetricsSource::Port(port) => {
             let response = http.get(format!("http://127.0.0.1:{port}/debug/vars")).send().await.ok()?;
             Some(response.bytes().await.ok()?.to_vec())
@@ -98,6 +113,9 @@ async fn read_vars(http: &reqwest::Client, source: &MetricsSource) -> Option<Vec
             let timeout = std::time::Duration::from_secs(2);
             let mut stream = tokio::time::timeout(timeout, tokio::net::UnixStream::connect(path)).await.ok()?.ok()?;
             stream.write_all(b"GET /debug/vars HTTP/1.0\r\nHost: localhost\r\n\r\n").await.ok()?;
+            // The socket is a tunnel inbound: Xray closes it only once the
+            // request side has ended, so end it, or the read below never sees EOF.
+            stream.shutdown().await.ok()?;
             let mut response = Vec::new();
             tokio::time::timeout(timeout, stream.read_to_end(&mut response)).await.ok()?.ok()?;
             let body = response.windows(4).position(|window| window == b"\r\n\r\n")? + 4;

@@ -1,9 +1,9 @@
-//! Running the TUN helper as administrator on Windows.
+//! Running the TUN helper as administrator on Windows and macOS.
 //!
-//! The helper is started through UAC (`ShellExecuteExW` with the `runas`
-//! verb). Such a process can be waited for, but shares no pipes with the app,
-//! so it is told to stop through a file; it also stops by itself when the app
-//! process is gone. See `crates/uniray-helper`.
+//! Windows starts it through UAC (`ShellExecuteExW` with the `runas` verb),
+//! macOS through osascript's administrator prompt. Either way it shares no
+//! pipes with the app, so it is told to stop through a file; it also stops by
+//! itself when the app process is gone. See `crates/uniray-helper`.
 
 use std::ffi::OsStr;
 
@@ -130,9 +130,102 @@ mod process {
 #[cfg(windows)]
 pub use process::LaunchError;
 
+/// Quotes one word for `sh`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn sh_quote(word: &OsStr) -> String {
+    format!("'{}'", word.to_string_lossy().replace('\'', r"'\''"))
+}
+
+/// `script` as an AppleScript string literal.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn applescript_string(script: &str) -> String {
+    format!("\"{}\"", script.replace('\\', r"\\").replace('"', r#"\""#))
+}
+
+#[cfg(target_os = "macos")]
+pub use macos::{LaunchError, Process};
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use std::ffi::OsStr;
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    use super::{applescript_string, sh_quote};
+
+    /// The helper, running as root; known by its pid.
+    pub struct Process(libc::pid_t);
+
+    pub enum LaunchError {
+        /// The user cancelled the password prompt.
+        Cancelled,
+        Failed(String),
+    }
+
+    impl Process {
+        /// Starts `program` as root after the system's administrator prompt.
+        /// `do shell script` waits for the command, so it is started in the
+        /// background and the command prints its pid. Blocks while the prompt
+        /// is shown, so call it off the async runtime.
+        pub fn launch(program: &Path, args: &[&OsStr]) -> Result<Self, LaunchError> {
+            let command: Vec<String> = std::iter::once(program.as_os_str()).chain(args.iter().copied()).map(sh_quote).collect();
+            let shell = format!("{} </dev/null >/dev/null 2>&1 & echo $!", command.join(" "));
+            let script = format!("do shell script {} with administrator privileges", applescript_string(&shell));
+            let output = std::process::Command::new("/usr/bin/osascript")
+                .arg("-e")
+                .arg(script)
+                .output()
+                .map_err(|err| LaunchError::Failed(err.to_string()))?;
+            if !output.status.success() {
+                let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                // "User canceled. (-128)"
+                return Err(if message.contains("-128") { LaunchError::Cancelled } else { LaunchError::Failed(message) });
+            }
+            String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse()
+                .map(Self)
+                .map_err(|_| LaunchError::Failed("the helper's pid did not come back".into()))
+        }
+
+        fn alive(&self) -> bool {
+            // SAFETY: signal 0 only checks for the process. A root process
+            // answers EPERM to us, which means it is there.
+            let checked = unsafe { libc::kill(self.0, 0) };
+            checked == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+        }
+
+        /// Waits for the process to end, at most `timeout_ms` (`None`: no
+        /// limit). Returns whether it has ended.
+        pub fn wait(&self, timeout_ms: Option<u32>) -> bool {
+            let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms.into()));
+            loop {
+                if !self.alive() {
+                    return true;
+                }
+                if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+
+        /// A root process cannot be signalled from here; the stop file and
+        /// the helper's watch on the app are what end it.
+        pub fn terminate(&self) {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macos_launch_quotes_for_sh_and_applescript() {
+        assert_eq!(sh_quote(OsStr::new("/Applications/Uni Ray.app/x")), "'/Applications/Uni Ray.app/x'");
+        assert_eq!(sh_quote(OsStr::new("it's")), r"'it'\''s'");
+        assert_eq!(applescript_string(r#"echo "a\b""#), r#""echo \"a\\b\"""#);
+    }
 
     #[test]
     fn arguments_survive_the_windows_command_line() {

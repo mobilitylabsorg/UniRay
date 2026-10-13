@@ -190,7 +190,13 @@ pub fn start(app: &AppHandle) {
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(FIRST_CHECK_DELAY).await;
             loop {
-                let _ = check_now(&app).await;
+                #[cfg(mobile)]
+                let visible = app.state::<App>().visible.load(std::sync::atomic::Ordering::Relaxed);
+                #[cfg(not(mobile))]
+                let visible = true;
+                if visible {
+                    let _ = check_now(&app).await;
+                }
                 tokio::time::sleep(CHECK_INTERVAL).await;
             }
         })
@@ -199,8 +205,15 @@ pub fn start(app: &AppHandle) {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             loop {
-                present(&app, summary(&app)).await;
-                tokio::time::sleep(PRESENT_INTERVAL).await;
+                #[cfg(mobile)]
+                let visible = app.state::<App>().visible.load(std::sync::atomic::Ordering::Relaxed);
+                #[cfg(not(mobile))]
+                let visible = true;
+                let interval = if visible { PRESENT_INTERVAL } else { Duration::from_secs(15) };
+                if visible {
+                    present(&app, summary(&app)).await;
+                }
+                tokio::time::sleep(interval).await;
             }
         })
     };
@@ -268,6 +281,7 @@ async fn present(app: &AppHandle, summary: Summary) {
 }
 
 /// `1.2 MB/s`, for the tray tooltip.
+#[cfg(desktop)]
 pub fn format_speed(bytes_per_second: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
     let mut value = bytes_per_second as f64;

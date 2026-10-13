@@ -10,6 +10,19 @@ pub enum ServerSource {
     /// A complete Xray config from a JSON subscription. Its outbounds, routing
     /// and DNS are used as is; inbounds are replaced with ours.
     Config(Value),
+    /// A WireGuard or AmneziaWG server. Not Xray: it runs on the engine, see
+    /// [`crate::wireguard`] and [`crate::engine`].
+    WireGuard(crate::wireguard::WgConfig),
+    /// A NaiveProxy server. Not Xray: `naive` runs it behind the engine, see
+    /// [`crate::naive`].
+    Naive(crate::naive::NaiveConfig),
+}
+
+impl ServerSource {
+    /// Whether this server runs on Xray (else on the engine).
+    pub fn is_xray(&self) -> bool {
+        matches!(self, ServerSource::Outbound(_) | ServerSource::Config(_))
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -17,7 +30,8 @@ pub enum ServerSource {
 pub struct Server {
     pub id: String,
     pub name: String,
-    /// `vless`, `vmess`, `trojan`, `shadowsocks`, `hysteria` or `custom`.
+    /// `vless`, `vmess`, `trojan`, `shadowsocks`, `hysteria`, `amneziawg`,
+    /// `wireguard`, `naive` or `custom`.
     pub protocol: String,
     pub address: String,
     pub port: u16,
@@ -171,6 +185,10 @@ pub struct Settings {
     /// or RKN's DNS spoofing - cannot substitute a fake address for the server
     /// and break (or misdirect) the connection before the tunnel is even up.
     pub direct_dns: String,
+    /// Use the current network's own DNS server (the provider's) as the
+    /// direct DNS, found when connecting; `direct_dns` is kept for when there
+    /// is none to be found.
+    pub direct_dns_from_network: bool,
     pub ipv6: bool,
     /// Send `x-hwid` and device headers when fetching subscriptions.
     pub send_hwid: bool,
@@ -192,9 +210,25 @@ pub struct Settings {
     /// tproxy+iptables. The fallback for kernels/ROMs without TPROXY; the
     /// interface is then visible, under a neutral name.
     pub stealth_root_tun: bool,
+    /// Keep the tunnel working with the screen off: the tunnel service holds
+    /// a CPU wake lock (and a Wi-Fi lock) while connected, so the phone's
+    /// sleep does not stall it and drop the connections. Costs battery, so
+    /// off by default. Android only.
+    pub keep_awake: bool,
+    /// Block ads and trackers via geosite:category-ads-all routing rule to blackhole.
+    #[serde(default)]
+    pub block_ads: bool,
+    /// How often to automatically update subscriptions in hours.
+    /// `0` disables auto-update. Defaults to 12.
+    #[serde(default = "default_auto_update_hours")]
+    pub auto_update_hours: u32,
     pub selected_server: Option<String>,
     /// UI language, `None` follows the system.
     pub locale: Option<String>,
+}
+
+fn default_auto_update_hours() -> u32 {
+    12
 }
 
 impl Default for Settings {
@@ -214,6 +248,7 @@ impl Default for Settings {
             // this resolver's queries out directly while remote_dns's go
             // through the proxy (both are the 53-less DoH port 443).
             direct_dns: "https://8.8.8.8/dns-query".into(),
+            direct_dns_from_network: false,
             ipv6: false,
             send_hwid: true,
             log_level: "warning".into(),
@@ -221,6 +256,9 @@ impl Default for Settings {
             per_app: PerApp::default(),
             stealth: false,
             stealth_root_tun: false,
+            keep_awake: false,
+            block_ads: false,
+            auto_update_hours: 12,
             selected_server: None,
             locale: None,
         }

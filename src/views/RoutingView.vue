@@ -68,10 +68,12 @@ function move(index: number, by: number) {
         @click="store.saveSettings({ routingPreset: preset })"
       >
         <span
-          class="flex size-5 shrink-0 items-center justify-center rounded-full border-2"
+          class="flex size-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors duration-200"
           :class="store.settings.routingPreset === preset ? 'border-accent bg-accent text-accent-ink' : 'border-line'"
         >
-          <AppIcon v-if="store.settings.routingPreset === preset" name="check" :size="12" />
+          <Transition name="pop">
+            <AppIcon v-if="store.settings.routingPreset === preset" name="check" :size="12" />
+          </Transition>
         </span>
         <span>
           <span class="block font-medium">{{ t(`routing.${preset}`) }}</span>
@@ -108,14 +110,14 @@ function move(index: number, by: number) {
 
     <p v-if="rules.length === 0" class="px-1 text-sm text-muted">{{ t("routing.noRules") }}</p>
     <template v-else>
-      <ul class="card divide-y divide-line overflow-hidden">
-        <li v-for="(rule, index) in rules" :key="rule.id" class="flex items-center gap-2 py-2 pr-1 pl-3">
+      <TransitionGroup tag="ul" name="list" class="card relative divide-y divide-line overflow-hidden">
+        <li v-for="(rule, index) in rules" :key="rule.id" class="flex items-center gap-2 bg-surface py-2 pr-1 pl-3">
           <ToggleSwitch
             :model-value="rule.enabled"
             :label="rule.value"
             @update:model-value="(enabled: boolean) => toggle(rule, enabled)"
           />
-          <div class="min-w-0 flex-1" :class="rule.enabled ? '' : 'opacity-50'">
+          <div class="min-w-0 flex-1 transition-opacity duration-200" :class="rule.enabled ? '' : 'opacity-50'">
             <div class="selectable truncate font-mono text-xs">{{ rule.value }}</div>
             <span class="mt-1 inline-block rounded-md px-1.5 py-0.5 text-[11px]" :class="ACTION_CLASS[rule.action]">
               {{ t(`routing.${rule.action}`) }}
@@ -131,7 +133,7 @@ function move(index: number, by: number) {
             <AppIcon name="trash" :size="16" />
           </button>
         </li>
-      </ul>
+      </TransitionGroup>
       <p class="mt-2 px-1 text-xs text-muted">{{ t("routing.rulesHint") }}</p>
     </template>
   </div>

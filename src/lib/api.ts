@@ -67,6 +67,8 @@ export interface Settings {
   customRules: Rule[];
   remoteDns: string;
   directDns: string;
+  /** Use the network's own (the provider's) DNS as the direct DNS. */
+  directDnsFromNetwork: boolean;
   ipv6: boolean;
   sendHwid: boolean;
   logLevel: string;
@@ -74,6 +76,10 @@ export interface Settings {
   perApp: { mode: PerAppMode; packages: string[] };
   stealth: boolean;
   stealthRootTun: boolean;
+  /** Android: keep the tunnel working with the screen off (a wake lock while connected). */
+  keepAwake: boolean;
+  blockAds: boolean;
+  autoUpdateHours: number;
   selectedServer: string | null;
   locale: string | null;
 }
@@ -85,6 +91,7 @@ export interface PrivilegeState {
   level: PrivilegeLevel;
   shizukuAvailable: boolean;
   shizukuGranted: boolean;
+  hasTproxy?: boolean;
 }
 
 export interface CmdError {
@@ -127,6 +134,8 @@ export interface Snapshot {
   device: { hwid: string; os: string; osVersion: string; model: string };
   version: string;
   platform: "linux" | "windows" | "macos" | "android" | "ios";
+  /** Android TV / Google TV: the remote-control layout. */
+  tv: boolean;
   testing: boolean;
 }
 
@@ -166,10 +175,14 @@ export interface ImportReport {
 export const api = {
   getState: () => invoke<Snapshot>("get_state"),
   import: (text: string) => invoke<ImportReport>("import", { text }),
+  /** TV: starts the import page for a phone; resolves its URL (for the QR code). */
+  handoffStart: () => invoke<string>("handoff_start"),
+  handoffStop: () => invoke<void>("handoff_stop"),
   deleteServers: (ids: string[]) => invoke<void>("delete_servers", { ids }),
   selectServer: (id: string) => invoke<void>("select_server", { id }),
   addSubscription: (url: string) => invoke<ImportReport>("add_subscription", { url }),
   updateSubscription: (id: string) => invoke<ImportReport>("update_subscription", { id }),
+  updateAllSubscriptions: () => invoke<ImportReport[]>("update_all_subscriptions"),
   deleteSubscription: (id: string) => invoke<void>("delete_subscription", { id }),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
   connect: () => invoke<void>("connect"),
@@ -180,6 +193,8 @@ export const api = {
   systemColors: () => invoke<SystemColors | null>("system_colors"),
   privilegeState: () => invoke<PrivilegeState>("privilege_state"),
   requestShizuku: () => invoke<PrivilegeState>("request_shizuku"),
+  /** Applies keepAwake to the running tunnel; turning it on asks for the battery exemption. */
+  setKeepAwake: (enabled: boolean) => invoke<{ batteryExempt: boolean }>("set_keep_awake", { enabled }),
   getLogs: () => invoke<LogLine[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),
   quit: () => invoke<void>("quit"),
@@ -192,6 +207,9 @@ export const events = {
     listen<Traffic>("traffic", (event) => handler(event.payload)),
   log: (handler: (line: LogLine) => void): Promise<UnlistenFn> =>
     listen<LogLine>("log", (event) => handler(event.payload)),
+  /** Something sent from a phone to the TV's import page was imported. */
+  handoff: (handler: (report: ImportReport) => void): Promise<UnlistenFn> =>
+    listen<ImportReport>("handoff", (event) => handler(event.payload)),
 };
 
 /** Commands reject with a `CmdError`; anything else is an unexpected failure. */

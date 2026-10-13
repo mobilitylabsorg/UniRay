@@ -4,9 +4,11 @@
 //! container goes through a TUN interface) plus a SOCKS/HTTP proxy, keeps the
 //! subscription fresh, and serves a small web UI to switch servers. Built for
 //! a MikroTik container with around 64 MB of memory: no async runtime, no geo
-//! databases, Xray as the only big process.
+//! databases, Xray as the only big process (plus `uniray-engine`, and for
+//! NaiveProxy `naive`, for the servers Xray cannot run).
 
 mod app;
+mod engine;
 mod net;
 mod options;
 mod web;
