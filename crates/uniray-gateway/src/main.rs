@@ -35,6 +35,11 @@ fn main() {
     if app.options.subscriptions.is_empty() && app.options.links.is_empty() {
         app.log("uniray: no SUB or SRV set; add one in the container's environment");
     }
+    match net::ensure_nameserver() {
+        Ok(Some(gateway)) => app.log(format!("uniray: no nameserver configured, using the default gateway {gateway}")),
+        Ok(None) => {}
+        Err(err) => app.log(format!("uniray: {err}")),
+    }
     if app.options.tun {
         for result in [net::enable_forwarding(), net::ensure_tun_device()] {
             if let Err(err) = result {

@@ -53,6 +53,35 @@ pub fn default_interface() -> Option<String> {
         .and_then(|fields| fields.first().map(|iface| iface.to_string()))
 }
 
+/// The gateway of the default route in `/proc/net/route` text.
+fn default_gateway_in(route_table: &str) -> Option<Ipv4Addr> {
+    route_table
+        .lines()
+        .skip(1)
+        .map(|line| line.split_whitespace().collect::<Vec<_>>())
+        .find(|fields| fields.get(1) == Some(&"00000000") && fields.get(7) == Some(&"00000000"))
+        .and_then(|fields| u32::from_str_radix(fields.get(2)?, 16).ok())
+        // The kernel prints the address's bytes as a native-order u32.
+        .map(|gateway| Ipv4Addr::from(gateway.to_ne_bytes()))
+        .filter(|gateway| !gateway.is_unspecified())
+}
+
+/// Points the container's resolver at the default gateway when it has none.
+/// A RouterOS or Docker container gets an /etc/resolv.conf from its runtime,
+/// but an LXC one created from the bare root filesystem (Proxmox, ostype
+/// unmanaged) does not, and without it the first subscription fetch cannot
+/// resolve anything. Home routers answer DNS on their own address.
+pub fn ensure_nameserver() -> Result<Option<Ipv4Addr>, String> {
+    if !system_nameservers().is_empty() {
+        return Ok(None);
+    }
+    let routes = std::fs::read_to_string("/proc/net/route").map_err(|err| err.to_string())?;
+    let gateway = default_gateway_in(&routes).ok_or("no nameserver and no default route to use as one")?;
+    std::fs::write("/etc/resolv.conf", format!("nameserver {gateway}\n"))
+        .map_err(|err| format!("cannot write /etc/resolv.conf ({err})"))?;
+    Ok(Some(gateway))
+}
+
 /// MAC address of an interface; stable for a RouterOS veth.
 pub fn mac_address(iface: &str) -> Option<String> {
     std::fs::read_to_string(format!("/sys/class/net/{iface}/address"))
@@ -165,6 +194,16 @@ mod tests {
         }
         // Few enough prefixes for a routing table.
         assert!(routes.len() < 80, "{} routes", routes.len());
+    }
+
+    #[test]
+    fn default_gateway_comes_from_the_default_route() {
+        let table = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+                     eth0\t00000000\t010AA8C0\t0003\t0\t0\t0\t00000000\t0\t0\t0\n\
+                     eth0\t000AA8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n";
+        assert_eq!(default_gateway_in(table), Some(Ipv4Addr::new(192, 168, 10, 1)));
+        let no_default = "Iface\tDestination\tGateway\n eth0\t000AA8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\n";
+        assert_eq!(default_gateway_in(no_default), None);
     }
 
     #[test]
