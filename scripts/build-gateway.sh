@@ -38,14 +38,14 @@ add_naive() {
 
   local want=(libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 libgcc_s.so.1 "$(basename "$interp")")
   local needed
-  needed="$(readelf -d "$naive" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')"
+  needed="$(LC_ALL=C readelf -d "$naive" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')"
   for lib in $needed; do
     if [[ " ${want[*]} " != *" $lib "* ]]; then
       echo "build-gateway: naive needs $lib, which the image does not get; add it to add_naive" >&2
       exit 1
     fi
   done
-  if [[ "$(readelf -l "$naive" | sed -n 's/.*interpreter: \(.*\)\]/\1/p')" != "$interp" ]]; then
+  if [[ "$(LC_ALL=C readelf -l "$naive" | sed -n 's/.*interpreter: \(.*\)\]/\1/p')" != "$interp" ]]; then
     echo "build-gateway: naive's program interpreter is not $interp" >&2
     exit 1
   fi
