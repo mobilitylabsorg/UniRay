@@ -19,6 +19,7 @@ pub const TAG_MIXED: &str = "mixed";
 pub const TAG_TUN: &str = "tun";
 /// Tag of the traffic produced by the built-in DNS client.
 pub const TAG_DNS: &str = "dns";
+pub const TAG_FRAGMENT: &str = "fragment";
 pub const TAG_METRICS: &str = "metrics";
 /// Inbound feeding the metrics service from `Runtime::metrics_socket`; its
 /// connections show up in the access log under this tag.
@@ -154,6 +155,59 @@ pub fn build(server: &Server, settings: &Settings, runtime: &Runtime) -> Result<
     }
 }
 
+pub fn fragment_outbound(settings: &Settings) -> Value {
+    let ip_strategy = if settings.ipv6 { "UseIP" } else { "UseIPv4" };
+    json!({
+        "tag": TAG_FRAGMENT,
+        "protocol": "freedom",
+        "settings": {
+            "domainStrategy": ip_strategy,
+            "fragment": {
+                "packets": settings.tls_fragment_packets,
+                "length": settings.tls_fragment_length,
+                "interval": settings.tls_fragment_interval,
+            }
+        },
+        "streamSettings": {
+            "sockopt": {
+                "tcpNoDelay": true,
+                "domainStrategy": ip_strategy,
+            }
+        }
+    })
+}
+
+/// Overrides the TLS/Reality uTLS fingerprint when configured and not "auto".
+fn apply_tls_fingerprint(outbound: &mut Value, fingerprint: &str) {
+    if fingerprint.is_empty() || fingerprint == "auto" {
+        return;
+    }
+    let Some(stream) = outbound.get_mut("streamSettings").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let security = stream.get("security").and_then(Value::as_str).unwrap_or_default();
+    match security {
+        "reality" => {
+            if let Some(reality) = stream.entry("realitySettings").or_insert_with(|| json!({})).as_object_mut() {
+                reality.insert("fingerprint".into(), json!(fingerprint));
+            }
+        }
+        "tls" => {
+            if let Some(tls) = stream.entry("tlsSettings").or_insert_with(|| json!({})).as_object_mut() {
+                tls.insert("fingerprint".into(), json!(fingerprint));
+            }
+        }
+        _ => {
+            if let Some(reality) = stream.get_mut("realitySettings").and_then(Value::as_object_mut) {
+                reality.insert("fingerprint".into(), json!(fingerprint));
+            }
+            if let Some(tls) = stream.get_mut("tlsSettings").and_then(Value::as_object_mut) {
+                tls.insert("fingerprint".into(), json!(fingerprint));
+            }
+        }
+    }
+}
+
 fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime, engine: Option<&Engine>) -> Built {
     let ip_strategy = if settings.ipv6 { "UseIP" } else { "UseIPv4" };
     // Without UDP through the proxy, plain DNS to the remote server goes over
@@ -176,6 +230,10 @@ fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime, engin
     if server_domain.is_some() {
         proxy["streamSettings"]["sockopt"]["domainStrategy"] = ip_strategy.into();
     }
+    if settings.tls_fragment && engine.is_none() {
+        proxy["streamSettings"]["sockopt"]["dialerProxy"] = TAG_FRAGMENT.into();
+    }
+    apply_tls_fingerprint(&mut proxy, &settings.tls_fingerprint);
 
     let mut outbounds = vec![
         proxy,
@@ -186,6 +244,9 @@ fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime, engin
         }),
         json!({ "tag": TAG_BLOCK, "protocol": "blackhole" }),
     ];
+    if settings.tls_fragment && engine.is_none() {
+        outbounds.push(fragment_outbound(settings));
+    }
 
     let mut rules = Vec::new();
     if runtime.tun.is_some() {
@@ -248,8 +309,17 @@ fn from_config(source: &Value, settings: &Settings, runtime: &Runtime) -> Result
         match protocol.as_str() {
             "freedom" | "direct" | "blackhole" | "block" | "loopback" => {}
             "dns" => dns_tag = Some(tag),
-            _ => proxy_tags.push(tag),
+            _ => {
+                proxy_tags.push(tag);
+                if settings.tls_fragment {
+                    outbound["streamSettings"]["sockopt"]["dialerProxy"] = TAG_FRAGMENT.into();
+                }
+                apply_tls_fingerprint(outbound, &settings.tls_fingerprint);
+            }
         }
+    }
+    if settings.tls_fragment && !outbounds.iter().any(|o| o["tag"] == TAG_FRAGMENT) {
+        outbounds.push(fragment_outbound(settings));
     }
 
     let server_domains = bootstrap_server_domains(outbounds, &proxy_tags, settings);
@@ -720,7 +790,7 @@ fn not_xray() -> Error {
 }
 
 /// The outbound a delay probe should go through, tagged `tag`.
-pub fn probe_outbound(server: &Server, tag: &str) -> Result<Value> {
+pub fn probe_outbound(server: &Server, tag: &str, settings: &Settings) -> Result<Value> {
     let mut outbound = match &server.source {
         ServerSource::Outbound(outbound) => outbound.clone(),
         ServerSource::Config(config) => config["outbounds"]
@@ -731,12 +801,16 @@ pub fn probe_outbound(server: &Server, tag: &str) -> Result<Value> {
         ServerSource::WireGuard(_) | ServerSource::Naive(_) => return Err(not_xray()),
     };
     outbound["tag"] = tag.into();
+    if settings.tls_fragment {
+        outbound["streamSettings"]["sockopt"]["dialerProxy"] = TAG_FRAGMENT.into();
+    }
+    apply_tls_fingerprint(&mut outbound, &settings.tls_fingerprint);
     Ok(outbound)
 }
 
 /// A config that only measures delays: one loopback SOCKS inbound per server,
 /// each wired to that server's outbound. `ports[i]` belongs to `servers[i]`.
-pub fn build_probe(servers: &[&Server], ports: &[u16]) -> Result<Value> {
+pub fn build_probe(servers: &[&Server], ports: &[u16], settings: &Settings) -> Result<Value> {
     let mut inbounds = Vec::new();
     let mut outbounds = Vec::new();
     let mut rules = Vec::new();
@@ -748,8 +822,11 @@ pub fn build_probe(servers: &[&Server], ports: &[u16]) -> Result<Value> {
             "port": port,
             "protocol": "mixed",
         }));
-        outbounds.push(probe_outbound(server, &outbound)?);
+        outbounds.push(probe_outbound(server, &outbound, settings)?);
         rules.push(json!({ "inboundTag": [inbound], "outboundTag": outbound }));
+    }
+    if settings.tls_fragment && !servers.is_empty() {
+        outbounds.push(fragment_outbound(settings));
     }
     Ok(json!({
         "log": { "loglevel": "none" },

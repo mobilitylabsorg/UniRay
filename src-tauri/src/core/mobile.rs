@@ -19,7 +19,7 @@ use uniray_core::engine::{self, EngineRun, Peers};
 use uniray_core::hwid::derive_hwid;
 use uniray_core::model::{PerAppMode, Server, Settings};
 
-use super::{prepare_engine, ConnectionInfo, RunEnd, Status, PROBE_TIMEOUT, PROBE_URL};
+use super::{prepare_engine, ConnectionInfo, RunEnd, Status, PROBE_TIMEOUT};
 use crate::app::{emit_state, App};
 use crate::network::NetworkInfo;
 use crate::error::{CmdError, CmdResult};
@@ -475,11 +475,11 @@ struct ProbeAnswer {
 
 /// One engine delay probe, see [`super::probe_engines`]: the service side
 /// runs it, since only it knows where the engine was extracted.
-pub(super) async fn run_engine_probe(app: &AppHandle, run: &EngineRun) -> i64 {
+pub(super) async fn run_engine_probe(app: &AppHandle, run: &EngineRun, probe_url: &str) -> i64 {
     let args = json!({
         "mode": run.mode,
         "config": String::from_utf8_lossy(&run.config_for(&Peers::Pids(Vec::new()), false)),
-        "url": PROBE_URL,
+        "url": probe_url,
         "timeout": PROBE_TIMEOUT.as_secs(),
     });
     match call::<ProbeAnswer>(app, "probeEngine", args).await {
@@ -629,32 +629,79 @@ pub async fn list_apps(app: &AppHandle) -> CmdResult<Vec<InstalledApp>> {
     Ok(call::<AppList>(app, "listApps", json!({})).await?.apps)
 }
 
-/// Measures the True TCP Handshake RTT of each server.
-/// Completing the TCP handshake measures exact network latency and reachability,
-/// and works both while connected and disconnected.
 pub async fn measure_delays(
     app: &AppHandle,
     servers: Vec<Server>,
     on_result: impl Fn(&str, i64) + Sync,
 ) -> CmdResult<()> {
+    let settings = app.state::<App>().store.lock().unwrap().data.settings.clone();
+    let is_disconnected = app.state::<App>().connection.lock().unwrap().status == Status::Disconnected;
+
+    if settings.delay_test_mode == uniray_core::model::DelayTestMode::Tcp {
+        const BATCH_SIZE: usize = 8;
+        for batch in servers.chunks(BATCH_SIZE) {
+            futures_util::future::join_all(batch.iter().map(|server| async {
+                let delay = super::tcp_rtt(&server.address, server.port, super::PROBE_TIMEOUT).await;
+                on_result(&server.id, delay);
+            }))
+            .await;
+        }
+        return Ok(());
+    }
+
     let (servers, engine_servers): (Vec<Server>, Vec<Server>) =
         servers.into_iter().partition(|server| server.source.is_xray());
 
-    if app.state::<App>().connection.lock().unwrap().status == Status::Disconnected {
+    if is_disconnected {
         super::probe_engines(app, &engine_servers, &on_result).await;
+
+        let mut configs = Vec::new();
+        let mut valid_servers = Vec::new();
+        for server in &servers {
+            let runtime = Runtime::default();
+            if let Ok(built) = config::build(server, &settings, &runtime) {
+                configs.push(built.config.to_string());
+                valid_servers.push(server);
+            }
+        }
+
+        #[derive(Deserialize)]
+        struct DelayResponse {
+            delays: Vec<i64>,
+        }
+
+        let batch_result = call::<DelayResponse>(
+            app,
+            "measureDelays",
+            json!({
+                "configs": configs,
+                "url": settings.probe_url,
+                "timeout": super::PROBE_TIMEOUT.as_secs(),
+            }),
+        )
+        .await;
+
+        match batch_result {
+            Ok(resp) => {
+                for (server, delay) in valid_servers.iter().zip(resp.delays) {
+                    on_result(&server.id, delay);
+                }
+            }
+            Err(_) => {
+                for server in &servers {
+                    let delay = super::tcp_rtt(&server.address, server.port, super::PROBE_TIMEOUT).await;
+                    on_result(&server.id, delay);
+                }
+            }
+        }
     } else {
         for server in &engine_servers {
             on_result(&server.id, -1);
         }
-    }
-
-    const BATCH_SIZE: usize = 8;
-    for batch in servers.chunks(BATCH_SIZE) {
-        futures_util::future::join_all(batch.iter().map(|server| async {
+        for server in &servers {
             let delay = super::tcp_rtt(&server.address, server.port, super::PROBE_TIMEOUT).await;
             on_result(&server.id, delay);
-        }))
-        .await;
+        }
     }
     Ok(())
 }

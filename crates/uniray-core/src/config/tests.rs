@@ -245,12 +245,54 @@ fn full_config_without_outbounds_is_rejected() {
 #[test]
 fn probe_config_wires_each_server_to_its_port() {
     let (a, b) = (parse_link(VLESS).unwrap(), parse_link(VLESS_IP).unwrap());
-    let config = build_probe(&[&a, &b], &[20001, 20002]).unwrap();
+    let config = build_probe(&[&a, &b], &[20001, 20002], &Settings::default()).unwrap();
     assert_eq!(tags(&config, "inbounds"), ["in-0", "in-1"]);
     assert_eq!(tags(&config, "outbounds"), ["out-0", "out-1"]);
     assert_eq!(config["inbounds"][1]["port"], 20002);
     assert_eq!(config["outbounds"][1]["settings"]["address"], "203.0.113.7");
     assert_eq!(config["routing"]["rules"][1], json!({ "inboundTag": ["in-1"], "outboundTag": "out-1" }));
+}
+
+#[test]
+fn tls_fragment_emits_fragment_outbound_and_wires_dialer_proxy() {
+    let server = parse_link(VLESS).unwrap();
+    let mut settings = Settings::default();
+    settings.tls_fragment = true;
+    let built = build(&server, &settings, &proxy_runtime()).unwrap();
+    let config = &built.config;
+
+    assert_eq!(tags(config, "outbounds"), ["proxy", "direct", "block", "fragment"]);
+    assert_eq!(config["outbounds"][0]["streamSettings"]["sockopt"]["dialerProxy"], "fragment");
+    assert_eq!(config["outbounds"][3]["protocol"], "freedom");
+    assert_eq!(config["outbounds"][3]["settings"]["fragment"]["packets"], "tlshello");
+    assert_eq!(config["outbounds"][3]["settings"]["fragment"]["length"], "100-200");
+    assert_eq!(config["outbounds"][3]["settings"]["fragment"]["interval"], "10-20");
+
+    // Also verify probe config attaches fragment
+    let probe = build_probe(&[&server], &[20001], &settings).unwrap();
+    assert_eq!(tags(&probe, "outbounds"), ["out-0", "fragment"]);
+    assert_eq!(probe["outbounds"][0]["streamSettings"]["sockopt"]["dialerProxy"], "fragment");
+}
+
+#[test]
+fn tls_fingerprint_overrides_client_hello_fingerprint() {
+    let server = parse_link(VLESS).unwrap();
+
+    // Default "auto" leaves it untouched
+    let default_built = build(&server, &Settings::default(), &proxy_runtime()).unwrap();
+    let default_stream = &default_built.config["outbounds"][0]["streamSettings"];
+    assert_eq!(default_stream.get("tlsSettings").and_then(|s| s.get("fingerprint")), None);
+
+    // Explicit fingerprint applies to tlsSettings
+    let mut settings = Settings::default();
+    settings.tls_fingerprint = "randomized".into();
+    let built = build(&server, &settings, &proxy_runtime()).unwrap();
+    let stream = &built.config["outbounds"][0]["streamSettings"];
+    assert_eq!(stream["tlsSettings"]["fingerprint"], "randomized");
+
+    // Also applies to probe configs
+    let probe = build_probe(&[&server], &[20001], &settings).unwrap();
+    assert_eq!(probe["outbounds"][0]["streamSettings"]["tlsSettings"]["fingerprint"], "randomized");
 }
 
 /// The shape Remnawave and similar panels use for balancer groups.

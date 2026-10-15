@@ -47,6 +47,7 @@ export type RoutingPreset = "global" | "bypassLan" | "bypassRu";
 export type RuleKind = "domain" | "ip";
 export type RuleAction = "proxy" | "direct" | "block";
 export type PerAppMode = "off" | "allow" | "disallow";
+export type DelayTestMode = "http" | "tcp";
 
 export interface Rule {
   id: string;
@@ -82,6 +83,13 @@ export interface Settings {
   autoUpdateHours: number;
   selectedServer: string | null;
   locale: string | null;
+  delayTestMode: DelayTestMode;
+  probeUrl: string;
+  tlsFragment: boolean;
+  tlsFragmentLength: string;
+  tlsFragmentInterval: string;
+  tlsFragmentPackets: string;
+  tlsFingerprint: string;
 }
 
 /** Elevated access the device offers; only `root`/`shizukuRoot` can do stealth. */

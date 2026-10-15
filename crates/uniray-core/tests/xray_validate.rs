@@ -223,8 +223,12 @@ fn xray_accepts_generated_configs() {
 
     let refs: Vec<&Server> = servers.iter().collect();
     let ports: Vec<u16> = (0..refs.len() as u16).map(|index| 29000 + index).collect();
-    xray_accepts(&xray, &dir, "delay probe", &build_probe(&refs, &ports).unwrap());
+    xray_accepts(&xray, &dir, "delay probe", &build_probe(&refs, &ports, &Settings::default()).unwrap());
+
+    let mut fragment_settings = Settings::default();
+    fragment_settings.tls_fragment = true;
+    xray_accepts(&xray, &dir, "delay probe with fragment", &build_probe(&refs, &ports, &fragment_settings).unwrap());
 
     std::fs::remove_dir_all(&dir).ok();
-    eprintln!("xray accepted {checked} configs and the probe config");
+    eprintln!("xray accepted {checked} configs and the probe configs");
 }
