@@ -158,11 +158,11 @@ Download с BBR не изменился. NaiveProxy это не касается
 
 ```sh
 pnpm install
-pnpm app:dev     # скачивает Xray и naive, собирает helper и движок, запускает приложение
+pnpm app:dev     # собирает Xray из форка, helper и движок, скачивает naive и geo-базы, запускает приложение
 pnpm app:build   # релизная сборка и пакеты
 ```
 
-`scripts/fetch-xray.sh` и `scripts/fetch-naive.sh` скачивают закреплённые версии Xray-core и NaiveProxy и сверяют SHA-256 (при обновлении версии меняйте её вместе с хэшами), `scripts/build-engine.sh` собирает движок, `scripts/build-xray.sh` — Xray из форка с BBRv3 (для шлюза).
+`scripts/build-xray.sh` собирает Xray из [форка](https://github.com/mobilitylabsorg/Xray-core/tree/uniray) с BBRv3 в TUN ([см. ниже](#tun-bbr)) на закреплённом коммите, `scripts/build-engine.sh` — движок. `scripts/fetch-xray.sh` скачивает geo-базы (и wintun) из релиза Xray, `scripts/fetch-naive.sh` — NaiveProxy; оба сверяют SHA-256 (при обновлении версии меняйте её вместе с хэшами).
 
 <details>
 <summary><b>Тесты</b></summary>

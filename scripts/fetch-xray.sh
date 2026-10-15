@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Downloads the pinned Xray-core release for a desktop target and installs it
-# where Tauri expects the sidecar:
+# Downloads the pinned Xray-core release for a desktop target and installs the
+# data files the app bundles:
 #
-#   src-tauri/binaries/uniray-xray-<target triple>[.exe]
 #   src-tauri/resources/{geoip.dat,geosite.dat}   (and wintun.dll + LICENSE-Wintun on Windows)
 #
 # Usage: scripts/fetch-xray.sh [target triple]    (default: the host triple)
 #
-# Archives are verified against the SHA-256 digests published with the release;
-# bump XRAY_VERSION and the digests together.
+# The Xray executable itself comes from UniRay's fork, see build-xray.sh
+# (prepare-sidecars.sh runs both); keep XRAY_VERSION the release that fork is
+# based on. Archives are verified against the SHA-256 digests published with
+# the release; bump XRAY_VERSION and the digests together.
 set -euo pipefail
 
 XRAY_VERSION="v26.9.30"
@@ -25,9 +26,6 @@ case "$target" in
   aarch64-apple-darwin)       asset="macos-arm64-v8a";   sha256="4b363bd924df5bf09f87bd445755ff8e5742b9a8a0480cda261061416c3c7dce" ;;
   *) echo "fetch-xray: unsupported target $target" >&2; exit 1 ;;
 esac
-
-exe=""
-[[ "$target" == *windows* ]] && exe=".exe"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -49,8 +47,7 @@ if [[ "$actual" != "$sha256" ]]; then
 fi
 
 unzip -q "$work/xray.zip" -d "$work/xray"
-mkdir -p "$root/src-tauri/binaries" "$root/src-tauri/resources"
-install -m 755 "$work/xray/xray$exe" "$root/src-tauri/binaries/uniray-xray-$target$exe"
+mkdir -p "$root/src-tauri/resources"
 install -m 644 "$work/xray/geoip.dat" "$work/xray/geosite.dat" "$root/src-tauri/resources/"
 # Windows TUN: Xray loads wintun.dll from its own directory (the Windows
 # bundle config puts it there), and its license travels with it.
@@ -58,8 +55,4 @@ if [[ -f "$work/xray/wintun.dll" ]]; then
   install -m 644 "$work/xray/wintun.dll" "$work/xray/LICENSE-Wintun" "$root/src-tauri/resources/"
 fi
 
-echo "fetch-xray: installed Xray $XRAY_VERSION for $target"
-echo
-echo "To validate generated configs against it:"
-echo "  UNIRAY_XRAY_BIN=$root/src-tauri/binaries/uniray-xray-$target$exe \\"
-echo "  XRAY_LOCATION_ASSET=$root/src-tauri/resources cargo test -p uniray-core"
+echo "fetch-xray: installed the Xray $XRAY_VERSION data files for $target"
