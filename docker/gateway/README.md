@@ -1,13 +1,17 @@
-# UniRay Gateway для MikroTik
+# UniRay Gateway
 
-Контейнер для RouterOS: подключается к VPN, работает шлюзом для выбранных устройств сети и даёт SOCKS/HTTP-прокси. Сервер переключается в веб-интерфейсе, подписка обновляется сама.
+VPN-шлюз для сети: контейнер для RouterOS (MikroTik), шаблон LXC для Proxmox VE или образ Docker. Подключается к VPN, работает шлюзом для выбранных устройств сети и даёт SOCKS/HTTP-прокси. Сервер переключается в веб-интерфейсе, подписка обновляется сама.
 
 Протоколы: всё, что умеет Xray (VLESS, VMess, Trojan, Shadowsocks, Hysteria2), а также WireGuard и AmneziaWG (до 3.1) через `uniray-engine` и NaiveProxy через официальный `naive`. Движок и `naive` работают за Xray, как в приложении: Xray пускает в них только свой трафик, а сервер отправляет мимо туннеля.
 
-Образы, оба для armv7 и arm64:
+Xray собран из [форка UniRay](https://github.com/mobilitylabsorg/Xray-core/tree/uniray): в TUN-стеке BBRv3 и RACK вместо Cubic. Стоковый Xray на пути «шлюз → роутер → устройство» с потерями падает до 1–2 МБ/с, подробности и замеры — в [README](../../README.md#tun-bbr).
+
+Образы для armv7, arm64 и amd64:
 
 | Файл | Для чего |
 | --- | --- |
+| `uniray-gateway-amd64-lxc.tar.gz`, `-arm64-lxc.tar.gz` | **Шаблон LXC для Proxmox VE**, см. [ниже](#proxmox-lxc). |
+| `uniray-gateway-amd64.tar` | Docker на x86 или MikroTik на x86 (CHR). |
 | `uniray-gateway-armv7-lowmem.tar` | **Для лимита 64 МБ.** Движок AmneziaWG/WireGuard с ограниченными буферами: под нагрузкой ждёт, а не растёт. Скорость та же. |
 | `uniray-gateway-armv7.tar` | amneziawg-go как есть. Под быстрой загрузкой движок может занять 50+ МБ: только при лимите от 128 МБ. |
 
@@ -23,13 +27,15 @@ scripts/build-gateway.sh                 # linux/arm/v7 → build/uniray-gateway
 scripts/build-gateway.sh linux/arm64     # другие варианты: linux/arm64, linux/amd64
 ```
 
+Для amd64 и arm64 рядом появляется шаблон LXC `build/uniray-gateway-<arch>-lxc.tar.gz`. Xray собирается из форка (`scripts/build-xray.sh`, нужен Go; нужную версию `GOTOOLCHAIN=auto` скачает сам).
+
 Нужны Docker с buildx, Go 1.25+ (движок), [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) (`cargo install cargo-zigbuild`), Zig (`pip install ziglang` или пакет из дистрибутива), `readelf` (binutils) и цели Rust: `rustup target add armv7-unknown-linux-musleabihf aarch64-unknown-linux-musl`.
 
 Каждая платформа даёт два образа: `build/uniray-gateway-<arch>.tar` и `build/uniray-gateway-<arch>-lowmem.tar`. `NAIVE=0 scripts/build-gateway.sh` собирает без `naive` и glibc (меньше на ~11 МБ, без Naive-серверов). Движок в `-lowmem` собирается с `ENGINE_LOWMEM=1` (тег `uniray_lowmem` нашего форка amneziawg-go: не больше 384 буферов на пул, см. `scripts/build-engine.sh`).
 
-Готовые образы для armv7 и arm64 собирает CI (`.github/workflows/build.yml`): они лежат в артефакте `uniray-gateway` каждого запуска и в релизах.
+Готовые образы для armv7, arm64 и amd64 и шаблоны LXC собирает CI (`.github/workflows/build.yml`): они лежат в артефакте `uniray-gateway` каждого запуска и в релизах.
 
-## Установка
+## Установка на MikroTik
 
 Пример: контейнер в отдельной сети `192.168.254.0/24`, файлы на `usb1`. Адреса и пути подставьте свои.
 
@@ -90,7 +96,69 @@ add chain=prerouting connection-mark=uniray src-address-list=via-uniray \
 
 Исходящий трафик самого контейнера к VPN-серверам идёт с адреса `192.168.254.4` и выходит в интернет через обычный masquerade.
 
-> Настройки RouterOS выше составлены по аналогии с проверенными схемами, но на реальном MikroTik не проверялись. Сам контейнер проверен в Docker с лимитом 64 МБ: шлюз для соседнего контейнера, прокси-порт, балансировщики.
+> Похожая схема (своя таблица маршрутизации, mangle по спискам адресов, FastTrack только для непомеченных соединений) работает вживую на hAP ac³ с RouterOS 7.24. Сам контейнер проверен ещё и в Docker с лимитом 64 МБ: шлюз для соседнего контейнера, прокси-порт, балансировщики.
+
+### Скорость на роутере
+
+На слабом роутере скорость упирается в процессор: Xray шифрует трафик сам. На hAP ac³ (4 × Cortex-A7, 32-битный ARM без аппаратного AES) VLESS Reality даёт ~1,2 МБ/с, NaiveProxy (BoringSSL с NEON) — 6–8 МБ/с. Если нужно больше, поставьте шлюз на x86 или arm64 в той же сети ([Proxmox](#proxmox-lxc), Docker), а роутер будет только отправлять туда трафик: тот же сервер на x86 даёт 40+ МБ/с.
+
+<a id="proxmox-lxc"></a>
+## Proxmox VE (LXC)
+
+Шаблон `uniray-gateway-amd64-lxc.tar.gz` (или `-arm64-`) — корневая файловая система образа с `/sbin/init`. Контейнер непривилегированный, ему нужен только `/dev/net/tun`.
+
+```sh
+# На хосте Proxmox
+cp uniray-gateway-amd64-lxc.tar.gz /var/lib/vz/template/cache/
+pct create 113 local:vztmpl/uniray-gateway-amd64-lxc.tar.gz \
+  --ostype unmanaged --arch amd64 --unprivileged 1 \
+  --hostname uniray --cores 2 --memory 512 --swap 0 \
+  --rootfs local-lvm:1 \
+  --net0 name=eth0,bridge=vmbr0,ip=192.168.88.113/24,gw=192.168.88.1,firewall=0 \
+  --dev0 /dev/net/tun --onboot 1
+```
+
+В `/etc/pve/lxc/113.conf` допишите сеть (в контейнере нет своих сетевых скриптов, интерфейс поднимает LXC), остановку по SIGTERM и переменные:
+
+```
+lxc.net.0.flags: up
+lxc.net.0.ipv4.address: 192.168.88.113/24
+lxc.net.0.ipv4.gateway: 192.168.88.1
+lxc.signal.halt: SIGTERM
+lxc.environment.runtime: GOMEMLIMIT=256MiB
+lxc.environment.runtime: GOGC=100
+lxc.environment.runtime: SUB1=https://...
+lxc.environment.runtime: WEB_PASSWORD=...
+```
+
+- `GOMEMLIMIT` и `GOGC` в образе рассчитаны на роутер с 64 МБ (40 МиБ и 50): на сервере их стоит поднять, иначе сборщик мусора зря тратит процессор.
+- Значения пишутся без кавычек: LXC оставляет их в строке.
+- DNS: если `/etc/resolv.conf` в контейнере пуст, шлюз берёт DNS-сервером шлюз по умолчанию (`192.168.88.1`). Свой сервер — файлом `/etc/resolv.conf` в контейнере (`pct mount 113`).
+- `firewall=0`: firewall Proxmox не должен мешать пересылке чужого трафика через контейнер.
+- Proxmox 9.1+ при создании из шаблона может сам прописать `entrypoint: /usr/bin/uniray-gateway` и `lxc.environment.runtime` — это то же самое.
+
+### Роутер: трафик в шлюз в той же сети
+
+Разметка и таблица маршрутизации — как [для контейнера на MikroTik](#как-направить-устройства-через-контейнер), только шлюз маршрута — адрес LXC. Шлюз стоит в той же подсети, что и устройства, поэтому нужно ещё три вещи:
+
+```routeros
+/ip route add dst-address=0.0.0.0/0 gateway=192.168.88.113 routing-table=to-uniray
+
+# 1. Ответы шлюза должны идти через роутер, а не прямо устройству: иначе
+#    роутер видит только половину соединения, conntrack помечает пакеты как
+#    invalid, и «drop invalid» их выбрасывает.
+/ip firewall nat add chain=srcnat action=masquerade connection-mark=uniray     out-interface=bridge comment="uniray: replies through the router"
+
+# 2. Сам шлюз не заворачивать в себя же.
+/ip firewall address-list add list=not-via-uniray address=192.168.88.113
+
+# 3. Не подсказывать устройствам ходить к шлюзу напрямую (ICMP redirect):
+#    принявшее redirect устройство переключает уже открытые соединения в обход
+#    NAT, и шлюз их не узнаёт.
+/ip settings set send-redirects=no
+```
+
+`bridge` — интерфейс локальной сети роутера. `send-redirects` — общая настройка роутера; redirect'ы полезны, только когда трафику выгодно обходить роутер, а в этой схеме он как раз должен идти через него.
 
 ## Переменные
 

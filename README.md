@@ -12,7 +12,7 @@ VLESS · VMess · Trojan · Shadowsocks · Hysteria2 · WireGuard · AmneziaWG �
 ![Rust](https://img.shields.io/badge/Rust-core-000000?logo=rust)
 ![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)
 
-Linux · Windows · macOS · Android · MikroTik
+Linux · Windows · macOS · Android · MikroTik · Proxmox
 
 </div>
 
@@ -26,12 +26,12 @@ Linux · Windows · macOS · Android · MikroTik
 | 🪟 **Windows** 10+ | ✅ | ✅ TUN (Wintun) | установщик и портативный zip |
 | 🍎 **macOS** | ✅ | 🟡 TUN собирается, вживую не проверен | DMG (Apple Silicon и Intel) |
 | 🤖 **Android**, Android TV | — | ✅ VPN · ✅ Stealth (root) | APK (arm64, armv7) |
-| 📡 **MikroTik** | ✅ | ✅ шлюз для сети | контейнер (armv7, arm64), [подробнее](docker/gateway/README.md) |
+| 📡 **Шлюз для сети**: MikroTik, Proxmox (LXC), Docker | ✅ | ✅ шлюз для сети | контейнер (armv7, arm64, amd64), шаблон LXC (amd64, arm64), [подробнее](docker/gateway/README.md) |
 | 📱 iOS | — | ❌ туннеля пока нет | — |
 
 ✅ проверено вживую · 🟡 собирается, вживую не проверено · ❌ не работает
 
-Контейнер для MikroTik проверен в Docker с лимитом памяти 64 МБ, как на роутере. Про iOS — [ниже](#ios).
+Контейнер для MikroTik проверен в Docker с лимитом памяти 64 МБ, как на роутере; шлюз в LXC на Proxmox — вживую, в сети с MikroTik. TUN шлюза работает на Xray с BBRv3, [см. ниже](#tun-bbr). Про iOS — [ниже](#ios).
 
 ## Протоколы
 
@@ -69,7 +69,7 @@ Linux · Windows · macOS · Android · MikroTik
 - **Android TV** — тот же APK, обычно `armv7`. Приложение само понимает, что оно на ТВ: управление пультом (стрелки, OK, «Назад» закрывает окна), крупный шрифт, вкладки слева.
   - Подписку удобнее добавить с телефона: «Серверы → Добавить» показывает QR-код. Откройте его камерой телефона в той же Wi-Fi-сети, вставьте ссылку и нажмите «Отправить». Страница приёма живёт, пока открыто окно, по адресу с одноразовым кодом, и закрывается после первого импорта. Это обычный HTTP внутри локальной сети: не используйте его в чужой (гостевой, публичной) Wi-Fi.
   - Включите «Не засыпать при выключенном экране» в настройках: иначе в режиме ожидания приставки соединения рвутся.
-- **MikroTik** — см. [docker/gateway/README.md](docker/gateway/README.md).
+- **Шлюз для сети** (MikroTik, Proxmox LXC, Docker) — см. [docker/gateway/README.md](docker/gateway/README.md).
 
 ## Как это устроено
 
@@ -94,7 +94,7 @@ Linux · Windows · macOS · Android · MikroTik
 | `crates/uniray-core` | Логика без привязки к платформе: разбор ссылок и подписок, HWID, генерация конфига Xray. |
 | `crates/uniray-helper` | Привилегированный супервизор Xray и движка для TUN-режима на десктопе. |
 | `engine` | `uniray-engine` (Go): WireGuard/AmneziaWG на amneziawg-go и NaiveProxy через `naive`; форки gVisor (BBRv3) и amneziawg-go — в [mobilitylabsorg](https://github.com/mobilitylabsorg); e2e-тест в `engine/e2e`, стенд скорости в `engine/bench`. |
-| `crates/uniray-gateway` | Контейнер для роутеров: VPN-шлюз для сети и веб-интерфейс. |
+| `crates/uniray-gateway` | VPN-шлюз для сети (MikroTik, LXC, Docker) и его веб-интерфейс. |
 | `src-tauri` | Приложение: запуск ядра, системный прокси, хранение состояния, команды для интерфейса. |
 | `src` | Интерфейс на Vue 3 (Pinia, vue-router, vue-i18n, Tailwind). |
 
@@ -129,6 +129,29 @@ Download с BBR не изменился. NaiveProxy это не касается
 - перенести патч на свежий gVisor: в новых версиях у `congestionControl.Update` появился аргумент `ackTime`, поэтому форк пока на gVisor от июля 2026 (его же требует amneziawg-go v3.1);
 - при желании — TCP ядра через настоящий TUN там, где есть root (TUN-режим на десктопе, Stealth на Android): движок поднимает TUN AmneziaWG и открывает соединения системными сокетами, привязанными к нему.
 
+<a id="tun-bbr"></a>
+### TUN шлюза: BBRv3 и RACK в Xray
+
+**Что было.** Шлюз в LXC на Proxmox, MikroTik отправляет к нему трафик устройств сети. Через SOCKS-порт шлюза ~9,5 МБ/с, а через TUN, которым ходят все устройства, — 0,2–2 МБ/с, сайты открываются с задержками. Без разворота через роутер (маршрут с ПК прямо на шлюз) TUN давал те же 8–10 МБ/с, что и SOCKS.
+
+**Почему.** В TUN-режиме TCP устройства принимает userspace-стек gVisor внутри Xray, и он же отправляет устройству данные. Стоковый Xray включает в нём Cubic и выключает RACK/TLP («зависания под нагрузкой»), поэтому потерю он замечает только по повторным ACK или таймауту и каждую принимает за перегрузку. На пути «шлюз → роутер → устройство» часть пакетов теряется или приходит не по порядку (на ПК — ~5% пакетов вне очереди), и скорость падает в разы. SOCKS-порт обслуживает TCP ядра Linux, которому такие потери почти не страшны.
+
+**Что сделано.** [mobilitylabsorg/Xray-core](https://github.com/mobilitylabsorg/Xray-core/tree/uniray) (ветка `uniray`) — Xray v26.9.30 на том же [форке gVisor](https://github.com/mobilitylabsorg/gvisor/tree/uniray), что и движок, с двумя изменениями в `proxy/tun/stack_gvisor.go`: **BBRv3** вместо Cubic и включённое **RACK**-обнаружение потерь (исправления RACK/SACK из ccsim в форке закрывают зависания, из-за которых его выключили). Образ шлюза берёт Xray из `scripts/build-xray.sh` на закреплённом коммите форка.
+
+**Замеры** (стенд в Docker: клиент → шлюз в режиме TUN → сервер VLESS с RTT 50 мс → nginx; потери на участке шлюз → клиент, одна загрузка, МБ/с):
+
+| | 0,5% потерь | 2% потерь |
+| --- | ---: | ---: |
+| стоковый Xray (Cubic, без RACK) | 6–18 | 0,5–1,6 |
+| форк, BBRv3 без RACK | 58–66 | 6–22 |
+| **форк, BBRv3 и RACK** | **68–72** | **57–71** |
+
+16 параллельных загрузок по 15 с при 2% потерь: стоковый Xray — 22 МБ/с суммарно, форк — 816 МБ/с, ни одно соединение не зависло. Без потерь — 250 против 775 МБ/с. На живой сети (LXC, роутер hAP ac³, сервер NaiveProxy/VLESS) TUN через роутер вырос с 0,5–0,6 до 4,7–4,8 МБ/с.
+
+**Что осталось:**
+- приложение на десктопе и Android пока на стоковом Xray: `scripts/fetch-xray.sh` скачивает релиз, Android использует libXray (форк [mobilitylabsorg/libXray](https://github.com/mobilitylabsorg/libXray) уже есть). Там gVisor отдаёт данные приложениям того же устройства без потерь, так что выигрыш ожидается меньше — сначала замерить;
+- на живой сети TUN всё ещё вдвое медленнее SOCKS: разобраться, где роутер теряет пакеты.
+
 ## Разработка
 
 Нужны Rust, Go 1.26+ (движок `engine/`; `GOTOOLCHAIN=auto` скачает нужную версию сам), Node.js с pnpm и [системные зависимости Tauri](https://tauri.app/start/prerequisites/).
@@ -139,7 +162,7 @@ pnpm app:dev     # скачивает Xray и naive, собирает helper и 
 pnpm app:build   # релизная сборка и пакеты
 ```
 
-`scripts/fetch-xray.sh` и `scripts/fetch-naive.sh` скачивают закреплённые версии Xray-core и NaiveProxy и сверяют SHA-256 (при обновлении версии меняйте её вместе с хэшами), `scripts/build-engine.sh` собирает движок.
+`scripts/fetch-xray.sh` и `scripts/fetch-naive.sh` скачивают закреплённые версии Xray-core и NaiveProxy и сверяют SHA-256 (при обновлении версии меняйте её вместе с хэшами), `scripts/build-engine.sh` собирает движок, `scripts/build-xray.sh` — Xray из форка с BBRv3 (для шлюза).
 
 <details>
 <summary><b>Тесты</b></summary>
@@ -178,7 +201,7 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles n
 <details>
 <summary><b>CI и подпись</b></summary>
 
-`.github/workflows/build.yml` собирает все пакеты на каждый push в `main`, на pull request и вручную; при push тега `v*` они же публикуются как релиз. Linux, Windows (кросс-сборкой), Android и MikroTik собираются на своём Linux-раннере (метки `self-hosted`, `uniray`), macOS — на раннере GitHub и только по тегу или вручную.
+`.github/workflows/build.yml` собирает все пакеты на каждый push в `main`, на pull request и вручную; при push тега `v*` они же публикуются как релиз. Linux, Windows (кросс-сборкой), Android и шлюз (MikroTik, LXC) собираются на своём Linux-раннере (метки `self-hosted`, `uniray`), macOS — на раннере GitHub и только по тегу или вручную.
 
 **Android.** Без секретов APK подписывается одноразовым отладочным ключом, и каждая сборка ставится только начисто. Чтобы обновления ставились поверх, добавьте в секреты репозитория `ANDROID_KEYSTORE` (keystore в base64), `ANDROID_KEYSTORE_PASSWORD` и `ANDROID_KEY_ALIAS`.
 
