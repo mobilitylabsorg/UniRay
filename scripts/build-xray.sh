@@ -7,11 +7,15 @@
 # release with gVisor from mobilitylabsorg/gvisor, the fork uniray-engine
 # builds on, and a TUN stack that uses its BBRv3 and RACK loss detection:
 # stock Xray's TUN (Cubic, RACK off) drops to 1-2 MB/s once the path to the
-# clients loses 2% of its packets. See README, "TUN: BBRv3 in Xray".
+# clients loses 2% of its packets. See README.md#tun-bbr.
 #
 # Xray needs no cgo, so every target cross-compiles from anywhere with Go
 # (the version the fork's go.mod asks for; GOTOOLCHAIN=auto fetches it).
-# The source is kept in build/cache/xray-<commit>.
+# Android is the exception: as upstream's Android release, it links with cgo
+# against the NDK's clang (NDK_HOME or ANDROID_NDK_HOME, or CC). For 32-bit
+# ARM Android, where upstream publishes no Android build, use the Linux one
+# (armv7-unknown-linux-*): Go's static Linux binaries run on Android as they
+# are. The source is kept in build/cache/xray-<commit>.
 set -euo pipefail
 
 XRAY_REPO="https://github.com/mobilitylabsorg/Xray-core.git"
@@ -29,9 +33,29 @@ case "$target" in
   aarch64-pc-windows-*) goos=windows goarch=arm64 ;;
   x86_64-apple-darwin) goos=darwin goarch=amd64 ;;
   aarch64-apple-darwin) goos=darwin goarch=arm64 ;;
+  aarch64-linux-android) goos=android goarch=arm64 ;;
   *) echo "build-xray.sh: no Xray build for $target" >&2; exit 1 ;;
 esac
 export GOARM="${GOARM:-}"
+
+cgo=0
+ldflags=""
+if [[ "$goos" == android ]]; then
+  cgo=1
+  # Xray reaches into net internals (anet) that the linker otherwise refuses.
+  ldflags="-checklinkname=0"
+  if [[ -z "${CC:-}" ]]; then
+    ndk="${NDK_HOME:-${ANDROID_NDK_HOME:-}}"
+    host="$(uname -s | tr '[:upper:]' '[:lower:]')-x86_64"
+    # API 24: the app's minSdk.
+    CC="$ndk/toolchains/llvm/prebuilt/$host/bin/aarch64-linux-android24-clang"
+    [[ -n "$ndk" && -x "$CC" ]] || {
+      echo "build-xray.sh: $target needs the Android NDK: set NDK_HOME (or CC to its aarch64-linux-android24-clang)" >&2
+      exit 1
+    }
+    export CC
+  fi
+fi
 
 if ! command -v go >/dev/null; then
   echo "build-xray.sh: Go is needed to build Xray (https://go.dev/dl/)" >&2
@@ -52,7 +76,7 @@ mkdir -p "$(dirname "$out")"
 out="$(cd "$(dirname "$out")" && pwd)/$(basename "$out")"
 cd "$src"
 export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
-CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch \
+CGO_ENABLED=$cgo GOOS=$goos GOARCH=$goarch \
   go build -trimpath -buildvcs=false \
-  -ldflags "-X github.com/xtls/xray-core/core.build=uniray-${XRAY_COMMIT:0:7} -s -w -buildid=" \
+  -ldflags "-X github.com/xtls/xray-core/core.build=uniray-${XRAY_COMMIT:0:7} $ldflags -s -w -buildid=" \
   -o "$out" ./main

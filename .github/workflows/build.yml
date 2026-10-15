@@ -253,7 +253,7 @@ jobs:
               aarch64-*) abi=arm64-v8a ;;
               armv7-*) abi=armeabi-v7a ;;
             esac
-            bash scripts/fetch-xray-android.sh "$target"
+            bash scripts/build-xray-android.sh "$target"
             bash scripts/build-engine.sh "$target" "$android/jniLibs/$abi/libuniray_engine.so"
             bash scripts/fetch-naive.sh "$target" "$android/jniLibs/$abi/libnaive.so"
           done

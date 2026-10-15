@@ -7,5 +7,5 @@
 /libs/*.aar
 /libs/libXray.version
 # The standalone Xray for stealth mode is a native library now
-# (jniLibs/<abi>/libxray*.so, scripts/fetch-xray-android.sh); this was its old place.
+# (jniLibs/<abi>/libxray*.so, scripts/build-xray-android.sh); this was its old place.
 /src/main/assets/stealth/

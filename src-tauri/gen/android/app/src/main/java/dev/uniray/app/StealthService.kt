@@ -371,7 +371,7 @@ class StealthService : Service() {
     if (stamp.exists() && stamp.readText() == version) return dir
 
     // Native libraries of this APK's ABI, extracted at install
-    // (scripts/fetch-xray-android.sh); run from a copy in the private dir.
+    // (scripts/build-xray-android.sh); run from a copy in the private dir.
     val libs = File(applicationInfo.nativeLibraryDir)
     for ((name, lib) in listOf(XRAY_TPROXY to "libxray.so", XRAY_TUN to "libxray_tun.so")) {
       val xray = File(dir, name)
