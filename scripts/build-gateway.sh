@@ -6,7 +6,10 @@
 #
 # Output: build/uniray-gateway-<arch>.tar and build/uniray-gateway-<arch>-lowmem.tar
 # (see below), docker archives that RouterOS imports with
-# `/container add file=uniray-gateway-<arch>.tar ...`.
+# `/container add file=uniray-gateway-<arch>.tar ...`. linux/amd64 and
+# linux/arm64 also give build/uniray-gateway-<arch>-lxc.tar.gz, the root
+# filesystem as a template Proxmox VE creates an LXC container from (see
+# docker/gateway/README.md).
 #
 # The image holds the gateway, Xray (UniRay's fork, built by build-xray.sh:
 # BBRv3 and RACK in its TUN stack), and for the servers Xray cannot run
@@ -58,6 +61,22 @@ add_naive() {
   done
   [[ "$interp" == "/lib/"* ]] || mv "$rootfs/lib/$(basename "$interp")" "$rootfs$interp"
   docker rm "$container" >/dev/null
+}
+
+# The default image's root filesystem as an LXC template: an init for LXC to
+# start (/sbin/init, the gateway) and the mount points it expects. No
+# /etc/resolv.conf: the gateway uses the default gateway as its nameserver
+# when the container has none.
+make_lxc() {
+  local rootfs=$1 out=$2
+  local stage="$rootfs-lxc"
+  rm -rf "$stage"
+  cp -a "$rootfs" "$stage"
+  mkdir -p "$stage/dev" "$stage/proc" "$stage/sys" "$stage/sbin"
+  ln -s /usr/bin/uniray-gateway "$stage/sbin/init"
+  tar -C "$stage" --owner=0 --group=0 --numeric-owner -czf "$out" .
+  rm -rf "$stage"
+  echo "build-gateway: $out ($(ls -lh "$out" | awk '{print $5}'))"
 }
 
 platforms=("$@")
@@ -113,5 +132,8 @@ for platform in "${platforms[@]}"; do
     # The file's size: du shows the blocks it takes, which a compressing
     # filesystem (ZFS, as on the CI runner) makes far smaller.
     echo "build-gateway: $out ($(ls -lh "$out" | awk '{print $5}'))"
+    if [[ "$variant" == default && ( "$arch" == amd64 || "$arch" == arm64 ) ]]; then
+      make_lxc "$rootfs" "$root/build/uniray-gateway-$arch-lxc.tar.gz"
+    fi
   done
 done

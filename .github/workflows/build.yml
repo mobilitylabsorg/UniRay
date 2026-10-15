@@ -1,7 +1,8 @@
 # Builds the app for Linux (AppImage), Windows (installer + portable zip),
-# macOS (DMG, Apple Silicon and Intel) and Android (APK), and the MikroTik
-# gateway container (armv7, arm64). Every run uploads the packages as workflow
-# artifacts; a pushed `v*` tag also publishes them as a GitHub release.
+# macOS (DMG, Apple Silicon and Intel) and Android (APK), and the router
+# gateway (container for armv7, arm64, amd64; LXC template for amd64, arm64).
+# Every run uploads the packages as workflow artifacts; a pushed `v*` tag also
+# publishes them as a GitHub release.
 #
 # Runners: everything but macOS runs on our own Linux runner (labels
 # self-hosted + uniray), one job at a time, Windows cross-compiled with
@@ -396,7 +397,7 @@ jobs:
           retention-days: 7
 
   gateway:
-    name: MikroTik gateway
+    name: Gateway (MikroTik, LXC)
     runs-on: [self-hosted, uniray]
     steps:
       - uses: actions/checkout@v4
@@ -404,7 +405,7 @@ jobs:
           clean: false
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: armv7-unknown-linux-musleabihf,aarch64-unknown-linux-musl
+          targets: armv7-unknown-linux-musleabihf,aarch64-unknown-linux-musl,x86_64-unknown-linux-musl
       # Zig cross-compiles the C in the dependencies (ring) for musl; cargo-zigbuild
       # finds it as `python3 -m ziglang`. In a venv kept on the runner: the
       # system Python refuses pip installs (PEP 668).
@@ -422,18 +423,20 @@ jobs:
         with:
           tool: cargo-zigbuild
       - uses: docker/setup-buildx-action@v3
-      # The engine, for AmneziaWG/WireGuard servers.
+      # The engine, for AmneziaWG/WireGuard servers, and Xray from UniRay's
+      # fork (build-xray.sh); GOTOOLCHAIN=auto fetches the Go its go.mod asks for.
       - uses: actions/setup-go@v5
         with:
           go-version-file: engine/go.mod
           cache: false
 
-      # Images RouterOS imports as files: build/uniray-gateway-<arch>.tar and
-      # -lowmem.tar (the engine with bounded buffers, for a 64 MB container).
+      # Images RouterOS (or Docker) imports as files: build/uniray-gateway-<arch>.tar
+      # and -lowmem.tar (the engine with bounded buffers, for a 64 MB container);
+      # for amd64 and arm64 also -lxc.tar.gz, a Proxmox VE container template.
       - name: Build
         run: |
-          rm -f build/uniray-gateway-*.tar
-          bash scripts/build-gateway.sh linux/arm/v7 linux/arm64
+          rm -f build/uniray-gateway-*.tar build/uniray-gateway-*.tar.gz
+          bash scripts/build-gateway.sh linux/arm/v7 linux/arm64 linux/amd64
         env:
           # fetch-naive.sh, should the pinned naive change.
           GITHUB_TOKEN: ${{ github.token }}
@@ -441,7 +444,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: uniray-gateway
-          path: build/uniray-gateway-*.tar
+          path: |
+            build/uniray-gateway-*.tar
+            build/uniray-gateway-*-lxc.tar.gz
           if-no-files-found: error
           retention-days: 7
 
