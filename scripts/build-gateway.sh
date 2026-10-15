@@ -8,7 +8,8 @@
 # (see below), docker archives that RouterOS imports with
 # `/container add file=uniray-gateway-<arch>.tar ...`.
 #
-# The image holds the gateway, Xray, and for the servers Xray cannot run
+# The image holds the gateway, Xray (UniRay's fork, built by build-xray.sh:
+# BBRv3 and RACK in its TUN stack), and for the servers Xray cannot run
 # uniray-engine (WireGuard, AmneziaWG; Go, static) and NaiveProxy's naive.
 # naive is built against glibc, so the image gets the few glibc libraries it
 # needs, taken from Debian's image of the same platform. NAIVE=0 leaves naive
@@ -21,7 +22,6 @@
 # Zig cross-compiles the C in the dependencies (ring) without a container.
 set -euo pipefail
 
-XRAY_VERSION="v26.9.30"
 # Where naive's glibc libraries come from.
 GLIBC_IMAGE="debian:bookworm-slim"
 
@@ -65,11 +65,11 @@ platforms=("$@")
 
 for platform in "${platforms[@]}"; do
   case "$platform" in
-    linux/arm/v7) arch=armv7; target=armv7-unknown-linux-musleabihf; asset=linux-arm32-v7a; sha256=0b9719471c7c69752857714e9711d4da57cf38a6beb75dcddfb21425f7919908
+    linux/arm/v7) arch=armv7; target=armv7-unknown-linux-musleabihf
                   libdir=arm-linux-gnueabihf; interp=/lib/ld-linux-armhf.so.3 ;;
-    linux/arm64)  arch=arm64; target=aarch64-unknown-linux-musl;     asset=linux-arm64-v8a; sha256=9886f077f9fd8e6713b84c377c1c7db4e53b9bfa8c276a5bd12561139522b473
+    linux/arm64)  arch=arm64; target=aarch64-unknown-linux-musl
                   libdir=aarch64-linux-gnu; interp=/lib/ld-linux-aarch64.so.1 ;;
-    linux/amd64)  arch=amd64; target=x86_64-unknown-linux-musl;      asset=linux-64;        sha256=f851110beaff16e78d643f0ccfd9524b4a44dfd59bae3e34bb52bba378f7690e
+    linux/amd64)  arch=amd64; target=x86_64-unknown-linux-musl
                   libdir=x86_64-linux-gnu; interp=/lib64/ld-linux-x86-64.so.2 ;;
     *) echo "build-gateway: unsupported platform $platform" >&2; exit 1 ;;
   esac
@@ -77,28 +77,13 @@ for platform in "${platforms[@]}"; do
 
   cargo zigbuild --release -p uniray-gateway --target "$target"
 
-  cache="$root/build/cache"
-  zip="$cache/Xray-$asset-$XRAY_VERSION.zip"
-  mkdir -p "$cache"
-  if [[ ! -f "$zip" ]]; then
-    curl -fL --retry 3 -o "$zip.part" "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-${asset}.zip"
-    mv "$zip.part" "$zip"
-  fi
-  actual="$(sha256sum "$zip" | cut -d' ' -f1)"
-  if [[ "$actual" != "$sha256" ]]; then
-    echo "build-gateway: checksum mismatch for Xray-${asset}.zip (expected $sha256, got $actual)" >&2
-    rm -f "$zip"
-    exit 1
-  fi
-
   rootfs="$root/build/gateway-rootfs/$arch"
   rm -rf "$rootfs"
   mkdir -p "$rootfs/usr/bin" "$rootfs/etc/ssl/certs" "$rootfs/data" "$rootfs/tmp"
   chmod 1777 "$rootfs/tmp"
   install -m 755 "$root/target/$target/release/uniray-gateway" "$rootfs/usr/bin/uniray-gateway"
   # Only the core: without split routing the geo databases are not needed.
-  unzip -p "$zip" xray > "$rootfs/usr/bin/xray"
-  chmod 755 "$rootfs/usr/bin/xray"
+  "$root/scripts/build-xray.sh" "$target" "$rootfs/usr/bin/xray"
   # Xray verifies TLS (DoH, servers with security "tls") against these roots;
   # it has none built in.
   install -m 644 /etc/ssl/certs/ca-certificates.crt "$rootfs/etc/ssl/certs/ca-certificates.crt"
