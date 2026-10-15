@@ -93,7 +93,7 @@ rust {
 }
 
 dependencies {
-    // The Xray core, see scripts/fetch-libxray-android.sh.
+    // The Xray core (UniRay's libXray fork), see scripts/build-libxray-android.sh.
     implementation(files("libs/libXray.aar"))
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")

@@ -3,7 +3,8 @@
 /src/main/assets/tauri.conf.json
 /tauri.build.gradle.kts
 /proguard-tauri.pro
-/tauri.properties# Downloaded by scripts/fetch-libxray-android.sh
+/tauri.properties
+# Built by scripts/build-libxray-android.sh
 /libs/*.aar
 /libs/libXray.version
 # The standalone Xray for stealth mode is a native library now

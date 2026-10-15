@@ -242,12 +242,14 @@ jobs:
       # Per ABI: arm64 for phones, armv7 for most Android TV boxes (32-bit
       # Android even on 64-bit chips). Each goes to jniLibs/<abi>/, and each
       # APK carries only its own.
+      # libXray and the stealth Xray are built from UniRay's forks (BBRv3 and RACK
+      # in Xray's TUN), with the NDK above.
       - name: Xray for Android (libXray, stealth binaries, geo files) and the engine
         run: |
           android=src-tauri/gen/android/app/src/main
           # Where the stealth Xray used to be; the workspace stays between runs.
           rm -rf "$android/assets/stealth"
-          bash scripts/fetch-libxray-android.sh
+          bash scripts/build-libxray-android.sh
           for target in aarch64-linux-android armv7-linux-androideabi; do
             case "$target" in
               aarch64-*) abi=arm64-v8a ;;
