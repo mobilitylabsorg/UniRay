@@ -10,11 +10,13 @@ import { useAppStore } from "../stores/app";
 import AppIcon from "./AppIcon.vue";
 import ModalSheet from "./ModalSheet.vue";
 
+/** Text to start with: a subscription a uniray:// link offered. */
+const props = defineProps<{ initial?: string }>();
 const emit = defineEmits<{ close: [] }>();
 const store = useAppStore();
 const { t } = useI18n();
 
-const text = ref("");
+const text = ref(props.initial ?? "");
 const busy = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 const confInput = ref<HTMLInputElement | null>(null);

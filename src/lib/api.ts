@@ -225,8 +225,17 @@ export interface DpiReport {
   canApply: boolean;
 }
 
+/** What a uniray:// link asks for (src-tauri/src/deeplink.rs). */
+export type DeepLink =
+  | { action: "connect" }
+  | { action: "disconnect" }
+  | { action: "toggle" }
+  | { action: "import"; url: string };
+
 export const api = {
   getState: () => invoke<Snapshot>("get_state"),
+  /** The uniray:// links that arrived since the last call. */
+  takeDeepLinks: () => invoke<DeepLink[]>("take_deep_links"),
   import: (text: string) => invoke<ImportReport>("import", { text }),
   /** TV: starts the import page for a phone; resolves its URL (for the QR code). */
   handoffStart: () => invoke<string>("handoff_start"),
@@ -277,6 +286,8 @@ export const events = {
   /** Something sent from a phone to the TV's import page was imported. */
   handoff: (handler: (report: ImportReport) => void): Promise<UnlistenFn> =>
     listen<ImportReport>("handoff", (event) => handler(event.payload)),
+  /** A uniray:// link arrived; take it with `api.takeDeepLinks`. */
+  deepLink: (handler: () => void): Promise<UnlistenFn> => listen("deep-link", () => handler()),
 };
 
 /** Commands reject with a `CmdError`; anything else is an unexpected failure. */

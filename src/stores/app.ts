@@ -32,6 +32,10 @@ export const useAppStore = defineStore("app", () => {
   const logs = ref<LogLine[]>([]);
   const toasts = ref<Toast[]>([]);
   let nextToast = 1;
+  /** A subscription a uniray:// link offered; the servers page opens the
+   * import dialog with it, so the user confirms (any web page can open such
+   * a link). */
+  const pendingImport = ref<string | null>(null);
 
   const servers = computed(() => snapshot.value?.servers ?? []);
   const subscriptions = computed(() => snapshot.value?.subscriptions ?? []);
@@ -112,6 +116,24 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
+  /** Acts on the uniray:// links that arrived (launcher shortcuts, links from
+   * a browser); see src-tauri/src/deeplink.rs. */
+  async function takeDeepLinks(): Promise<number> {
+    const links = await api.takeDeepLinks().catch(() => []);
+    for (const link of links) {
+      if (link.action === "import") {
+        pendingImport.value = link.url;
+      } else if (link.action === "toggle") {
+        await toggleConnection();
+      } else if (link.action === "connect" && status.value === "disconnected") {
+        await toggleConnection();
+      } else if (link.action === "disconnect" && status.value === "connected") {
+        await toggleConnection();
+      }
+    }
+    return links.length;
+  }
+
   async function saveSettings(patch: Partial<Settings>) {
     if (!settings.value) return;
     await run(() => api.saveSettings({ ...settings.value!, ...patch }));
@@ -136,12 +158,14 @@ export const useAppStore = defineStore("app", () => {
     traffic,
     logs,
     toasts,
+    pendingImport,
     init,
     toast,
     dismiss,
     describe,
     run,
     toggleConnection,
+    takeDeepLinks,
     saveSettings,
     clearLogs,
   };

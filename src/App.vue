@@ -3,7 +3,7 @@ import { nextTick, onMounted, watch } from "vue";
 
 import BottomNav from "./components/BottomNav.vue";
 import ToastStack from "./components/ToastStack.vue";
-import { api, toCmdError } from "./lib/api";
+import { events, toCmdError } from "./lib/api";
 import { installBack } from "./lib/backStack";
 import { focusFirst, installSpatialNav } from "./lib/spatialNav";
 import { followSystemColors } from "./lib/theme";
@@ -28,6 +28,15 @@ watch(
   { immediate: true },
 );
 
+// A subscription offered by a uniray:// link is confirmed in the servers
+// page's import dialog.
+watch(
+  () => store.pendingImport,
+  (url) => {
+    if (url) void router.push({ name: "servers" });
+  },
+);
+
 function focusPage() {
   if (!store.isTv) return;
   const main = document.querySelector("main");
@@ -37,33 +46,14 @@ function focusPage() {
 onMounted(async () => {
   // Desktop has no system palette; the call resolves to null there.
   followSystemColors();
-  (window as unknown as { __unirayHandleUri?: (uri: string) => void }).__unirayHandleUri = (uri: string) => {
-    if (uri.startsWith("uniray://connect")) {
-      if (store.status === "disconnected") {
-        void store.toggleConnection();
-      }
-    } else if (uri.startsWith("uniray://disconnect")) {
-      if (store.status === "connected") {
-        void store.toggleConnection();
-      }
-    } else if (uri.startsWith("uniray://toggle")) {
-      void store.toggleConnection();
-    } else if (uri.startsWith("uniray://import-sub")) {
-      try {
-        const u = new URL(uri);
-        const subUrl = u.searchParams.get("url");
-        if (subUrl) {
-          void store.run(() => api.addSubscription(subUrl));
-        }
-      } catch {
-        // ignore
-      }
-    }
-  };
-
   try {
     await store.init();
-    if (store.settings?.autoConnect && store.selectedServer && store.status === "disconnected") {
+    // uniray:// links: the one the app was started with, then each as it
+    // arrives (src-tauri/src/deeplink.rs). A link that says what to do wins
+    // over auto-connect.
+    await events.deepLink(() => void store.takeDeepLinks());
+    const linked = await store.takeDeepLinks();
+    if (!linked && store.settings?.autoConnect && store.selectedServer && store.status === "disconnected") {
       void store.toggleConnection();
     }
   } catch (err) {

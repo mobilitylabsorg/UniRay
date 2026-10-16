@@ -1,6 +1,7 @@
 mod app;
 mod commands;
 mod core;
+mod deeplink;
 mod device;
 mod error;
 mod handoff;
@@ -28,7 +29,9 @@ pub fn run() {
     #[cfg(desktop)]
     {
         // A second launch brings the running instance forward instead of
-        // fighting it over the ports and the system proxy.
+        // fighting it over the ports and the system proxy; with its
+        // `deep-link` feature it hands a uniray:// link it was started with
+        // (Windows, Linux) to the running one.
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main_window(app);
         }));
@@ -40,6 +43,7 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let data_dir = app.path().app_data_dir()?;
@@ -63,6 +67,7 @@ pub fn run() {
                 naive: sidecar("uniray-naive")?,
             };
             app.manage(App::new(store, device, paths));
+            deeplink::install(&handle);
 
             #[cfg(desktop)]
             {
@@ -95,6 +100,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_state,
+            deeplink::take_deep_links,
             commands::import,
             commands::delete_servers,
             commands::select_server,

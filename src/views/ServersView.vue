@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 import AppIcon from "../components/AppIcon.vue";
@@ -15,6 +15,24 @@ const store = useAppStore();
 const { t, locale } = useI18n();
 
 const importing = ref(false);
+/** The import dialog's starting text: a subscription from a uniray:// link. */
+const importText = ref("");
+
+watch(
+  () => store.pendingImport,
+  (url) => {
+    if (!url) return;
+    importText.value = url;
+    importing.value = true;
+    store.pendingImport = null;
+  },
+  { immediate: true },
+);
+
+function closeImport() {
+  importing.value = false;
+  importText.value = "";
+}
 const sharing = ref<Server | null>(null);
 const confirming = ref<{ text: string; action: () => Promise<unknown> } | null>(null);
 const updating = ref(new Set<string>());
@@ -400,7 +418,7 @@ async function confirm() {
     </section>
 
     <Transition name="sheet">
-      <ImportDialog v-if="importing" @close="importing = false" />
+      <ImportDialog v-if="importing" :initial="importText" @close="closeImport" />
     </Transition>
     <Transition name="sheet">
       <ShareDialog v-if="sharing" :server="sharing" @close="sharing = null" />

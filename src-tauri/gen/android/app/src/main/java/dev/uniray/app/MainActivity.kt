@@ -1,6 +1,5 @@
 package dev.uniray.app
 
-import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
 import android.webkit.WebView
@@ -8,30 +7,14 @@ import androidx.activity.OnBackPressedCallback
 
 class MainActivity : TauriActivity() {
   private var currentWebView: WebView? = null
-  private var pendingUri: String? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     SystemTheme.applyBars(this)
-    handleIntent(intent)
   }
 
-  override fun onNewIntent(intent: Intent) {
-    super.onNewIntent(intent)
-    setIntent(intent)
-    handleIntent(intent)
-  }
-
-  private fun handleIntent(intent: Intent?) {
-    val uri = intent?.data?.toString() ?: return
-    val webView = currentWebView
-    if (webView != null) {
-      val script = "window.__unirayHandleUri && window.__unirayHandleUri('$uri')"
-      webView.post { webView.evaluateJavascript(script, null) }
-    } else {
-      pendingUri = uri
-    }
-  }
+  // uniray:// links (the launcher shortcuts among them) are tauri-plugin-deep-link's:
+  // src-tauri/src/deeplink.rs parses them for every platform.
 
   // The Back key (a TV remote's above all) first closes what the page has
   // open - a sheet, then the current tab (src/lib/backStack.ts); with
@@ -40,11 +23,6 @@ class MainActivity : TauriActivity() {
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
     currentWebView = webView
-    pendingUri?.let { uri ->
-      val script = "window.__unirayHandleUri && window.__unirayHandleUri('$uri')"
-      webView.postDelayed({ webView.evaluateJavascript(script, null) }, 600)
-      pendingUri = null
-    }
     onBackPressedDispatcher.addCallback(
       this,
       object : OnBackPressedCallback(true) {

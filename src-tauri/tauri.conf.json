@@ -37,5 +37,11 @@
     ],
     "externalBin": ["binaries/uniray-xray", "binaries/uniray-helper", "binaries/uniray-engine", "binaries/uniray-naive"],
     "resources": ["resources/geoip.dat", "resources/geosite.dat"]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": { "schemes": ["uniray"] },
+      "mobile": [{ "scheme": ["uniray"], "appLink": false }]
+    }
   }
 }
