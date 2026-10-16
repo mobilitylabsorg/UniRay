@@ -203,7 +203,7 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles n
 <details>
 <summary><b>CI и подпись</b></summary>
 
-`.github/workflows/build.yml` собирает все пакеты на каждый push в `main`, на pull request и вручную; при push тега `v*` они же публикуются как релиз. Linux, Windows (кросс-сборкой), Android и шлюз (MikroTik, LXC) собираются на своём Linux-раннере (метки `self-hosted`, `uniray`), macOS — на раннере GitHub и только по тегу или вручную.
+`.github/workflows/build.yml` собирает все пакеты на каждый push в `main`, на pull request и вручную; при push тега `v*` они же публикуются как релиз. Всё собирается на раннерах GitHub (для публичного репозитория они бесплатны): Linux и Windows (кросс-сборкой) на Ubuntu 22.04, Android и шлюз (MikroTik, LXC) на свежей Ubuntu, macOS на `macos-latest`. Своего раннера нет намеренно: в публичном репозитории pull request из форка выполнил бы на нём свой код.
 
 **Android.** Без секретов APK подписывается одноразовым отладочным ключом, и каждая сборка ставится только начисто. Чтобы обновления ставились поверх, добавьте в секреты репозитория `ANDROID_KEYSTORE` (keystore в base64), `ANDROID_KEYSTORE_PASSWORD` и `ANDROID_KEY_ALIAS`.
 
