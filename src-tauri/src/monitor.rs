@@ -71,8 +71,14 @@ fn encode_userinfo(value: &str) -> String {
 /// A client whose requests go through the tunnel. On desktop that is the
 /// local proxy; on mobile the app's own traffic is routed into the VPN.
 fn tunnel_client(app: &AppHandle) -> CmdResult<reqwest::Client> {
+    tunnel_client_builder(app)?.timeout(CHECK_TIMEOUT).build().map_err(|err| CmdError::core(err.to_string()))
+}
+
+/// [`tunnel_client`]'s builder, for callers with their own timeouts (the
+/// speed test).
+pub(crate) fn tunnel_client_builder(app: &AppHandle) -> CmdResult<reqwest::ClientBuilder> {
     let state = app.state::<App>();
-    let mut builder = reqwest::Client::builder().timeout(CHECK_TIMEOUT);
+    let mut builder = reqwest::Client::builder();
     if cfg!(desktop) {
         let port = state
             .connection
@@ -86,7 +92,7 @@ fn tunnel_client(app: &AppHandle) -> CmdResult<reqwest::Client> {
     } else {
         builder = builder.no_proxy();
     }
-    builder.build().map_err(|err| CmdError::core(err.to_string()))
+    Ok(builder)
 }
 
 async fn run_check(app: &AppHandle) -> CheckResult {

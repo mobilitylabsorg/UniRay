@@ -15,6 +15,8 @@ mod subscriptions;
 mod sysproxy;
 #[cfg(desktop)]
 mod tray;
+#[cfg(desktop)]
+mod uplink;
 
 use tauri::Manager;
 #[cfg(desktop)]

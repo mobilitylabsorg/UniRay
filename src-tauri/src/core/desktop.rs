@@ -28,7 +28,7 @@ use uniray_core::config::{self, LogSink, Runtime, Tun};
 use uniray_core::engine::{EngineRun, Peers};
 use uniray_core::model::{Mode, Server, Settings};
 
-use super::{free_port, prepare_engine, PROBE_TIMEOUT, PROBE_URL};
+use super::{free_port, prepare_engine, PROBE_TIMEOUT};
 use crate::app::App;
 use crate::error::{CmdError, CmdResult};
 use crate::state::write_private;
@@ -179,7 +179,7 @@ impl Running {
 }
 
 /// The DNS servers the system uses now: the network's, as it gave them.
-pub(super) async fn system_dns() -> Vec<String> {
+pub async fn system_dns() -> Vec<String> {
     tauri::async_runtime::spawn_blocking(read_system_dns).await.unwrap_or_default()
 }
 

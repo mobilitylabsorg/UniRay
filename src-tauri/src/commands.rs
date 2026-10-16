@@ -403,10 +403,9 @@ pub struct ServiceProbeResult {
 
 #[tauri::command]
 pub async fn probe_service(app: AppHandle, url: String) -> CmdResult<ServiceProbeResult> {
-    let state = app.state::<App>();
+    let client = get_http_client(&app, false).await;
     let start = std::time::Instant::now();
-    let res = state
-        .http
+    let res = client
         .get(&url)
         .timeout(Duration::from_secs(5))
         .send()
@@ -453,11 +452,10 @@ pub struct SpeedTestResult {
 
 #[tauri::command]
 pub async fn speed_test_download(app: AppHandle, bytes: usize) -> CmdResult<SpeedTestResult> {
-    let state = app.state::<App>();
+    let client = get_http_client(&app, false).await;
     let url = format!("https://speed.cloudflare.com/__down?bytes={bytes}");
     let start = std::time::Instant::now();
-    let res = state
-        .http
+    let res = client
         .get(&url)
         .timeout(Duration::from_secs(12))
         .send()
@@ -481,12 +479,11 @@ pub async fn speed_test_download(app: AppHandle, bytes: usize) -> CmdResult<Spee
 
 #[tauri::command]
 pub async fn speed_test_upload(app: AppHandle, bytes: usize) -> CmdResult<SpeedTestResult> {
-    let state = app.state::<App>();
+    let client = get_http_client(&app, false).await;
     let url = "https://speed.cloudflare.com/__up";
     let data = vec![0u8; bytes];
     let start = std::time::Instant::now();
-    let _res = state
-        .http
+    let _res = client
         .post(url)
         .body(data)
         .timeout(Duration::from_secs(12))
@@ -557,10 +554,21 @@ pub struct SpeedTestLatencyResult {
     pub jitter_ms: Option<u32>,
 }
 
+/// The client of the speed test and the service checks: through the tunnel,
+/// or past it when `bypass_tunnel` (the direct run, for comparison).
 async fn get_http_client(app: &AppHandle, bypass_tunnel: bool) -> reqwest::Client {
     let state = app.state::<App>();
     if !bypass_tunnel {
-        return state.http.clone();
+        // On desktop `state.http` goes direct, so in proxy mode it would not
+        // measure the VPN at all: the core's local proxy while connected.
+        let tunnel = crate::monitor::tunnel_client_builder(app).ok().and_then(|builder| {
+            builder.connect_timeout(Duration::from_secs(10)).build().ok()
+        });
+        return tunnel.unwrap_or_else(|| state.http.clone());
+    }
+    #[cfg(desktop)]
+    if let Some(client) = tauri::async_runtime::spawn_blocking(direct_client).await.ok().flatten() {
+        return client;
     }
     #[cfg(mobile)]
     {
@@ -581,6 +589,20 @@ async fn get_http_client(app: &AppHandle, bypass_tunnel: bool) -> reqwest::Clien
         }
     }
     state.http.clone()
+}
+
+/// Desktop: a client bound to the physical interface, so that it leaves past
+/// the TUN as well (an unprivileged SO_BINDTODEVICE on Linux, IP_BOUND_IF on
+/// macOS; on Windows a source address on that interface does it).
+#[cfg(desktop)]
+fn direct_client() -> Option<reqwest::Client> {
+    let uplink = crate::uplink::detect()?;
+    let builder = reqwest::Client::builder().no_proxy().connect_timeout(Duration::from_secs(10));
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let builder = builder.interface(&uplink.name);
+    #[cfg(windows)]
+    let builder = builder.local_address(std::net::IpAddr::V4(uplink.address?));
+    builder.build().ok()
 }
 
 #[tauri::command]
@@ -642,12 +664,20 @@ pub async fn get_underlying_network(app: AppHandle) -> CmdResult<crate::network:
         if let Some(info) = crate::core::network_info(&app).await {
             return Ok(info);
         }
+        Ok(crate::network::NetworkInfo { kind: "other".to_string(), dns: vec![], address: None })
     }
-    Ok(crate::network::NetworkInfo {
-        kind: "wifi".to_string(),
-        dns: vec![],
-        address: None,
-    })
+    // Desktop: the interface the default route leaves by (not our TUN) and
+    // the DNS servers the system has from that network.
+    #[cfg(desktop)]
+    {
+        let _ = app;
+        let uplink = tauri::async_runtime::spawn_blocking(crate::uplink::detect).await.ok().flatten();
+        Ok(crate::network::NetworkInfo {
+            kind: uplink.as_ref().map_or("none", |uplink| uplink.kind).to_string(),
+            dns: crate::core::system_dns().await,
+            address: uplink.and_then(|uplink| uplink.address).map(|address| address.to_string()),
+        })
+    }
 }
 
 #[tauri::command]

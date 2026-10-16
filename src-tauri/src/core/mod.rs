@@ -10,7 +10,7 @@ mod elevated;
 mod mobile;
 
 #[cfg(desktop)]
-pub use desktop::{measure_delays, Running};
+pub use desktop::{measure_delays, system_dns, Running};
 #[cfg(mobile)]
 pub use mobile::{
     init_device, lan_address, list_apps, measure_delays, network_info, plugin, privilege_state, request_shizuku, set_keep_awake, system_colors,
