@@ -24,7 +24,7 @@ Linux · Windows · macOS · Android · MikroTik · Proxmox
 | --- | :---: | :---: | --- |
 | 🐧 **Linux** | ✅ | ✅ TUN | AppImage |
 | 🪟 **Windows** 10+ | ✅ | ✅ TUN (Wintun) | установщик и портативный zip |
-| 🍎 **macOS** | ✅ | 🟡 TUN собирается, вживую не проверен | DMG (Apple Silicon и Intel) |
+| 🍎 **macOS** | ✅ | ✅ TUN | DMG (Apple Silicon и Intel) |
 | 🤖 **Android**, Android TV | — | ✅ VPN · ✅ Stealth (root) | APK (arm64, armv7) |
 | 📡 **Шлюз для сети**: MikroTik, Proxmox (LXC), Docker | ✅ | ✅ шлюз для сети | контейнер (armv7, arm64, amd64), шаблон LXC (amd64, arm64), [подробнее](docker/gateway/README.md) |
 | 📱 iOS | — | ❌ туннеля пока нет | — |
