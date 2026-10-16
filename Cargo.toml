@@ -3,7 +3,7 @@ resolver = "2"
 members = ["src-tauri", "crates/uniray-core", "crates/uniray-helper", "crates/uniray-gateway"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "GPL-3.0-only"
 repository = "https://github.com/mobilitylabsorg/UniRay"
