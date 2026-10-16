@@ -54,6 +54,10 @@ add_naive() {
   fi
 
   local container
+  # Pulled for this platform first: Docker's classic image store (GitHub's
+  # runners) keeps one platform per tag, and the previous platform's image
+  # would stand in for it.
+  docker pull -q --platform "$platform" "$GLIBC_IMAGE" >/dev/null
   container="$(docker create --platform "$platform" "$GLIBC_IMAGE")"
   mkdir -p "$rootfs/lib" "$rootfs$(dirname "$interp")"
   for lib in "${want[@]}"; do
