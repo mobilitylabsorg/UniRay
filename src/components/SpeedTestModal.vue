@@ -5,6 +5,7 @@ import { useI18n } from "vue-i18n";
 
 import AppIcon from "./AppIcon.vue";
 import ModalSheet from "./ModalSheet.vue";
+import SpeedGauge from "./SpeedGauge.vue";
 import { api } from "../lib/api";
 import {
   BUILT_IN_TARGETS,
@@ -57,31 +58,16 @@ let abort = false;
 let unlisten: UnlistenFn | null = null;
 let animFrameId: number | null = null;
 
-// Circle progress ring: r=42, C = 2 * PI * 42 ≈ 263.894
-const CIRCLE_CIRCUMFERENCE = 263.894;
-
 const shownRate = computed(() => {
   if (isRunning.value) return animatedMbps.value;
   if (primaryResult.value?.downloadMbps) return primaryResult.value.downloadMbps;
   return 0.0;
 });
 
-const formattedRate = computed(() => formatRate(shownRate.value));
-
-const progressFraction = computed(() => {
-  if (!isRunning.value) {
-    if (primaryResult.value) {
-      return 1.0;
-    }
-    return 0.0;
-  }
-  const maxVal = dialMax(dialPeak.value);
-  const ratio = Math.max(0, Math.min(1, animatedMbps.value / maxVal));
-  return Math.min(0.96, Math.pow(ratio, 0.6));
-});
-
-const ringOffset = computed(() => {
-  return CIRCLE_CIRCUMFERENCE * (1 - progressFraction.value);
+/** What the dial shows by its rate: the live phase, or the finished run. */
+const gaugePhase = computed(() => {
+  if (isRunning.value) return currentPhase.value;
+  return primaryResult.value ? "done" : "idle";
 });
 
 // Comparison delta
@@ -397,69 +383,13 @@ function cleanupRun() {
 <template>
   <ModalSheet :title="t('tools.speedTestTitle')" @close="emit('close')">
     <div class="flex flex-col gap-4 pb-4">
-      <!-- Clean Minimalist Circular Speed Meter -->
-      <div class="relative mx-auto flex size-48 items-center justify-center my-1">
-        <svg class="size-full -rotate-90 select-none pointer-events-none" viewBox="0 0 100 100">
-          <defs>
-            <linearGradient id="uniRaySpeedGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#06b6d4" />
-              <stop offset="50%" stop-color="#3b82f6" />
-              <stop offset="100%" stop-color="#6366f1" />
-            </linearGradient>
-            <filter id="uniRayGlow" x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx="0" dy="0" stdDeviation="2.5" flood-color="#3b82f6" flood-opacity="0.5" />
-            </filter>
-          </defs>
-
-          <!-- Track Ring -->
-          <circle
-            cx="50"
-            cy="50"
-            r="42"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="5"
-            class="text-line/40"
-          />
-
-          <!-- Active Animated Progress Ring -->
-          <circle
-            cx="50"
-            cy="50"
-            r="42"
-            fill="none"
-            stroke="url(#uniRaySpeedGradient)"
-            stroke-width="5"
-            stroke-linecap="round"
-            class="transition-all duration-300"
-            :stroke-dasharray="263.894"
-            :stroke-dashoffset="ringOffset"
-            filter="url(#uniRayGlow)"
-          />
-        </svg>
-
-        <!-- Center Content -->
-        <div class="absolute inset-0 flex flex-col items-center justify-center text-center px-3 pointer-events-none">
-          <!-- Phase status -->
-          <div
-            class="flex items-center gap-1.5 text-xs font-medium transition-all"
-            :class="isRunning ? 'text-accent' : 'text-muted'"
-          >
-            <span v-if="isRunning" class="size-1.5 rounded-full bg-accent animate-ping shrink-0" />
-            <span class="truncate max-w-[130px]">{{ phaseText }}</span>
-          </div>
-
-          <!-- Live Speed Value -->
-          <div class="font-mono text-5xl font-extrabold tracking-tight text-ink tabular-nums leading-none my-1.5">
-            {{ formattedRate.value }}
-          </div>
-
-          <!-- Unit -->
-          <div class="text-[11px] font-semibold uppercase tracking-wider text-muted">
-            {{ formattedRate.unit }}
-          </div>
-        </div>
-      </div>
+      <SpeedGauge
+        :mbps="shownRate"
+        :scale-max="dialMax(dialPeak)"
+        :running="isRunning"
+        :phase="gaugePhase"
+        :phase-text="phaseText"
+      />
 
       <!-- Start / Stop Button -->
       <button
