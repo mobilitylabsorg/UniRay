@@ -33,4 +33,6 @@ dist-ssr
 /build/
 /src-tauri/resources/LICENSE-Wintun
 
+# Android release signing: the keystore and its password
 uniray-release.jks
+/src-tauri/gen/android/keystore.properties
