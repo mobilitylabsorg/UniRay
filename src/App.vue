@@ -3,7 +3,7 @@ import { nextTick, onMounted, watch } from "vue";
 
 import BottomNav from "./components/BottomNav.vue";
 import ToastStack from "./components/ToastStack.vue";
-import { toCmdError } from "./lib/api";
+import { api, toCmdError } from "./lib/api";
 import { installBack } from "./lib/backStack";
 import { focusFirst, installSpatialNav } from "./lib/spatialNav";
 import { followSystemColors } from "./lib/theme";
@@ -37,8 +37,35 @@ function focusPage() {
 onMounted(async () => {
   // Desktop has no system palette; the call resolves to null there.
   followSystemColors();
+  (window as unknown as { __unirayHandleUri?: (uri: string) => void }).__unirayHandleUri = (uri: string) => {
+    if (uri.startsWith("uniray://connect")) {
+      if (store.status === "disconnected") {
+        void store.toggleConnection();
+      }
+    } else if (uri.startsWith("uniray://disconnect")) {
+      if (store.status === "connected") {
+        void store.toggleConnection();
+      }
+    } else if (uri.startsWith("uniray://toggle")) {
+      void store.toggleConnection();
+    } else if (uri.startsWith("uniray://import-sub")) {
+      try {
+        const u = new URL(uri);
+        const subUrl = u.searchParams.get("url");
+        if (subUrl) {
+          void store.run(() => api.addSubscription(subUrl));
+        }
+      } catch {
+        // ignore
+      }
+    }
+  };
+
   try {
     await store.init();
+    if (store.settings?.autoConnect && store.selectedServer && store.status === "disconnected") {
+      void store.toggleConnection();
+    }
   } catch (err) {
     store.toast(store.describe(toCmdError(err)), "error");
   }

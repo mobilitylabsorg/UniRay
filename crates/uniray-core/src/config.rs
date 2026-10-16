@@ -208,6 +208,26 @@ fn apply_tls_fingerprint(outbound: &mut Value, fingerprint: &str) {
     }
 }
 
+/// Applies outbound DPI tweaks: uTLS fingerprint, TCP Fast Open, Allow Insecure.
+fn apply_outbound_dpi_tweaks(outbound: &mut Value, settings: &Settings) {
+    apply_tls_fingerprint(outbound, &settings.tls_fingerprint);
+
+    if settings.tcp_fast_open {
+        outbound["streamSettings"]["sockopt"]["tcpFastOpen"] = json!(true);
+    }
+
+    if settings.allow_insecure {
+        if let Some(stream) = outbound.get_mut("streamSettings").and_then(Value::as_object_mut) {
+            let security = stream.get("security").and_then(Value::as_str).unwrap_or_default();
+            if security != "reality" {
+                if let Some(tls) = stream.entry("tlsSettings").or_insert_with(|| json!({})).as_object_mut() {
+                    tls.insert("allowInsecure".into(), json!(true));
+                }
+            }
+        }
+    }
+}
+
 fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime, engine: Option<&Engine>) -> Built {
     let ip_strategy = if settings.ipv6 { "UseIP" } else { "UseIPv4" };
     // Without UDP through the proxy, plain DNS to the remote server goes over
@@ -233,7 +253,7 @@ fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime, engin
     if settings.tls_fragment && engine.is_none() {
         proxy["streamSettings"]["sockopt"]["dialerProxy"] = TAG_FRAGMENT.into();
     }
-    apply_tls_fingerprint(&mut proxy, &settings.tls_fingerprint);
+    apply_outbound_dpi_tweaks(&mut proxy, settings);
 
     let mut outbounds = vec![
         proxy,
@@ -314,7 +334,7 @@ fn from_config(source: &Value, settings: &Settings, runtime: &Runtime) -> Result
                 if settings.tls_fragment {
                     outbound["streamSettings"]["sockopt"]["dialerProxy"] = TAG_FRAGMENT.into();
                 }
-                apply_tls_fingerprint(outbound, &settings.tls_fingerprint);
+                apply_outbound_dpi_tweaks(outbound, settings);
             }
         }
     }
@@ -804,7 +824,7 @@ pub fn probe_outbound(server: &Server, tag: &str, settings: &Settings) -> Result
     if settings.tls_fragment {
         outbound["streamSettings"]["sockopt"]["dialerProxy"] = TAG_FRAGMENT.into();
     }
-    apply_tls_fingerprint(&mut outbound, &settings.tls_fingerprint);
+    apply_outbound_dpi_tweaks(&mut outbound, settings);
     Ok(outbound)
 }
 

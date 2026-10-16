@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">"UniRay"</string>
+    <string name="main_activity_title">"UniRay"</string>
+    <string name="shortcut_connect_short">"Подключить"</string>
+    <string name="shortcut_connect_long">"Подключить VPN"</string>
+    <string name="shortcut_disconnect_short">"Отключить"</string>
+    <string name="shortcut_disconnect_long">"Отключить VPN"</string>
+    <string name="shortcut_toggle_short">"Переключить"</string>
+    <string name="shortcut_toggle_long">"Переключить VPN"</string>
+</resources>

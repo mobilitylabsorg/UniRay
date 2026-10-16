@@ -351,7 +351,12 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun networkInfo(invoke: Invoke) {
     val info = UnderlyingNetwork.current(activity)
-    invoke.resolve(JSObject().put("type", info.type).put("dns", JSArray(info.dns)))
+    invoke.resolve(
+      JSObject()
+        .put("type", info.type)
+        .put("dns", JSArray(info.dns))
+        .put("address", info.address ?: "")
+    )
   }
 
   @Command

@@ -295,6 +295,19 @@ fn tls_fingerprint_overrides_client_hello_fingerprint() {
     assert_eq!(probe["outbounds"][0]["streamSettings"]["tlsSettings"]["fingerprint"], "randomized");
 }
 
+#[test]
+fn dpi_tweaks_apply_tcp_fast_open_and_allow_insecure() {
+    let server = parse_link(VLESS).unwrap();
+    let mut settings = Settings::default();
+    settings.tcp_fast_open = true;
+    settings.allow_insecure = true;
+
+    let built = build(&server, &settings, &proxy_runtime()).unwrap();
+    let stream = &built.config["outbounds"][0]["streamSettings"];
+    assert_eq!(stream["sockopt"]["tcpFastOpen"], true);
+    assert_eq!(stream["tlsSettings"]["allowInsecure"], true);
+}
+
 /// The shape Remnawave and similar panels use for balancer groups.
 fn balancer_config() -> Value {
     json!({

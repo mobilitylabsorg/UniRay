@@ -10,10 +10,10 @@
 
 use std::net::IpAddr;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The real network under the VPN, as Android reports it.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(desktop, allow(dead_code))]
 pub struct NetworkInfo {
     /// `wifi`, `ethernet`, `cellular`, `other` or `none`.
@@ -22,6 +22,9 @@ pub struct NetworkInfo {
     /// Its DNS servers, IPv4 first.
     #[serde(default)]
     pub dns: Vec<String>,
+    /// Underlying physical network local IPv4 address (e.g. 192.168.1.50)
+    #[serde(default)]
+    pub address: Option<String>,
 }
 
 /// The tunnel's own addresses (see `uniray_core::config`): a DNS server there

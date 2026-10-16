@@ -189,7 +189,7 @@ pub(super) async fn system_dns(app: &AppHandle) -> Vec<String> {
     network_info(app).await.map(|network| network.dns).unwrap_or_default()
 }
 
-async fn network_info(app: &AppHandle) -> Option<NetworkInfo> {
+pub async fn network_info(app: &AppHandle) -> Option<NetworkInfo> {
     call::<NetworkInfo>(app, "networkInfo", json!({})).await.ok()
 }
 
