@@ -8,7 +8,6 @@ import ModalSheet from "./ModalSheet.vue";
 import { api } from "../lib/api";
 import {
   BUILT_IN_TARGETS,
-  dialMax,
   discoverOoklaServers,
   formatClock,
   formatRate,
@@ -48,40 +47,73 @@ const primaryResult = ref<SpeedTestRunResult | null>(null);
 const directResult = ref<SpeedTestRunResult | null>(null);
 const history = ref<SpeedTestHistoryEntry[]>(loadHistory());
 
-// Live readout & Ring animation
-const dialPeak = ref(50.0);
+// Live readout for active run
 const liveMbps = ref(0.0);
 const animatedMbps = ref(0.0);
+const currentPing = ref<number | null>(null);
+const currentJitter = ref<number | null>(null);
+const currentDown = ref<number | null>(null);
+const currentUp = ref<number | null>(null);
 
 let abort = false;
 let unlisten: UnlistenFn | null = null;
 let animFrameId: number | null = null;
 
-// Circle progress ring: r=42, C = 2 * PI * 42 ≈ 263.894
-const CIRCLE_CIRCUMFERENCE = 263.894;
-
-const shownRate = computed(() => {
-  if (isRunning.value) return animatedMbps.value;
-  if (primaryResult.value?.downloadMbps) return primaryResult.value.downloadMbps;
-  return 0.0;
-});
-
-const formattedRate = computed(() => formatRate(shownRate.value));
-
-const progressFraction = computed(() => {
-  if (!isRunning.value) {
-    if (primaryResult.value) {
-      return 1.0;
+// Dynamic values displayed directly in the cards
+const displayDownload = computed(() => {
+  if (isRunning.value) {
+    if (currentPhase.value === "download") {
+      return formatRate(animatedMbps.value).value;
     }
-    return 0.0;
+    if (currentDown.value !== null) {
+      return formatRate(currentDown.value).value;
+    }
+    return "—";
   }
-  const maxVal = dialMax(dialPeak.value);
-  const ratio = Math.max(0, Math.min(1, animatedMbps.value / maxVal));
-  return Math.min(0.96, Math.pow(ratio, 0.6));
+  if (primaryResult.value?.downloadMbps !== null && primaryResult.value?.downloadMbps !== undefined) {
+    return formatRate(primaryResult.value.downloadMbps).value;
+  }
+  return "—";
 });
 
-const ringOffset = computed(() => {
-  return CIRCLE_CIRCUMFERENCE * (1 - progressFraction.value);
+const displayUpload = computed(() => {
+  if (isRunning.value) {
+    if (currentPhase.value === "upload") {
+      return formatRate(animatedMbps.value).value;
+    }
+    if (currentUp.value !== null) {
+      return formatRate(currentUp.value).value;
+    }
+    return "—";
+  }
+  if (primaryResult.value?.uploadMbps !== null && primaryResult.value?.uploadMbps !== undefined) {
+    return formatRate(primaryResult.value.uploadMbps).value;
+  }
+  return "—";
+});
+
+const displayPing = computed(() => {
+  if (isRunning.value) {
+    if (currentPing.value !== null) {
+      return String(currentPing.value);
+    }
+    if (currentPhase.value === "latency") {
+      return "…";
+    }
+    return "—";
+  }
+  if (primaryResult.value?.pingMs !== null && primaryResult.value?.pingMs !== undefined) {
+    return String(primaryResult.value.pingMs);
+  }
+  return "—";
+});
+
+const displayJitter = computed(() => {
+  const j = isRunning.value ? currentJitter.value : primaryResult.value?.jitterMs;
+  if (j !== null && j !== undefined) {
+    return `±${j} мс`;
+  }
+  return "мс";
 });
 
 // Comparison delta
@@ -148,9 +180,6 @@ onMounted(async () => {
     const { phase: p, mbps } = event.payload;
     if (p === "download" || p === "upload") {
       liveMbps.value = mbps;
-      if (mbps > dialPeak.value) {
-        dialPeak.value = mbps;
-      }
     }
   });
 });
@@ -188,7 +217,7 @@ async function resolveTarget(viaTunnel: boolean): Promise<SpeedTestServer> {
     : null;
   if (chosen) return chosen;
 
-  // Candidates
+  // Quick probe candidate servers
   const candidates = servers.value.slice(0, 5);
   let bestServer = candidates[0];
   let bestPing = 999999;
@@ -217,7 +246,10 @@ async function runSpeedTest() {
   directResult.value = null;
   liveMbps.value = 0.0;
   animatedMbps.value = 0.0;
-  dialPeak.value = 50.0;
+  currentPing.value = null;
+  currentJitter.value = null;
+  currentDown.value = null;
+  currentUp.value = null;
 
   // Refresh tunnel status
   try {
@@ -246,6 +278,8 @@ async function runSpeedTest() {
     const lat = await api.speedTestProbeLatency(getServerLatencyUrl(target), 8, !runTunnelFirst);
     ping = lat.pingMs;
     jitter = lat.jitterMs;
+    currentPing.value = ping;
+    currentJitter.value = jitter;
   } catch {}
 
   if (abort) {
@@ -256,11 +290,12 @@ async function runSpeedTest() {
   // 3. Multi-stream Download
   currentPhase.value = "download";
   liveMbps.value = 0.0;
+  animatedMbps.value = 0.0;
   let downMbps: number | null = null;
   try {
     const downRes = await api.speedTestMultiStreamDownload(8, getServerDownloadUrl(target), !runTunnelFirst);
     downMbps = downRes.mbps;
-    dialPeak.value = Math.max(dialPeak.value, downRes.mbps);
+    currentDown.value = downMbps;
   } catch {}
 
   if (abort) {
@@ -271,11 +306,12 @@ async function runSpeedTest() {
   // 4. Multi-stream Upload
   currentPhase.value = "upload";
   liveMbps.value = 0.0;
+  animatedMbps.value = 0.0;
   let upMbps: number | null = null;
   try {
     const upRes = await api.speedTestMultiStreamUpload(8, getServerUploadUrl(target), !runTunnelFirst);
     upMbps = upRes.mbps;
-    dialPeak.value = Math.max(dialPeak.value, upRes.mbps);
+    currentUp.value = upMbps;
   } catch {}
 
   const primary: SpeedTestRunResult = {
@@ -326,11 +362,11 @@ async function runSpeedTest() {
     // Direct download
     currentPhase.value = "download";
     liveMbps.value = 0.0;
+    animatedMbps.value = 0.0;
     let dirDownMbps: number | null = null;
     try {
       const downRes = await api.speedTestMultiStreamDownload(8, getServerDownloadUrl(directTarget), true);
       dirDownMbps = downRes.mbps;
-      dialPeak.value = Math.max(dialPeak.value, downRes.mbps);
     } catch {}
 
     if (abort) {
@@ -341,11 +377,11 @@ async function runSpeedTest() {
     // Direct upload
     currentPhase.value = "upload";
     liveMbps.value = 0.0;
+    animatedMbps.value = 0.0;
     let dirUpMbps: number | null = null;
     try {
       const upRes = await api.speedTestMultiStreamUpload(8, getServerUploadUrl(directTarget), true);
       dirUpMbps = upRes.mbps;
-      dialPeak.value = Math.max(dialPeak.value, upRes.mbps);
     } catch {}
 
     directResult.value = {
@@ -391,76 +427,13 @@ function cleanupRun() {
   isRunning.value = false;
   currentPhase.value = primaryResult.value ? "done" : "idle";
   liveMbps.value = 0.0;
+  animatedMbps.value = 0.0;
 }
 </script>
 
 <template>
   <ModalSheet :title="t('tools.speedTestTitle')" @close="emit('close')">
-    <div class="flex flex-col gap-4 pb-4">
-      <!-- Clean Minimalist Circular Speed Meter -->
-      <div class="relative mx-auto flex size-48 items-center justify-center my-1">
-        <svg class="size-full -rotate-90 select-none pointer-events-none" viewBox="0 0 100 100">
-          <defs>
-            <linearGradient id="uniRaySpeedGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#06b6d4" />
-              <stop offset="50%" stop-color="#3b82f6" />
-              <stop offset="100%" stop-color="#6366f1" />
-            </linearGradient>
-            <filter id="uniRayGlow" x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx="0" dy="0" stdDeviation="2.5" flood-color="#3b82f6" flood-opacity="0.5" />
-            </filter>
-          </defs>
-
-          <!-- Track Ring -->
-          <circle
-            cx="50"
-            cy="50"
-            r="42"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="5"
-            class="text-line/40"
-          />
-
-          <!-- Active Animated Progress Ring -->
-          <circle
-            cx="50"
-            cy="50"
-            r="42"
-            fill="none"
-            stroke="url(#uniRaySpeedGradient)"
-            stroke-width="5"
-            stroke-linecap="round"
-            class="transition-all duration-300"
-            :stroke-dasharray="263.894"
-            :stroke-dashoffset="ringOffset"
-            filter="url(#uniRayGlow)"
-          />
-        </svg>
-
-        <!-- Center Content -->
-        <div class="absolute inset-0 flex flex-col items-center justify-center text-center px-3 pointer-events-none">
-          <!-- Phase status -->
-          <div
-            class="flex items-center gap-1.5 text-xs font-medium transition-all"
-            :class="isRunning ? 'text-accent' : 'text-muted'"
-          >
-            <span v-if="isRunning" class="size-1.5 rounded-full bg-accent animate-ping shrink-0" />
-            <span class="truncate max-w-[130px]">{{ phaseText }}</span>
-          </div>
-
-          <!-- Live Speed Value -->
-          <div class="font-mono text-5xl font-extrabold tracking-tight text-ink tabular-nums leading-none my-1.5">
-            {{ formattedRate.value }}
-          </div>
-
-          <!-- Unit -->
-          <div class="text-[11px] font-semibold uppercase tracking-wider text-muted">
-            {{ formattedRate.unit }}
-          </div>
-        </div>
-      </div>
-
+    <div class="flex flex-col gap-4 pb-4 pt-1">
       <!-- Start / Stop Button -->
       <button
         v-if="!isRunning"
@@ -474,49 +447,94 @@ function cleanupRun() {
       <button
         v-else
         type="button"
-        class="btn btn-quiet w-full py-3.5 text-base font-semibold text-danger hover:bg-danger-soft active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+        class="btn btn-quiet w-full py-3.5 text-base font-semibold text-danger hover:bg-danger-soft active:scale-[0.98] transition-all flex items-center justify-center gap-2 border border-danger/30"
         @click="stopTest"
       >
+        <span class="size-2 rounded-full bg-danger animate-ping" />
         <span>{{ t('tools.speedTestStop') }}</span>
       </button>
 
-      <!-- 3 Key Metric Cards: Download, Upload, Ping -->
+      <!-- Separate Status Indicator -->
+      <div class="flex items-center justify-center -my-0.5 min-h-[30px]">
+        <div
+          class="inline-flex items-center gap-2 px-3.5 py-1 rounded-full text-xs font-medium transition-all duration-300"
+          :class="isRunning
+            ? 'bg-accent/10 text-accent border border-accent/25 shadow-sm shadow-accent/5'
+            : primaryResult
+              ? 'bg-good/10 text-good border border-good/25'
+              : 'bg-card text-muted border border-line/40'"
+        >
+          <span v-if="isRunning" class="relative flex size-1.5 shrink-0">
+            <span class="absolute inline-flex size-full animate-ping rounded-full bg-accent opacity-75" />
+            <span class="relative inline-flex size-1.5 rounded-full bg-accent" />
+          </span>
+          <span v-else-if="primaryResult" class="size-1.5 rounded-full bg-good shrink-0" />
+          <span v-else class="size-1.5 rounded-full bg-muted/50 shrink-0" />
+          <span class="tracking-wide">{{ phaseText }}</span>
+        </div>
+      </div>
+
+      <!-- 3 Key Metric Cards: Download, Upload, Ping with live dynamic updates -->
       <div class="grid grid-cols-3 gap-2.5">
         <!-- Download -->
-        <div class="card p-3 flex flex-col items-center justify-between min-h-[92px] text-center">
+        <div
+          class="card p-3 flex flex-col items-center justify-between min-h-[96px] text-center transition-all duration-300"
+          :class="isRunning && currentPhase === 'download' ? 'border-accent shadow-[0_0_15px_-3px_var(--color-accent)] bg-accent/5' : ''"
+        >
           <div class="flex items-center gap-1 text-xs font-medium text-muted">
-            <AppIcon name="down" :size="13" class="text-accent shrink-0" />
+            <AppIcon
+              name="down"
+              :size="13"
+              class="text-accent shrink-0"
+              :class="isRunning && currentPhase === 'download' ? 'animate-bounce' : ''"
+            />
             <span class="truncate">{{ t('tools.speedTestDownload') }}</span>
           </div>
           <div class="my-auto font-mono text-xl font-bold tracking-tight text-accent tabular-nums">
-            {{ primaryResult ? formatRate(primaryResult.downloadMbps).value : '—' }}
+            {{ displayDownload }}
           </div>
           <div class="text-[11px] text-muted font-medium">Мбит/с</div>
         </div>
 
         <!-- Upload -->
-        <div class="card p-3 flex flex-col items-center justify-between min-h-[92px] text-center">
+        <div
+          class="card p-3 flex flex-col items-center justify-between min-h-[96px] text-center transition-all duration-300"
+          :class="isRunning && currentPhase === 'upload' ? 'border-good shadow-[0_0_15px_-3px_#22c55e] bg-good/5' : ''"
+        >
           <div class="flex items-center gap-1 text-xs font-medium text-muted">
-            <AppIcon name="up" :size="13" class="text-good shrink-0" />
+            <AppIcon
+              name="up"
+              :size="13"
+              class="text-good shrink-0"
+              :class="isRunning && currentPhase === 'upload' ? 'animate-bounce' : ''"
+            />
             <span class="truncate">{{ t('tools.speedTestUpload') }}</span>
           </div>
           <div class="my-auto font-mono text-xl font-bold tracking-tight text-good tabular-nums">
-            {{ primaryResult ? formatRate(primaryResult.uploadMbps).value : '—' }}
+            {{ displayUpload }}
           </div>
           <div class="text-[11px] text-muted font-medium">Мбит/с</div>
         </div>
 
         <!-- Ping & Jitter -->
-        <div class="card p-3 flex flex-col items-center justify-between min-h-[92px] text-center">
+        <div
+          class="card p-3 flex flex-col items-center justify-between min-h-[96px] text-center transition-all duration-300"
+          :class="isRunning && currentPhase === 'latency' ? 'border-accent shadow-[0_0_15px_-3px_var(--color-accent)] bg-accent/5' : ''"
+        >
           <div class="flex items-center gap-1 text-xs font-medium text-muted">
-            <AppIcon name="check" :size="13" class="text-muted shrink-0" />
+            <AppIcon
+              name="check"
+              :size="13"
+              class="text-muted shrink-0"
+              :class="isRunning && currentPhase === 'latency' ? 'animate-spin' : ''"
+            />
             <span class="truncate">{{ t('tools.speedTestPing') }}</span>
           </div>
           <div class="my-auto font-mono text-xl font-bold tracking-tight text-ink tabular-nums">
-            {{ primaryResult?.pingMs !== null && primaryResult?.pingMs !== undefined ? primaryResult.pingMs : '—' }}
+            {{ displayPing }}
           </div>
           <div class="text-[11px] text-muted font-medium">
-            {{ primaryResult?.jitterMs !== null && primaryResult?.jitterMs !== undefined ? `±${primaryResult.jitterMs} мс` : 'мс' }}
+            {{ displayJitter }}
           </div>
         </div>
       </div>

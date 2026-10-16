@@ -408,6 +408,10 @@ pub async fn probe_service(app: AppHandle, url: String) -> CmdResult<ServiceProb
     let res = state
         .http
         .get(&url)
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        )
         .timeout(Duration::from_secs(5))
         .send()
         .await;
@@ -416,12 +420,35 @@ pub async fn probe_service(app: AppHandle, url: String) -> CmdResult<ServiceProb
     match res {
         Ok(response) => {
             let status = response.status().as_u16();
-            let ok = status < 400 || status == 401 || status == 403;
+            let body = response.text().await.unwrap_or_default();
+            let body_low = body.to_lowercase();
+
+            let is_blocked = body_low.contains("unable to load site")
+                || body_low.contains("challenge-error-text")
+                || body_low.contains("cf-browser-verification")
+                || body_low.contains("attention required! | cloudflare")
+                || body_low.contains("just a moment...")
+                || body_low.contains("доступ ограничен")
+                || body_low.contains("sorry, you have been blocked")
+                || body_low.contains("access denied");
+
+            let ok = status < 400 && !is_blocked;
+
+            let error = if !ok {
+                if is_blocked || status == 403 {
+                    Some("Недоступен".to_string())
+                } else {
+                    Some(format!("HTTP {status}"))
+                }
+            } else {
+                None
+            };
+
             Ok(ServiceProbeResult {
                 ok,
                 status,
                 latency_ms: elapsed,
-                error: if ok { None } else { Some(format!("HTTP {status}")) },
+                error,
             })
         }
         Err(err) => {
