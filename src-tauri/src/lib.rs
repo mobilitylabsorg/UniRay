@@ -2,6 +2,7 @@ mod app;
 mod commands;
 mod core;
 mod deeplink;
+mod edition;
 mod device;
 mod error;
 mod handoff;
@@ -52,6 +53,7 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir)?;
 
             let mut store = Store::load(data_dir.join("state.json"));
+            edition::restrict(&mut store.data.settings);
             let device = device::detect(&mut store, &app.package_info().version.to_string());
             #[cfg(desktop)]
             let mixed_port = store.data.settings.mixed_port;

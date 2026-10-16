@@ -215,7 +215,10 @@ async function authorizeShizuku() {
   if (next) privilege.value = next;
 }
 
-onMounted(refreshPrivilege);
+// The Google Play edition has no stealth mode: nothing to ask about.
+onMounted(() => {
+  if (store.snapshot?.features.stealth) void refreshPrivilege();
+});
 </script>
 
 <template>
@@ -373,7 +376,7 @@ onMounted(refreshPrivilege);
           @update:model-value="(ipv6: boolean) => save({ ipv6 })"
         />
       </div>
-      <div class="flex items-center gap-3 px-4 py-3">
+      <div v-if="store.snapshot?.features.adBlock" class="flex items-center gap-3 px-4 py-3">
         <div class="flex-1">
           <div class="font-medium">{{ t("settings.blockAds") }}</div>
           <div class="text-xs text-muted">{{ t("settings.blockAdsHint") }}</div>
@@ -558,8 +561,8 @@ onMounted(refreshPrivilege);
         </div>
       </div>
 
-      <div class="section-title">{{ t("settings.stealth") }}</div>
-      <div class="card mb-6 divide-y divide-line">
+      <div v-if="store.snapshot?.features.stealth" class="section-title">{{ t("settings.stealth") }}</div>
+      <div v-if="store.snapshot?.features.stealth" class="card mb-6 divide-y divide-line">
         <div class="flex items-center gap-3 px-4 py-3">
           <div class="min-w-0 flex-1">
             <div class="font-medium">{{ t("settings.privilege") }}</div>

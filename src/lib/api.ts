@@ -152,6 +152,9 @@ export interface Snapshot {
   /** Android TV / Google TV: the remote-control layout. */
   tv: boolean;
   testing: boolean;
+  /** What this edition offers: the Google Play one has no stealth mode and
+   * no ad blocking (src-tauri/src/edition.rs). */
+  features: { stealth: boolean; adBlock: boolean };
 }
 
 export interface Traffic {

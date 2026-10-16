@@ -123,6 +123,8 @@ pub struct Snapshot {
     pub testing: bool,
     /// A TV: remote-control layout.
     pub tv: bool,
+    /// What this edition offers (the Google Play one has no stealth mode).
+    pub features: crate::edition::Features,
 }
 
 pub fn snapshot(app: &AppHandle) -> Snapshot {
@@ -145,6 +147,7 @@ pub fn snapshot(app: &AppHandle) -> Snapshot {
         platform: std::env::consts::OS,
         testing: state.testing.load(Ordering::Relaxed),
         tv: state.tv.load(Ordering::Relaxed),
+        features: crate::edition::FEATURES,
     }
 }
 

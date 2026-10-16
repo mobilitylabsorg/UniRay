@@ -150,7 +150,10 @@ class KeepAwake(private val context: Context) {
       val direct =
         android.content.Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}"))
       val list = android.content.Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-      for (intent in listOf(direct, list)) {
+      // The direct prompt needs REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, which
+      // Google Play restricts: that edition opens the system's list instead.
+      val intents = if (BuildConfig.PLAY_STORE) listOf(list) else listOf(direct, list)
+      for (intent in intents) {
         try {
           if (context !is android.app.Activity) intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
           context.startActivity(intent)

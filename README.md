@@ -25,7 +25,7 @@ Linux · Windows · macOS · Android · MikroTik · Proxmox
 | 🐧 **Linux** | ✅ | ✅ TUN | AppImage |
 | 🪟 **Windows** 10+ | ✅ | ✅ TUN (Wintun) | установщик и портативный zip |
 | 🍎 **macOS** | ✅ | ✅ TUN | DMG (Apple Silicon и Intel) |
-| 🤖 **Android**, Android TV | — | ✅ VPN · ✅ Stealth (root) | APK (arm64, armv7) |
+| 🤖 **Android**, Android TV | — | ✅ VPN · ✅ Stealth (root) | APK (arm64, armv7); [сборка для Google Play](#android-editions) без stealth |
 | 📡 **Шлюз для сети**: MikroTik, Proxmox (LXC), Docker | ✅ | ✅ шлюз для сети | контейнер (armv7, arm64, amd64), шаблон LXC (amd64, arm64), [подробнее](docker/gateway/README.md) |
 | 📱 iOS | — | ❌ туннеля пока нет | — |
 
@@ -66,6 +66,20 @@ Linux · Windows · macOS · Android · MikroTik · Proxmox
 - **Android** — установите APK. Stealth-режим требует root.
   - `UniRay-android-arm64.apk` — для телефонов и 64-битных приставок.
   - `UniRay-android-armv7.apk` — для большинства Android TV и ТВ-приставок (Chromecast with Google TV, Mi Box и т.п.): на них 32-битный Android даже при 64-битном процессоре. Если arm64-APK не ставится («Приложение не установлено»), берите armv7. Разрядность системы показывает, например, CPU-Z или AIDA64 («Instruction set» / «ABI»).
+
+  <a id="android-editions"></a>
+  Сборок для Android две, из одного кода:
+
+  | | С GitHub (APK) | Для Google Play (AAB) |
+  | --- | --- | --- |
+  | Пакет | `dev.uniray.app` | `dev.uniray.app.play` — ставится рядом |
+  | VPN (VpnService) | ✅ | ✅ |
+  | Stealth (root, Shizuku) | ✅ | — |
+  | Блокировка рекламы | ✅ | — |
+  | Оптимизация батареи | прямой запрос исключения | открывается системный список |
+
+  Google Play разрешает туннель на всё устройство только через VpnService и запрещает блокировать рекламу других приложений, поэтому в его сборке этого кода нет совсем, а не скрыто: Rust собирается с `cfg(play_store)` (`src-tauri/src/edition.rs`), Android-проект берёт `src/play` вместо `src/full` (`StealthService`, libsu, Shizuku), а `scripts/check-play-edition.sh` проверяет готовый пакет. Сборку выбирает переменная `UNIRAY_STORE=play`.
+
 - **Android TV** — тот же APK, обычно `armv7`. Приложение само понимает, что оно на ТВ: управление пультом (стрелки, OK, «Назад» закрывает окна), крупный шрифт, вкладки слева.
   - Подписку удобнее добавить с телефона: «Серверы → Добавить» показывает QR-код. Откройте его камерой телефона в той же Wi-Fi-сети, вставьте ссылку и нажмите «Отправить». Страница приёма живёт, пока открыто окно, по адресу с одноразовым кодом, и закрывается после первого импорта. Это обычный HTTP внутри локальной сети: не используйте его в чужой (гостевой, публичной) Wi-Fi.
   - Включите «Не засыпать при выключенном экране» в настройках: иначе в режиме ожидания приставки соединения рвутся.
@@ -164,7 +178,7 @@ pnpm app:dev     # собирает Xray из форка, helper и движок
 pnpm app:build   # релизная сборка и пакеты
 ```
 
-`scripts/build-xray.sh` собирает Xray из [форка](https://github.com/mobilitylabsorg/Xray-core/tree/uniray) с BBRv3 в TUN ([см. ниже](#tun-bbr)) на закреплённом коммите, `scripts/build-engine.sh` — движок. `scripts/fetch-xray.sh` скачивает geo-базы (и wintun) из релиза Xray, `scripts/fetch-naive.sh` — NaiveProxy; оба сверяют SHA-256 (при обновлении версии меняйте её вместе с хэшами).
+`UNIRAY_STORE=play pnpm tauri android build --aab --target aarch64 --target armv7` собирает Android для Google Play ([см. выше](#android-editions)). `scripts/build-xray.sh` собирает Xray из [форка](https://github.com/mobilitylabsorg/Xray-core/tree/uniray) с BBRv3 в TUN ([см. ниже](#tun-bbr)) на закреплённом коммите, `scripts/build-engine.sh` — движок. `scripts/fetch-xray.sh` скачивает geo-базы (и wintun) из релиза Xray, `scripts/fetch-naive.sh` — NaiveProxy; оба сверяют SHA-256 (при обновлении версии меняйте её вместе с хэшами).
 
 <details>
 <summary><b>Тесты</b></summary>

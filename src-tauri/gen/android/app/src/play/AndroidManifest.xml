@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Google Play edition adds nothing to src/main/AndroidManifest.xml: no
+     stealth service, no Shizuku, no direct battery optimization prompt (see
+     src/full/AndroidManifest.xml for what the full edition adds). -->
+<manifest />

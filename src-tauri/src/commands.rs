@@ -128,7 +128,8 @@ pub async fn delete_subscription(app: AppHandle, id: String) -> CmdResult<()> {
 
 /// Saves the settings; a live connection is restarted when they affect it.
 #[tauri::command]
-pub async fn save_settings(app: AppHandle, settings: Settings) -> CmdResult<()> {
+pub async fn save_settings(app: AppHandle, mut settings: Settings) -> CmdResult<()> {
+    crate::edition::restrict(&mut settings);
     if settings.mixed_port == 0 {
         return Err(CmdError::new("invalidSettings", "the local port must be between 1 and 65535"));
     }
@@ -364,12 +365,14 @@ pub async fn import_backup(app: AppHandle, json: String, mode: String) -> CmdRes
     let state = app.state::<App>();
     state
         .update(|store| {
+            let mut settings = payload.settings;
+            crate::edition::restrict(&mut settings);
             if mode == "replace" {
-                store.data.settings = payload.settings;
+                store.data.settings = settings;
                 store.data.servers = payload.servers;
                 store.data.subscriptions = payload.subscriptions;
             } else {
-                store.data.settings = payload.settings;
+                store.data.settings = settings;
                 for server in payload.servers {
                     if !store
                         .data

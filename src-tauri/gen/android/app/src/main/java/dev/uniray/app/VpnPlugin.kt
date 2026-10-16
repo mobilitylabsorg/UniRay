@@ -24,10 +24,9 @@ import java.util.UUID
 import kotlin.concurrent.thread
 import org.json.JSONArray
 import org.json.JSONObject
-import rikka.shizuku.Shizuku
 
 /** How long to wait for the service to answer a start or a stop. */
-private const val START_TIMEOUT_MS = 60_000L
+internal const val START_TIMEOUT_MS = 60_000L
 private const val STOP_TIMEOUT_MS = 15_000L
 
 @InvokeArg
@@ -79,26 +78,6 @@ class ProbeArgs {
   var config: String = ""
   var url: String = ""
   var timeout: Int = 8
-}
-
-@InvokeArg
-class StealthArgs {
-  var config: String = ""
-  /** "tproxy" (iptables) or "roottun" (a root-owned TUN). */
-  var mode: String = "tproxy"
-  var port: Int = 12345
-  /** Interface the root TUN mode creates. */
-  var tunName: String = ""
-  var ipv6: Boolean = false
-  var serverName: String = ""
-  var serverId: String = ""
-  /** Hold a wake lock while connected (the "stay awake" setting). */
-  var keepAwake: Boolean = false
-  var metricsSocket: String = ""
-  var proxyTags: Array<String> = arrayOf()
-  var engineMode: String = ""
-  var engineConfig: String = ""
-  var enginePort: Int = 0
 }
 
 /**
@@ -218,7 +197,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
     val stopIntents =
       targets.map { service ->
         when (service) {
-          StealthService::class.java -> Intent(activity, service).setAction(StealthService.ACTION_STOP)
+          Stealth.service -> Intent(activity, service).setAction(Stealth.ACTION_STOP)
           else -> Intent(activity, service).setAction(UniRayVpnService.ACTION_STOP)
         }
       }
@@ -242,7 +221,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
    * [settled] accepts a state that answers the request by other means (the
    * service is simply gone).
    */
-  private fun awaitAnswer(
+  internal fun awaitAnswer(
     request: String,
     timeoutMs: Long,
     settled: (VpnState.State) -> Boolean = { false },
@@ -262,10 +241,14 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
     // Only to the tunnel service that is running: startService would start
     // the other one, and an idle VPN service left standing took the next
     // disconnect for itself while the stealth tunnel kept running.
+    // Stealth.service is null in the Google Play edition: compared only once
+    // a tunnel is known to be up.
+    val alive = VpnState.aliveTunnel(activity)
     val action =
-      when (VpnState.aliveTunnel(activity)) {
-        UniRayVpnService::class.java -> UniRayVpnService::class.java to UniRayVpnService.ACTION_NOTIFY
-        StealthService::class.java -> StealthService::class.java to StealthService.ACTION_NOTIFY
+      when {
+        alive == null -> null
+        alive == UniRayVpnService::class.java -> alive to UniRayVpnService.ACTION_NOTIFY
+        alive == Stealth.service -> alive to Stealth.ACTION_NOTIFY
         else -> null
       }
     if (action != null) {
@@ -294,17 +277,21 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun setKeepAwake(invoke: Invoke) {
     val args = invoke.parseArgs(KeepAwakeArgs::class.java)
-    for (spec in listOf(UniRayVpnService.specFile(activity), StealthService.specFile(activity))) {
+    for (spec in listOfNotNull(UniRayVpnService.specFile(activity), Stealth.specFile(activity))) {
       try {
         if (spec.exists()) spec.writeText(JSONObject(spec.readText()).put("keepAwake", args.enabled).toString())
       } catch (e: Exception) {
         // The next connection writes it afresh.
       }
     }
+    // Stealth.service is null in the Google Play edition: compared only once
+    // a tunnel is known to be up.
+    val alive = VpnState.aliveTunnel(activity)
     val action =
-      when (VpnState.aliveTunnel(activity)) {
-        UniRayVpnService::class.java -> UniRayVpnService::class.java to UniRayVpnService.ACTION_KEEP_AWAKE
-        StealthService::class.java -> StealthService::class.java to StealthService.ACTION_KEEP_AWAKE
+      when {
+        alive == null -> null
+        alive == UniRayVpnService::class.java -> alive to UniRayVpnService.ACTION_KEEP_AWAKE
+        alive == Stealth.service -> alive to Stealth.ACTION_KEEP_AWAKE
         else -> null
       }
     if (action != null) {
@@ -459,147 +446,18 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
-  private fun privilegeToken(level: Privilege) =
-    when (level) {
-      Privilege.NONE -> "none"
-      Privilege.SHIZUKU_SHELL -> "shizukuShell"
-      Privilege.SHIZUKU_ROOT -> "shizukuRoot"
-      Privilege.ROOT -> "root"
-    }
-
   /** The elevated access the device offers, for the UI. Never prompts. */
   @Command
-  fun privilegeState(invoke: Invoke) {
-    thread {
-      val state = PrivilegedShell.detect(activity)
-      invoke.resolve(
-        JSObject()
-          .put("level", privilegeToken(state.level))
-          .put("shizukuAvailable", state.shizukuAvailable)
-          .put("shizukuGranted", state.shizukuGranted)
-          .put("hasTproxy", state.hasTproxy)
-      )
-    }
-  }
+  fun privilegeState(invoke: Invoke) = Stealth.privilegeState(activity, invoke)
 
   /** Asks Shizuku for permission (interactive); resolves the new state once answered. */
   @Command
-  fun requestShizuku(invoke: Invoke) {
-    try {
-      if (Shizuku.pingBinder() && !Shizuku.isPreV11()) {
-        if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-          privilegeState(invoke)
-          return
-        }
-        val responded = java.util.concurrent.atomic.AtomicBoolean(false)
-        val listener = object : Shizuku.OnRequestPermissionResultListener {
-          override fun onRequestPermissionResult(requestCode: Int, grantResult: Int) {
-            if (requestCode == PrivilegedShell.SHIZUKU_PERMISSION_REQUEST) {
-              if (responded.compareAndSet(false, true)) {
-                try {
-                  Shizuku.removeRequestPermissionResultListener(this)
-                } catch (e: Exception) {
-                  // Ignore
-                }
-                privilegeState(invoke)
-              }
-            }
-          }
-        }
-        Shizuku.addRequestPermissionResultListener(listener)
-        thread {
-          Thread.sleep(30_000L)
-          if (responded.compareAndSet(false, true)) {
-            try {
-              Shizuku.removeRequestPermissionResultListener(listener)
-            } catch (e: Exception) {
-              // Ignore
-            }
-            privilegeState(invoke)
-          }
-        }
-        Shizuku.requestPermission(PrivilegedShell.SHIZUKU_PERMISSION_REQUEST)
-        return
-      }
-    } catch (e: Exception) {
-      // Nothing to request against; the state call below just reports "none".
-    }
-    privilegeState(invoke)
-  }
+  fun requestShizuku(invoke: Invoke) = Stealth.requestShizuku(activity, invoke)
 
   /**
-   * Starts the stealth tunnel. Verifies root (prompting for it if need be);
-   * rejects with code `noRoot` so the caller can fall back to the VPN service.
+   * Starts the stealth tunnel (the full edition; see [Stealth]), or rejects
+   * with code `noRoot` so the caller can fall back to the VPN service.
    */
   @Command
-  fun startStealth(invoke: Invoke) {
-    val args = invoke.parseArgs(StealthArgs::class.java)
-    thread {
-      var state = PrivilegedShell.detect(activity)
-      if (!state.level.canStealth) {
-        // The grant dialog may be what is missing; ask once.
-        PrivilegedShell.requestRoot()
-        state = PrivilegedShell.detect(activity)
-      }
-      if (!state.level.canStealth) {
-        invoke.reject("stealth needs root, which this device does not grant", "noRoot")
-        return@thread
-      }
-
-      if (
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-          !activity.isFinishing && !activity.isDestroyed &&
-          ContextCompat.checkSelfPermission(activity, Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-      ) {
-        ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
-      }
-
-      val spec =
-        JSONObject()
-          .put("config", args.config)
-          .put("mode", args.mode)
-          .put("port", args.port)
-          .put("tunName", args.tunName)
-          .put("ipv6", args.ipv6)
-          .put("privilege", state.level.name)
-          .put("serverName", args.serverName)
-          .put("serverId", args.serverId)
-          .put("keepAwake", args.keepAwake)
-          .put("metricsSocket", args.metricsSocket)
-          .put("proxyTags", JSONArray(args.proxyTags))
-          .put("engineMode", args.engineMode)
-          .put("engineConfig", args.engineConfig)
-          .put("enginePort", args.enginePort)
-      val file = StealthService.specFile(activity)
-      file.parentFile?.mkdirs()
-      file.writeText(spec.toString())
-
-      val request = UUID.randomUUID().toString()
-      val intent =
-        Intent(activity, StealthService::class.java)
-          .setAction(StealthService.ACTION_START)
-          .putExtra(StealthService.EXTRA_REQUEST, request)
-      try {
-        ContextCompat.startForegroundService(activity, intent)
-      } catch (e: Exception) {
-        invoke.reject("cannot start the stealth service: ${e.message}")
-        return@thread
-      }
-      val startTime = System.currentTimeMillis()
-      val answer = awaitAnswer(request, START_TIMEOUT_MS) { state ->
-        System.currentTimeMillis() - startTime > 4000L && !state.running && !VpnState.serviceAlive(activity)
-      }
-      when {
-        answer == null -> invoke.reject("the stealth service did not answer")
-        answer.running -> {
-          if (!KeepAwake.batteryExempt(activity) && !activity.isFinishing && !activity.isDestroyed) {
-            activity.runOnUiThread { KeepAwake.requestBatteryExemption(activity) }
-          }
-          invoke.resolve()
-        }
-        else -> invoke.reject(answer.error ?: "the stealth service failed to start")
-      }
-    }
-  }
+  fun startStealth(invoke: Invoke) = Stealth.start(this, activity, invoke)
 }

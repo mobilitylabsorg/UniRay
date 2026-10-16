@@ -32,6 +32,7 @@ use crate::{logs, stats};
 const FALLBACK_DNS: &str = "8.8.8.8";
 /// The loopback port the stealth tproxy inbound listens on; the iptables
 /// TPROXY target points here. Matches the port in the generated config.
+#[cfg(not(play_store))]
 const STEALTH_TPROXY_PORT: u16 = 12345;
 /// Checked every 3 s to avoid high IPC Binder wakeups while keeping UI responsive.
 const WATCH_INTERVAL: Duration = Duration::from_secs(3);
@@ -304,6 +305,10 @@ impl Running {
 
         // Stealth (no VpnService) when the user asked and root is there;
         // otherwise, and when root turns out to be missing, the VPN service.
+        // The Google Play edition has only the VPN service (edition.rs).
+        #[cfg(play_store)]
+        let outcome = start_vpn_service(app, server, settings, &name, &metrics, &log).await;
+        #[cfg(not(play_store))]
         let outcome = if settings.stealth {
             match start_stealth(app, server, settings, &name, &metrics, &log).await {
                 Err(err) if err.code == "noRoot" => {
@@ -418,6 +423,7 @@ async fn start_vpn_service(
 
 /// Brings the tunnel up without a VpnService, as a separate root process. The
 /// plugin rejects with `noRoot` when the device has no root to run it with.
+#[cfg(not(play_store))]
 async fn start_stealth(
     app: &AppHandle,
     server: &Server,

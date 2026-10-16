@@ -88,7 +88,7 @@ object VpnState {
       }
     // The stealth service first: when both are somehow up, it is the one
     // that matters (the VPN service carries nothing without its interface).
-    return listOf(StealthService::class.java, UniRayVpnService::class.java).filter { it.name in running }
+    return listOfNotNull(Stealth.service, UniRayVpnService::class.java).filter { it.name in running }
   }
 
   /**
@@ -101,7 +101,7 @@ object VpnState {
   fun tunnelsToStop(context: Context): List<Class<out android.app.Service>> {
     val started = aliveTunnels(context)
     if (started.isNotEmpty()) return started
-    return if (serviceAlive(context)) listOf(StealthService::class.java, UniRayVpnService::class.java) else emptyList()
+    return if (serviceAlive(context)) listOfNotNull(Stealth.service, UniRayVpnService::class.java) else emptyList()
   }
 
   /** Which tunnel service is currently running, if any. */

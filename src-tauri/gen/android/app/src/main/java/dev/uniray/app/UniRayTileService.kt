@@ -151,12 +151,13 @@ class UniRayTileService : TileService() {
 
   private fun getServerName(): String? {
     val vpnSpec = UniRayVpnService.specFile(this)
-    val stealthSpec = StealthService.specFile(this)
+    // None in the Google Play edition, which has no stealth mode.
+    val stealthSpec = Stealth.specFile(this)?.takeIf { it.exists() }
     val file = when {
-      stealthSpec.exists() && vpnSpec.exists() -> {
+      stealthSpec != null && vpnSpec.exists() -> {
         if (stealthSpec.lastModified() > vpnSpec.lastModified()) stealthSpec else vpnSpec
       }
-      stealthSpec.exists() -> stealthSpec
+      stealthSpec != null -> stealthSpec
       vpnSpec.exists() -> vpnSpec
       else -> null
     } ?: return null
@@ -170,14 +171,14 @@ class UniRayTileService : TileService() {
 
   private fun connect() {
     val vpnSpec = UniRayVpnService.specFile(this)
-    val stealthSpec = StealthService.specFile(this)
+    val stealthSpec = Stealth.specFile(this)?.takeIf { it.exists() }
 
-    if (!vpnSpec.exists() && !stealthSpec.exists()) {
+    if (!vpnSpec.exists() && stealthSpec == null) {
       launchApp()
       return
     }
 
-    val useStealth = stealthSpec.exists() && (!vpnSpec.exists() || stealthSpec.lastModified() > vpnSpec.lastModified())
+    val useStealth = stealthSpec != null && (!vpnSpec.exists() || stealthSpec.lastModified() > vpnSpec.lastModified())
 
     if (!useStealth) {
       val consent = VpnService.prepare(this)
@@ -200,16 +201,13 @@ class UniRayTileService : TileService() {
       tile.updateTile()
     }
 
-    val activeSpec = if (useStealth) stealthSpec else vpnSpec
+    val activeSpec = if (useStealth) stealthSpec!! else vpnSpec
     syncSessionFile(activeSpec)
 
     val request = UUID.randomUUID().toString()
     try {
       if (useStealth) {
-        val intent = Intent(this, StealthService::class.java)
-          .setAction(StealthService.ACTION_START)
-          .putExtra(StealthService.EXTRA_REQUEST, request)
-        ContextCompat.startForegroundService(this, intent)
+        ContextCompat.startForegroundService(this, Stealth.startIntent(this, request)!!)
       } else {
         val intent = Intent(this, UniRayVpnService::class.java)
           .setAction(UniRayVpnService.ACTION_START)
@@ -245,7 +243,7 @@ class UniRayTileService : TileService() {
     val request = UUID.randomUUID().toString()
 
     for (service in targets) {
-      val action = if (service == StealthService::class.java) StealthService.ACTION_STOP else UniRayVpnService.ACTION_STOP
+      val action = if (service == Stealth.service) Stealth.ACTION_STOP else UniRayVpnService.ACTION_STOP
       val intent = Intent(this, service)
         .setAction(action)
         .putExtra(UniRayVpnService.EXTRA_REQUEST, request)

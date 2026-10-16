@@ -298,6 +298,19 @@ jobs:
           done
           ls -l apk
 
+      # The Google Play edition: no stealth mode and no ad blocking, under
+      # dev.uniray.app.play (src-tauri/src/edition.rs, build.gradle.kts), as an
+      # app bundle for Play Console. Checked to carry none of the stealth code.
+      - name: Google Play bundle
+        env:
+          UNIRAY_STORE: play
+        run: |
+          rm -rf src-tauri/gen/android/app/build src-tauri/gen/android/build
+          pnpm tauri android build --aab --target aarch64 --target armv7
+          mkdir -p play
+          cp src-tauri/gen/android/app/build/outputs/bundle/universalRelease/*.aab play/UniRay-android-play.aab
+          bash scripts/check-play-edition.sh play/UniRay-android-play.aab
+
       - name: Collect
         if: always()
         run: |
@@ -308,6 +321,13 @@ jobs:
         with:
           name: uniray-android
           path: apk/*.apk
+          if-no-files-found: error
+          retention-days: 7
+      # Not a release file: the bundle goes to Play Console.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: play-android-bundle
+          path: play/*.aab
           if-no-files-found: error
           retention-days: 7
 
@@ -479,9 +499,11 @@ jobs:
             echo "::error::CHANGELOG.md has no section for $version"
             exit 1
           fi
+      # The packages, not the Play bundle (play-android-bundle).
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: uniray-*
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
