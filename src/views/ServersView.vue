@@ -24,8 +24,22 @@ type SortMode = "default" | "ping" | "name";
 const searchQuery = ref("");
 const sortBy = ref<SortMode>("default");
 
+const PROTOCOL_CHIPS = [
+  { id: "all", label: "servers.filterAll" },
+  { id: "vless", label: "servers.filterVless" },
+  { id: "vmess", label: "servers.filterVmess" },
+  { id: "trojan", label: "servers.filterTrojan" },
+  { id: "shadowsocks", label: "servers.filterShadowsocks" },
+  { id: "wireguard", label: "servers.filterWireguard" },
+  { id: "hysteria", label: "servers.filterHysteria" },
+];
+const activeFilter = ref("all");
+
 function sortServers(list: Server[]): Server[] {
   let filtered = list;
+  if (activeFilter.value !== "all") {
+    filtered = filtered.filter((s) => s.protocol.toLowerCase().includes(activeFilter.value.toLowerCase()));
+  }
   const q = searchQuery.value.trim().toLowerCase();
   if (q) {
     filtered = filtered.filter(
@@ -253,6 +267,20 @@ async function confirm() {
           <option value="name">{{ t("servers.sortName") }}</option>
         </select>
       </div>
+    </div>
+
+    <!-- Protocol Filter Chips -->
+    <div v-if="store.servers.length > 0" class="mb-4 flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+      <button
+        v-for="chip in PROTOCOL_CHIPS"
+        :key="chip.id"
+        type="button"
+        class="shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors duration-200"
+        :class="activeFilter === chip.id ? 'bg-accent text-accent-ink font-semibold shadow-sm' : 'bg-surface text-muted hover:text-ink hover:bg-raised border border-line'"
+        @click="activeFilter = chip.id"
+      >
+        {{ t(chip.label) }}
+      </button>
     </div>
 
     <div v-if="groups.length === 0" class="card rise flex flex-col items-center gap-2 px-6 py-12 text-center">

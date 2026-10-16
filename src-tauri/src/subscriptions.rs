@@ -24,6 +24,23 @@ pub struct ImportReport {
     pub errors: Vec<String>,
 }
 
+pub fn resolve_user_agent(token: &str) -> String {
+    match token.trim() {
+        "happ" | "happ:Android" | "happ_android" => "Happ/1.8.0 (Android 14; Mobile)".into(),
+        "happ:ios" | "happ_ios" => "Happ/1.8.0 (iPhone; iOS 17.5)".into(),
+        "happ:Windows" | "happ_windows" => "Happ/1.8.0 (Windows NT 10.0; Win64; x64)".into(),
+        "incy" => "INCY/3.4.8/android Dalvik/2.1.0".into(),
+        "v2rayng" | "v2rayNG" => "v2rayNG/1.9.5".into(),
+        "v2raytun" => "v2raytun".into(),
+        "throne" => "Throne/1.1.2".into(),
+        "nekobox" => "v2ray;sing-box 1.13.0;NekoBox/Android/1.4.1 (Prefer ClashMeta Format)".into(),
+        "karing" => "Karing/1.2.23.2606 platform/android;mihomo/1.19.28;clash-verge;FLClash;ClashMeta;v2ray;sing-box 1.13.0;NekoBox/Android/1.4.1 (Prefer ClashMeta Format);HiddifyNext".into(),
+        "hiddify" => "Hiddify/2.0.0".into(),
+        "sing-box" => "sing-box/1.13.0".into(),
+        custom => custom.to_string(),
+    }
+}
+
 /// Requests the subscription, identifying the device unless that is turned
 /// off. A panel with Remnawave's HWID device limit answers 404 without it.
 async fn fetch(app: &AppHandle, url: &str) -> CmdResult<Parsed> {
@@ -31,8 +48,17 @@ async fn fetch(app: &AppHandle, url: &str) -> CmdResult<Parsed> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err(CmdError::new("invalidUrl", "a subscription URL must start with http:// or https://"));
     }
-    let send_hwid = state.store.lock().unwrap().data.settings.send_hwid;
-    let headers = hwid::request_headers(&state.device.lock().unwrap(), send_hwid);
+    let settings = state.store.lock().unwrap().data.settings.clone();
+    let send_hwid = settings.send_hwid;
+    let mut headers = hwid::request_headers(&state.device.lock().unwrap(), send_hwid);
+    if !settings.user_agent.trim().is_empty() {
+        let ua = resolve_user_agent(&settings.user_agent);
+        for (name, value) in &mut headers {
+            if *name == "user-agent" {
+                *value = ua.clone();
+            }
+        }
+    }
     let hwid_sent = headers.iter().any(|(name, _)| *name == "x-hwid");
 
     let request = |client: &reqwest::Client| {

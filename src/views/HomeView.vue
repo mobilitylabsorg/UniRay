@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
 import AppIcon from "../components/AppIcon.vue";
+import ServiceCheckModal from "../components/ServiceCheckModal.vue";
+import SpeedTestModal from "../components/SpeedTestModal.vue";
 import { api, type Mode } from "../lib/api";
 import { formatBytes, formatDuration, formatSpeed } from "../lib/format";
 import { flagOf, withFlag } from "../lib/flag";
@@ -10,6 +12,9 @@ import { useAppStore } from "../stores/app";
 
 const store = useAppStore();
 const { t } = useI18n();
+
+const showServiceCheck = ref(false);
+const showSpeedTest = ref(false);
 
 const now = ref(Date.now());
 let ticker: ReturnType<typeof setInterval> | undefined;
@@ -165,6 +170,25 @@ const MODES: { value: Mode; label: string }[] = [
         </div>
       </Transition>
 
+      <div class="grid grid-cols-2 gap-3">
+        <button
+          type="button"
+          class="card flex items-center justify-center gap-2 px-3 py-2.5 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-ink active:scale-98"
+          @click="showServiceCheck = true"
+        >
+          <AppIcon name="check" :size="16" class="text-accent" />
+          <span>{{ t("tools.serviceCheck") }}</span>
+        </button>
+        <button
+          type="button"
+          class="card flex items-center justify-center gap-2 px-3 py-2.5 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-ink active:scale-98"
+          @click="showSpeedTest = true"
+        >
+          <AppIcon name="gauge" :size="16" class="text-cyan-400" />
+          <span>{{ t("tools.speedTest") }}</span>
+        </button>
+      </div>
+
       <template v-if="store.tunSupported && store.settings">
         <div class="card relative flex p-1" role="radiogroup" :aria-label="t('home.mode')">
           <span
@@ -195,5 +219,12 @@ const MODES: { value: Mode; label: string }[] = [
         </p>
       </template>
     </div>
+
+    <Transition name="sheet">
+      <ServiceCheckModal v-if="showServiceCheck" @close="showServiceCheck = false" />
+    </Transition>
+    <Transition name="sheet">
+      <SpeedTestModal v-if="showSpeedTest" @close="showSpeedTest = false" />
+    </Transition>
   </div>
 </template>

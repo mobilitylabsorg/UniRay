@@ -116,6 +116,17 @@ pub fn run() {
             commands::handoff_stop,
             commands::get_logs,
             commands::clear_logs,
+            commands::export_backup,
+            commands::import_backup,
+            commands::probe_service,
+            commands::speed_test_download,
+            commands::speed_test_upload,
+            commands::speed_test_multistream_download,
+            commands::speed_test_multistream_upload,
+            commands::speed_test_probe_latency,
+            commands::get_underlying_network,
+            commands::run_dpi_probe,
+            commands::apply_dpi_fixes,
             commands::quit,
         ])
         .build(tauri::generate_context!())

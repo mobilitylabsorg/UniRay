@@ -90,6 +90,13 @@ export interface Settings {
   tlsFragmentInterval: string;
   tlsFragmentPackets: string;
   tlsFingerprint: string;
+  userAgent: string;
+  tcpFastOpen: boolean;
+  allowInsecure: boolean;
+  wgMtu: number;
+  autoConnect: boolean;
+  autoFailover: boolean;
+  autoRecover: boolean;
 }
 
 /** Elevated access the device offers; only `root`/`shizukuRoot` can do stealth. */
@@ -180,6 +187,44 @@ export interface ImportReport {
   errors: string[];
 }
 
+export interface ServiceProbeResult {
+  ok: boolean;
+  status: number;
+  latencyMs: number;
+  error: string | null;
+}
+
+export interface SpeedTestLatencyResult {
+  pingMs: number | null;
+  jitterMs: number | null;
+}
+
+export interface UnderlyingNetworkInfo {
+  type: string;
+  dns: string[];
+  address?: string | null;
+}
+
+export interface SpeedTestResult {
+  bytes: number;
+  elapsedMs: number;
+  mbps: number;
+}
+
+export type DpiVerdict = "clear" | "blocked" | "unknown";
+
+export interface DpiFinding {
+  id: "tcp" | "tls_sni" | "sustained" | "dns" | "udp";
+  title: string;
+  verdict: DpiVerdict;
+  detail: string;
+}
+
+export interface DpiReport {
+  findings: DpiFinding[];
+  canApply: boolean;
+}
+
 export const api = {
   getState: () => invoke<Snapshot>("get_state"),
   import: (text: string) => invoke<ImportReport>("import", { text }),
@@ -205,6 +250,20 @@ export const api = {
   setKeepAwake: (enabled: boolean) => invoke<{ batteryExempt: boolean }>("set_keep_awake", { enabled }),
   getLogs: () => invoke<LogLine[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),
+  exportBackup: () => invoke<string>("export_backup"),
+  importBackup: (json: string, mode: "merge" | "replace") => invoke<void>("import_backup", { json, mode }),
+  probeService: (url: string) => invoke<ServiceProbeResult>("probe_service", { url }),
+  speedTestDownload: (bytes: number) => invoke<SpeedTestResult>("speed_test_download", { bytes }),
+  speedTestUpload: (bytes: number) => invoke<SpeedTestResult>("speed_test_upload", { bytes }),
+  speedTestMultiStreamDownload: (durationSec?: number, url?: string, bypassTunnel?: boolean) =>
+    invoke<SpeedTestResult>("speed_test_multistream_download", { durationSec, url, bypassTunnel }),
+  speedTestMultiStreamUpload: (durationSec?: number, url?: string, bypassTunnel?: boolean) =>
+    invoke<SpeedTestResult>("speed_test_multistream_upload", { durationSec, url, bypassTunnel }),
+  speedTestProbeLatency: (url: string, samples?: number, bypassTunnel?: boolean) =>
+    invoke<SpeedTestLatencyResult>("speed_test_probe_latency", { url, samples, bypassTunnel }),
+  getUnderlyingNetwork: () => invoke<UnderlyingNetworkInfo>("get_underlying_network"),
+  runDpiProbe: () => invoke<DpiReport>("run_dpi_probe"),
+  applyDpiFixes: () => invoke<void>("apply_dpi_fixes"),
   quit: () => invoke<void>("quit"),
 };
 

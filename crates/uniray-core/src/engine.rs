@@ -63,7 +63,7 @@ fn wireguard_run(wireguard: &WgConfig, port: u16, ipv6: bool) -> Result<EngineRu
             "uapi": wireguard.to_uapi(&endpoints)?,
             "addresses": wireguard.addresses,
             "dns": wireguard.dns.iter().filter(|dns| dns.parse::<IpAddr>().is_ok()).collect::<Vec<_>>(),
-            "mtu": wireguard.mtu.unwrap_or(1420),
+            "mtu": wireguard.mtu.unwrap_or(1280),
         },
     });
     let warnings = wireguard

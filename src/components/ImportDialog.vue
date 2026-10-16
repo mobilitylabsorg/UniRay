@@ -124,7 +124,7 @@ onBeforeUnmount(() => {
         <AppIcon name="file" :size="18" />{{ t("servers.fromFile") }}
       </button>
       <input ref="fileInput" type="file" accept="image/*" class="hidden" @change="onImage" />
-      <input ref="confInput" type="file" accept=".conf,.txt,.json,text/plain,application/json" multiple class="hidden" @change="onFile" />
+      <input ref="confInput" type="file" accept=".conf,.txt,.json,.yaml,.yml,text/plain,application/json,text/yaml" multiple class="hidden" @change="onFile" />
     </div>
     <button class="btn btn-primary mt-3 w-full" :disabled="busy || !text.trim()" @click="submit">
       {{ t("common.add") }}

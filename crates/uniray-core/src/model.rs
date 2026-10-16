@@ -254,6 +254,27 @@ pub struct Settings {
     /// uTLS fingerprint for TLS/Reality handshakes: "auto", "chrome", "firefox", "safari", "ios", "edge", "random", "randomized".
     #[serde(default = "default_tls_fingerprint")]
     pub tls_fingerprint: String,
+    /// User-Agent header for subscription requests (empty = default).
+    #[serde(default)]
+    pub user_agent: String,
+    /// Enable TCP Fast Open on TCP outbounds.
+    #[serde(default)]
+    pub tcp_fast_open: bool,
+    /// Allow insecure TLS certificates.
+    #[serde(default)]
+    pub allow_insecure: bool,
+    /// WireGuard tunnel MTU (defaults to 1280 to prevent packet fragmentation on mobile).
+    #[serde(default = "default_wg_mtu")]
+    pub wg_mtu: u16,
+    /// Automatically connect to the selected server on app start.
+    #[serde(default)]
+    pub auto_connect: bool,
+    /// Auto-failover to next fastest server when tunnel stalls or disconnects.
+    #[serde(default)]
+    pub auto_failover: bool,
+    /// Auto-recover connection when stalled or dropped in background.
+    #[serde(default)]
+    pub auto_recover: bool,
 }
 
 fn default_auto_update_hours() -> u32 {
@@ -278,6 +299,10 @@ fn default_tls_fragment_packets() -> String {
 
 fn default_tls_fingerprint() -> String {
     "auto".into()
+}
+
+fn default_wg_mtu() -> u16 {
+    1280
 }
 
 impl Default for Settings {
@@ -317,6 +342,13 @@ impl Default for Settings {
             tls_fragment_interval: default_tls_fragment_interval(),
             tls_fragment_packets: default_tls_fragment_packets(),
             tls_fingerprint: default_tls_fingerprint(),
+            user_agent: String::new(),
+            tcp_fast_open: false,
+            allow_insecure: false,
+            wg_mtu: default_wg_mtu(),
+            auto_connect: false,
+            auto_failover: false,
+            auto_recover: false,
         }
     }
 }

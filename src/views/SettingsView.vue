@@ -4,7 +4,11 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
 import AppIcon from "../components/AppIcon.vue";
+import BackupModal from "../components/BackupModal.vue";
+import DiagnosticsModal from "../components/DiagnosticsModal.vue";
 import PerAppDialog from "../components/PerAppDialog.vue";
+import ServiceCheckModal from "../components/ServiceCheckModal.vue";
+import SpeedTestModal from "../components/SpeedTestModal.vue";
 import ToggleSwitch from "../components/ToggleSwitch.vue";
 import { LOCALES } from "../i18n";
 import { api, type DelayTestMode, type Mode, type PerAppMode, type PrivilegeState, type Settings } from "../lib/api";
@@ -35,8 +39,23 @@ const TLS_FINGERPRINTS = [
   { value: "random", label: "settings.fpRandom" },
   { value: "randomized", label: "settings.fpRandomized" },
 ];
+const WG_MTU_OPTIONS = [1280, 1380, 1420, 1500];
+const UA_PRESETS = [
+  { value: "", label: "settings.uaUniRay" },
+  { value: "happ", label: "settings.uaHappAndroid" },
+  { value: "incy", label: "settings.uaIncy" },
+  { value: "v2rayng", label: "settings.uaV2rayng" },
+  { value: "nekobox", label: "settings.uaNekobox" },
+  { value: "karing", label: "settings.uaKaring" },
+  { value: "hiddify", label: "settings.uaHiddify" },
+  { value: "sing-box", label: "settings.uaSingBox" },
+];
 
 const choosingApps = ref(false);
+const showBackup = ref(false);
+const showServiceCheck = ref(false);
+const showSpeedTest = ref(false);
+const showDiagnostics = ref(false);
 
 function savePerAppMode(mode: string) {
   return save({ perApp: { mode: mode as PerAppMode, packages: store.settings!.perApp.packages } });
@@ -76,7 +95,7 @@ watch(
 
 function saveDraft(key: "probeUrl" | "tlsFragmentLength" | "tlsFragmentInterval" | "tlsFragmentPackets") {
   const value = draft[key].trim();
-  if (value && value !== store.settings?.[key]) {
+  if (value !== store.settings?.[key]) {
     save({ [key]: value });
   } else {
     draft[key] = store.settings?.[key] ?? "";
@@ -205,6 +224,39 @@ onMounted(refreshPrivilege);
 
     <div class="section-title">{{ t("settings.connection") }}</div>
     <div class="card mb-6 divide-y divide-line">
+      <div class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.autoConnect") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.autoConnectHint") }}</div>
+        </div>
+        <ToggleSwitch
+          :model-value="store.settings.autoConnect"
+          :label="t('settings.autoConnect')"
+          @update:model-value="(autoConnect: boolean) => save({ autoConnect })"
+        />
+      </div>
+      <div class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.autoFailover") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.autoFailoverHint") }}</div>
+        </div>
+        <ToggleSwitch
+          :model-value="store.settings.autoFailover"
+          :label="t('settings.autoFailover')"
+          @update:model-value="(autoFailover: boolean) => save({ autoFailover })"
+        />
+      </div>
+      <div class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.autoRecover") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.autoRecoverHint") }}</div>
+        </div>
+        <ToggleSwitch
+          :model-value="store.settings.autoRecover"
+          :label="t('settings.autoRecover')"
+          @update:model-value="(autoRecover: boolean) => save({ autoRecover })"
+        />
+      </div>
       <div v-if="!store.isDesktop" class="flex items-center gap-3 px-4 py-3">
         <div class="flex-1">
           <div class="font-medium">{{ t("settings.keepAwake") }}</div>
@@ -365,20 +417,20 @@ onMounted(refreshPrivilege);
       <Transition name="pop">
         <div v-if="store.settings.tlsFragment" class="space-y-3 px-4 py-3">
           <div class="flex flex-wrap items-center gap-2 mb-2">
-            <span class="text-xs text-muted">Пресеты:</span>
+            <span class="text-xs text-muted">{{ t("settings.presets") }}</span>
             <button
               type="button"
               class="btn btn-quiet py-1 px-2.5 text-xs"
               @click="setFragmentPreset('100-200', '10-20')"
             >
-              Стандарт (100-200 / 10-20)
+              {{ t("settings.presetStandard") }}
             </button>
             <button
               type="button"
               class="btn btn-quiet py-1 px-2.5 text-xs"
               @click="setFragmentPreset('10-30', '5-15')"
             >
-              Агрессивный (10-30 / 5-15)
+              {{ t("settings.presetAggressive") }}
             </button>
           </div>
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -432,6 +484,43 @@ onMounted(refreshPrivilege);
           @change="save({ tlsFingerprint: ($event.target as HTMLSelectElement).value })"
         >
           <option v-for="fp in TLS_FINGERPRINTS" :key="fp.value" :value="fp.value">{{ t(fp.label) }}</option>
+        </select>
+      </label>
+      <div class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.tcpFastOpen") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.tcpFastOpenHint") }}</div>
+        </div>
+        <ToggleSwitch
+          :model-value="store.settings.tcpFastOpen"
+          :label="t('settings.tcpFastOpen')"
+          @update:model-value="(tcpFastOpen: boolean) => save({ tcpFastOpen })"
+        />
+      </div>
+      <div class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.allowInsecure") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.allowInsecureHint") }}</div>
+        </div>
+        <ToggleSwitch
+          :model-value="store.settings.allowInsecure"
+          :label="t('settings.allowInsecure')"
+          @update:model-value="(allowInsecure: boolean) => save({ allowInsecure })"
+        />
+      </div>
+      <label class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.wgMtu") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.wgMtuHint") }}</div>
+        </div>
+        <select
+          class="field w-44 px-2 text-xs"
+          :value="store.settings.wgMtu || 1280"
+          @change="save({ wgMtu: Number(($event.target as HTMLSelectElement).value) })"
+        >
+          <option v-for="mtu in WG_MTU_OPTIONS" :key="mtu" :value="mtu">
+            {{ mtu }} {{ mtu === 1280 ? t('settings.wgMtuRecommended') : '' }}
+          </option>
         </select>
       </label>
     </div>
@@ -641,6 +730,78 @@ onMounted(refreshPrivilege);
           <option :value="24">{{ t("settings.autoUpdate24h") }}</option>
         </select>
       </label>
+      <label class="flex items-center gap-3 px-4 py-3">
+        <div class="flex-1">
+          <div class="font-medium">{{ t("settings.userAgent") }}</div>
+          <div class="text-xs text-muted">{{ t("settings.userAgentHint") }}</div>
+        </div>
+        <select
+          class="field w-44 px-2 text-xs"
+          :value="store.settings.userAgent || ''"
+          @change="save({ userAgent: ($event.target as HTMLSelectElement).value })"
+        >
+          <option v-for="ua in UA_PRESETS" :key="ua.value" :value="ua.value">{{ t(ua.label) }}</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="section-title">{{ t("tools.title") }}</div>
+    <div class="card mb-6 divide-y divide-line">
+      <button
+        class="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-raised"
+        @click="showServiceCheck = true"
+      >
+        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent">
+          <AppIcon name="check" :size="18" />
+        </span>
+        <span class="flex-1 min-w-0">
+          <span class="block font-medium">{{ t("tools.serviceCheck") }}</span>
+          <span class="block text-xs text-muted">{{ t("tools.serviceCheckHint") }}</span>
+        </span>
+        <AppIcon name="chevron" class="text-muted" />
+      </button>
+
+      <button
+        class="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-raised"
+        @click="showSpeedTest = true"
+      >
+        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-cyan-500/15 text-cyan-400">
+          <AppIcon name="gauge" :size="18" />
+        </span>
+        <span class="flex-1 min-w-0">
+          <span class="block font-medium">{{ t("tools.speedTest") }}</span>
+          <span class="block text-xs text-muted">{{ t("tools.speedTestHint") }}</span>
+        </span>
+        <AppIcon name="chevron" class="text-muted" />
+      </button>
+
+      <button
+        class="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-raised"
+        @click="showDiagnostics = true"
+      >
+        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-400">
+          <AppIcon name="alert" :size="18" />
+        </span>
+        <span class="flex-1 min-w-0">
+          <span class="block font-medium">{{ t("tools.diagnostics") }}</span>
+          <span class="block text-xs text-muted">{{ t("tools.diagnosticsHint") }}</span>
+        </span>
+        <AppIcon name="chevron" class="text-muted" />
+      </button>
+
+      <button
+        class="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-raised"
+        @click="showBackup = true"
+      >
+        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-violet-500/15 text-violet-400">
+          <AppIcon name="copy" :size="18" />
+        </span>
+        <span class="flex-1 min-w-0">
+          <span class="block font-medium">{{ t("tools.backup") }}</span>
+          <span class="block text-xs text-muted">{{ t("tools.backupHint") }}</span>
+        </span>
+        <AppIcon name="chevron" class="text-muted" />
+      </button>
     </div>
 
     <div class="section-title">{{ t("settings.app") }}</div>
@@ -677,6 +838,18 @@ onMounted(refreshPrivilege);
     </button>
     <Transition name="sheet">
       <PerAppDialog v-if="choosingApps" @close="choosingApps = false" />
+    </Transition>
+    <Transition name="sheet">
+      <ServiceCheckModal v-if="showServiceCheck" @close="showServiceCheck = false" />
+    </Transition>
+    <Transition name="sheet">
+      <SpeedTestModal v-if="showSpeedTest" @close="showSpeedTest = false" />
+    </Transition>
+    <Transition name="sheet">
+      <DiagnosticsModal v-if="showDiagnostics" @close="showDiagnostics = false" />
+    </Transition>
+    <Transition name="sheet">
+      <BackupModal v-if="showBackup" @close="showBackup = false" />
     </Transition>
   </div>
 </template>
