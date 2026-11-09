@@ -3,11 +3,12 @@
 #
 #   scripts/build-xray.sh <target triple> <output file>
 #
-# The fork (mobilitylabsorg/Xray-core, branch uniray) is the pinned Xray
-# release with gVisor from mobilitylabsorg/gvisor, the fork uniray-engine
-# builds on, and a TUN stack that uses its BBRv3 and RACK loss detection:
-# stock Xray's TUN (Cubic, RACK off) drops to 1-2 MB/s once the path to the
-# clients loses 2% of its packets. See README.md#tun-bbr.
+# The fork (mobilitylabsorg/Xray-core, branch uniray-v26.11.9) is the pinned
+# Xray release, whose TUN runs on Xray's own small TCP/IP stack, with loss
+# handling for a lossy way to the clients: DupThresh instead of the first SACK,
+# a cwnd floor from the delivery rate (as BBR), and a quick resend of a lost
+# retransmission, both off in congestion. Stock v26.11.9 drops to 7 MB/s once
+# the LAN leg loses 2% of its packets, the fork keeps 94. See README.md#tun-bbr.
 #
 # Xray needs no cgo, so every target cross-compiles from anywhere with Go
 # (the version the fork's go.mod asks for; GOTOOLCHAIN=auto fetches it).
@@ -19,8 +20,8 @@
 set -euo pipefail
 
 XRAY_REPO="https://github.com/mobilitylabsorg/Xray-core.git"
-# Branch uniray: Xray-core v26.9.30 + mobilitylabsorg/gvisor + BBRv3/RACK in TUN.
-XRAY_COMMIT="14f61479c8e56e67cf7d3f9752f72a937df6ff57"
+# Branch uniray-v26.11.9: Xray-core v26.11.9 + go1.27.3 + loss handling in TUN.
+XRAY_COMMIT="cf2685b4c306946ccb1d21f7c0f04496d3870b01"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 target="$1" out="$2"

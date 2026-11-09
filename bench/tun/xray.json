@@ -1,0 +1,6 @@
+{
+  "log": {"loglevel": "error"},
+  "inbounds": [{"tag": "tun", "protocol": "tun",
+    "settings": {"name": "xt0", "mtu": 1500, "gateway": ["172.19.0.1/30"]}}],
+  "outbounds": [{"protocol": "freedom", "settings": {"redirect": "127.0.0.1:0"}}]
+}

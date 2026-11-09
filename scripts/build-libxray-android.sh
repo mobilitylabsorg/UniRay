@@ -3,10 +3,9 @@
 # process) from UniRay's fork into src-tauri/gen/android/app/libs/, and makes
 # sure the geo files the APK bundles are present.
 #
-# The fork (mobilitylabsorg/libXray, branch uniray) is libXray v26.9.30 with
-# Xray-core and gVisor from the mobilitylabsorg forks, as build-xray.sh: the
-# VPN mode's TUN gets BBRv3 and RACK. Keep LIBXRAY_COMMIT on the Xray commit
-# build-xray.sh pins.
+# The fork (mobilitylabsorg/libXray, branch uniray-v26.11.9) is libXray with
+# Xray-core from UniRay's fork, as build-xray.sh: the VPN mode's TUN gets the
+# same loss handling. Keep LIBXRAY_COMMIT on the Xray commit build-xray.sh pins.
 #
 # Needs Go, the Android NDK (NDK_HOME or ANDROID_NDK_HOME) and the SDK
 # (ANDROID_HOME). gomobile and gobind are built at the version libXray's go.mod
@@ -14,8 +13,8 @@
 set -euo pipefail
 
 LIBXRAY_REPO="https://github.com/mobilitylabsorg/libXray.git"
-# Branch uniray: libXray v26.9.30 + Xray-core uniray 14f6147 + mobilitylabsorg/gvisor.
-LIBXRAY_COMMIT="db0f41f6346c447e40cde7baab5776802875a253"
+# Branch uniray-v26.11.9: libXray ec2fe80 (Xray-core v26.11.9) + Xray-core cf2685b.
+LIBXRAY_COMMIT="6d272ef42069883b784efd2459df97a6e7af643f"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 libs="$root/src-tauri/gen/android/app/libs"

@@ -4,7 +4,7 @@ VPN-шлюз для сети: контейнер для RouterOS (MikroTik), ш�
 
 Протоколы: всё, что умеет Xray (VLESS, VMess, Trojan, Shadowsocks, Hysteria2), а также WireGuard и AmneziaWG (до 3.1) через `uniray-engine` и NaiveProxy через официальный `naive`. Движок и `naive` работают за Xray, как в приложении: Xray пускает в них только свой трафик, а сервер отправляет мимо туннеля.
 
-Xray собран из [форка UniRay](https://github.com/mobilitylabsorg/Xray-core/tree/uniray): в TUN-стеке BBRv3 и RACK вместо Cubic. Стоковый Xray на пути «шлюз → роутер → устройство» с потерями падает до 1–2 МБ/с, подробности и замеры — в [README](../../README.md#tun-bbr).
+Xray собран из [форка UniRay](https://github.com/mobilitylabsorg/Xray-core/tree/uniray-v26.11.9): v26.11.9 с собственным TCP-стеком в TUN, которому форк добавляет обработку потерь на участке LAN. Стоковый v26.11.9 при 2% потерь на пути «шлюз → роутер → устройство» падает до 7 МБ/с, форк держит 94; подробности и замеры — в [README](../../README.md#tun-bbr).
 
 Образы для armv7, arm64 и amd64:
 

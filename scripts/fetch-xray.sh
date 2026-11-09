@@ -12,18 +12,18 @@
 # the release; bump XRAY_VERSION and the digests together.
 set -euo pipefail
 
-XRAY_VERSION="v26.9.30"
+XRAY_VERSION="v26.11.9"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 target="${1:-$(rustc -vV | sed -n 's/^host: //p')}"
 
 case "$target" in
-  x86_64-unknown-linux-gnu)   asset="linux-64";          sha256="f851110beaff16e78d643f0ccfd9524b4a44dfd59bae3e34bb52bba378f7690e" ;;
-  aarch64-unknown-linux-gnu)  asset="linux-arm64-v8a";   sha256="9886f077f9fd8e6713b84c377c1c7db4e53b9bfa8c276a5bd12561139522b473" ;;
-  x86_64-pc-windows-msvc)     asset="windows-64";        sha256="b17a619343c11b89d8faf36278298856749b15c52277d875d32051b33dcda617" ;;
-  aarch64-pc-windows-msvc)    asset="windows-arm64-v8a"; sha256="5cf7ad4fd9aac5aa248ae7e598f3f0a0d0f79a6195089d611ddef9653830f1b0" ;;
-  x86_64-apple-darwin)        asset="macos-64";          sha256="1f366aaf21d3c3003d1556d066c4e08f9dd62d1f96555ecedde85b397df0f684" ;;
-  aarch64-apple-darwin)       asset="macos-arm64-v8a";   sha256="4b363bd924df5bf09f87bd445755ff8e5742b9a8a0480cda261061416c3c7dce" ;;
+  x86_64-unknown-linux-gnu)   asset="linux-64";          sha256="b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82" ;;
+  aarch64-unknown-linux-gnu)  asset="linux-arm64-v8a";   sha256="64ed6858982a7f5eb85d88b811089063bd4f17561f4c8f44e0f1dc8e6f6430be" ;;
+  x86_64-pc-windows-msvc)     asset="windows-64";        sha256="1262522266337b824f07beb8e1375786b437683b3890105469088f8e17e0a69d" ;;
+  aarch64-pc-windows-msvc)    asset="windows-arm64-v8a"; sha256="9fdd48ff890e54ffdc37f92df9037c940fe4d4f914755b70cc644b97e9678a83" ;;
+  x86_64-apple-darwin)        asset="macos-64";          sha256="488963e676e06f5e48547f9dd38116aaca8de4234959b4272ae8f284e658dfd0" ;;
+  aarch64-apple-darwin)       asset="macos-arm64-v8a";   sha256="233f0c66681cd0726f81a6b2b6ed6a5710869e312047b522e46ed53035bebd26" ;;
   *) echo "fetch-xray: unsupported target $target" >&2; exit 1 ;;
 esac
 
