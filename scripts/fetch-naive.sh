@@ -18,18 +18,20 @@
 set -euo pipefail
 
 # Empty: the latest release.
-NAIVE_VERSION="${NAIVE_VERSION-v154.0.8037.49-4}"
+NAIVE_VERSION="${NAIVE_VERSION-v154.0.8037.49-5}"
 # The digest of an asset of the pinned NAIVE_VERSION (a function, not an
 # associative array: macOS ships bash 3).
 pinned_sha256() {
-  [[ "$NAIVE_VERSION" == v154.0.8037.49-4 ]] || return 0
+  [[ "$NAIVE_VERSION" == v154.0.8037.49-5 ]] || return 0
   case "$1" in
-    naiveproxy-v154.0.8037.49-4-win-x64.zip) echo 120b99474848d2f737515c1043249b0998e235fda750f61893d774b317bf1870 ;;
-    naiveproxy-v154.0.8037.49-4-linux-x64.tar.xz) echo 9d765620b90f7c60eb40c7c68b2f82537757cc52a8693dee7a00f8ba8b13dfd0 ;;
-    naiveproxy-v154.0.8037.49-4-linux-arm64.tar.xz) echo dfa99dc36dafa1ee7f97f48bde14e9ee96bc4011e5cc10c7881fa7883859a036 ;;
-    naiveproxy-v154.0.8037.49-4-linux-arm.tar.xz) echo e5637d35a0534af79aa17f69e1e3bbf59a41513104527e686f7650e180b139bb ;;
-    naiveproxy-plugin-v154.0.8037.49-4-arm64-v8a.apk) echo 53d2ffd05fa13a8af22225bd738e5f59c7a499b369917c633a30c19c84f1f117 ;;
-    naiveproxy-plugin-v154.0.8037.49-4-armeabi-v7a.apk) echo 175e0edcccf65c9e69ff9b2b3185b86474008d14c5ed7507bbb63a4bf3765797 ;;
+    naiveproxy-v154.0.8037.49-5-win-x64.zip) echo 36d14c117ed052c8d04d10a30db083423ad4e423c012c2ef2ca7286ec06afbbc ;;
+    naiveproxy-v154.0.8037.49-5-linux-x64.tar.xz) echo 80214dfea1767f6ecf63a3a79dc9f48b203460f51abc609357fff48dd5844c7d ;;
+    naiveproxy-v154.0.8037.49-5-linux-arm64.tar.xz) echo 8f4d917fa39a5d8cf1c17fc12ffd99ba84c015b62b43461d09cc074ca4114d8d ;;
+    naiveproxy-v154.0.8037.49-5-linux-arm.tar.xz) echo 3a331f94bee43e220bb6124a7419ca61defdd3ac92954ee1af3b0dcbb3d9cc17 ;;
+    naiveproxy-v154.0.8037.49-5-mac-x64-x64.tar.xz) echo a3904193bd8d099eb034366c19a019f22573171aeece34e8d0206a92f0b8141d ;;
+    naiveproxy-v154.0.8037.49-5-mac-arm64-arm64.tar.xz) echo 8b330140e0fed15fae71732cefee16f052325c30352ae3e5638a1e9f9d54d542 ;;
+    naiveproxy-plugin-v154.0.8037.49-5-arm64-v8a.apk) echo 3a532e6894d87c1fca5c527d3598892627829c76cb5b75ed831555f384841bd0 ;;
+    naiveproxy-plugin-v154.0.8037.49-5-armeabi-v7a.apk) echo 9acbf08afea2d35aad492d5312444b6aecd5fafa41f29d794d4821549f330da5 ;;
     *) echo "" ;;
   esac
 }
