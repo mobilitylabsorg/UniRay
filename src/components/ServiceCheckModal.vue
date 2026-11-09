@@ -12,20 +12,21 @@ const { t } = useI18n();
 interface ServiceItem {
   id: string;
   name: string;
+  desc: string;
   url: string;
 }
 
 const SERVICES: ServiceItem[] = [
-  { id: "youtube", name: "YouTube", url: "https://www.youtube.com/generate_204" },
-  { id: "telegram", name: "Telegram", url: "https://web.telegram.org/favicon.ico" },
-  { id: "discord", name: "Discord", url: "https://discord.com/api/v10/gateway" },
-  { id: "instagram", name: "Instagram", url: "https://www.instagram.com/favicon.ico" },
-  { id: "chatgpt", name: "ChatGPT", url: "https://chatgpt.com/favicon.ico" },
-  { id: "x", name: "X (Twitter)", url: "https://x.com/favicon.ico" },
-  { id: "steam", name: "Steam", url: "https://api.steampowered.com/ISteamWebAPIUtil/GetServerInfo/v1/" },
-  { id: "twitch", name: "Twitch", url: "https://www.twitch.tv/favicon.ico" },
-  { id: "spotify", name: "Spotify", url: "https://open.spotify.com/favicon.ico" },
-  { id: "rutracker", name: "RuTracker", url: "https://rutracker.org/favicon.ico" },
+  { id: "youtube", name: "YouTube", desc: "Видеохостинг", url: "https://www.youtube.com/generate_204" },
+  { id: "telegram", name: "Telegram", desc: "Мессенджер", url: "https://web.telegram.org/favicon.ico" },
+  { id: "whatsapp", name: "WhatsApp", desc: "Мессенджер", url: "https://www.whatsapp.com/" },
+  { id: "instagram", name: "Instagram", desc: "Соцсеть", url: "https://www.instagram.com/favicon.ico" },
+  { id: "discord", name: "Discord", desc: "Голос и чаты", url: "https://discord.com/api/v10/gateway" },
+  { id: "chatgpt", name: "ChatGPT", desc: "ИИ и нейросети", url: "https://chatgpt.com/" },
+  { id: "x", name: "X (Twitter)", desc: "Микроблоги", url: "https://x.com/favicon.ico" },
+  { id: "rutracker", name: "RuTracker", desc: "Торрент-трекер", url: "https://rutracker.org/favicon.ico" },
+  { id: "notion", name: "Notion", desc: "Заметки и базы знаний", url: "https://www.notion.so/images/favicon.ico" },
+  { id: "canva", name: "Canva", desc: "Графический дизайн", url: "https://www.canva.com/favicon.ico" },
 ];
 
 const results = ref<Record<string, { status: "testing" | "ok" | "blocked"; latency?: number; error?: string }>>({});
@@ -60,6 +61,31 @@ async function runCheck() {
     );
   }
   testing.value = false;
+}
+
+function formatError(err?: string): string {
+  if (!err) return t("tools.serviceBlocked");
+  const low = err.toLowerCase();
+  if (low.includes("timeout")) return "Таймаут";
+  if (low.includes("reset") || low.includes("dpi")) return "Сброс DPI";
+  if (
+    low.includes("unable to load site") ||
+    low.includes("недоступен") ||
+    low.includes("unavailable") ||
+    low.includes("403")
+  ) {
+    return t("tools.serviceBlocked");
+  }
+  if (
+    low.includes("error sending") ||
+    low.includes("connect") ||
+    low.includes("dns") ||
+    low.includes("refused") ||
+    low.includes("blocked")
+  ) {
+    return t("tools.blocked");
+  }
+  return err;
 }
 
 onMounted(() => {
@@ -106,9 +132,9 @@ onMounted(() => {
           :key="service.id"
           class="flex items-center justify-between px-3.5 py-2.5 text-sm"
         >
-          <div class="flex items-center gap-2.5">
+          <div class="flex items-center gap-2.5 min-w-0">
             <div
-              class="flex size-7 items-center justify-center rounded-lg font-semibold text-xs"
+              class="flex size-8 shrink-0 items-center justify-center rounded-xl font-bold text-xs"
               :class="
                 results[service.id]?.status === 'ok'
                   ? 'bg-good/15 text-good'
@@ -119,7 +145,10 @@ onMounted(() => {
             >
               {{ service.name[0] }}
             </div>
-            <span class="font-medium">{{ service.name }}</span>
+            <div class="flex flex-col min-w-0">
+              <span class="font-medium text-ink leading-tight truncate">{{ service.name }}</span>
+              <span class="text-[11px] text-muted truncate">{{ service.desc }}</span>
+            </div>
           </div>
 
           <div class="flex items-center gap-2">
@@ -136,7 +165,7 @@ onMounted(() => {
             <template v-else-if="results[service.id]?.status === 'blocked'">
               <span class="flex items-center gap-1 rounded-full bg-danger/10 px-2 py-0.5 text-xs font-medium text-danger">
                 <AppIcon name="close" :size="12" />
-                <span class="max-w-[130px] truncate">{{ results[service.id]?.error || t('tools.blocked') }}</span>
+                <span class="max-w-[130px] truncate">{{ formatError(results[service.id]?.error) }}</span>
               </span>
             </template>
             <template v-else>
