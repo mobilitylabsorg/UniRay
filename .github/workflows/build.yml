@@ -505,6 +505,49 @@ jobs:
           path: dist
           pattern: uniray-*
           merge-multiple: true
+      # Download buttons above the notes, one per package that was built.
+      - name: Download buttons
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          out="$RUNNER_TEMP/buttons.md"
+          # row <title> {<badge text-color> <logo> <file>}...
+          row() {
+            local title="$1" line=""
+            shift
+            while [ $# -ge 3 ]; do
+              if [ -n "$(find dist -name "$3" -print -quit)" ]; then
+                line+="[![$3](https://img.shields.io/badge/$1?style=for-the-badge${2:+&logo=$2&logoColor=white})]($base/$3) "
+              fi
+              shift 3
+            done
+            if [ -n "$line" ]; then printf '| **%s** | %s|\n' "$title" "$line" >> "$out"; fi
+          }
+          printf '## Скачать\n\n| | |\n| --- | --- |\n' > "$out"
+          row "Windows" \
+            "Windows%20%C2%B7%20%D1%83%D1%81%D1%82%D0%B0%D0%BD%D0%BE%D0%B2%D1%89%D0%B8%D0%BA-0078D4" "" "UniRay_${version}_x64-setup.exe" \
+            "Windows%20%C2%B7%20portable-0078D4" "" "UniRay-windows-x64-portable.zip"
+          row "macOS" \
+            "macOS%20%C2%B7%20Apple%20Silicon-000000" "apple" "UniRay-macos-arm64.dmg" \
+            "macOS%20%C2%B7%20Intel-555555" "apple" "UniRay-macos-x64.dmg"
+          row "Linux" \
+            "Linux%20%C2%B7%20AppImage-2E3440" "linux" "UniRay_${version}_amd64.AppImage"
+          row "Android" \
+            "Android%20%C2%B7%20arm64-3DDC84" "android" "UniRay-android-arm64.apk" \
+            "Android%20TV%20%C2%B7%20armv7-3DDC84" "android" "UniRay-android-armv7.apk"
+          row "Шлюз: Proxmox" \
+            "Proxmox%20LXC%20%C2%B7%20amd64-E57000" "proxmox" "uniray-gateway-amd64-lxc.tar.gz" \
+            "Proxmox%20LXC%20%C2%B7%20arm64-E57000" "proxmox" "uniray-gateway-arm64-lxc.tar.gz"
+          row "Шлюз: MikroTik" \
+            "MikroTik%20%C2%B7%20armv7%2064%20%D0%9C%D0%91-293239" "mikrotik" "uniray-gateway-armv7-lowmem.tar" \
+            "MikroTik%20%C2%B7%20armv7-293239" "mikrotik" "uniray-gateway-armv7.tar" \
+            "MikroTik%20%C2%B7%20arm64-293239" "mikrotik" "uniray-gateway-arm64.tar"
+          row "Шлюз: Docker" \
+            "Docker%20%C2%B7%20amd64-2496ED" "docker" "uniray-gateway-amd64.tar"
+          printf '\nAndroid: arm64 — телефоны, armv7 — ТВ-приставки. Какой образ шлюза взять — в [README шлюза](https://github.com/%s/blob/%s/docker/gateway/README.md); остальные файлы — ниже, в Assets.\n\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" >> "$out"
+          cat "$out" "$RUNNER_TEMP/notes.md" > "$RUNNER_TEMP/body.md"
+          mv "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/notes.md"
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/**/*
