@@ -3,13 +3,15 @@
 // loopback. Xray stays in front (TUN, routing, DNS, stats); for such a server
 // its proxy outbound is SOCKS to this engine.
 //
-// Usage: uniray-engine awg|naive --config <file> [--probe <url> [--timeout <duration>]]
+// Usage: uniray-engine awg|naive|ovpn --config <file> [--probe <url> [--timeout <duration>]]
 //
 // With --probe it serves nothing: it fetches the URL through the server,
 // prints "delay <ms>" (-1 on failure) and exits - the app's delay test.
 //
 // awg runs WireGuard/AmneziaWG itself (amneziawg-go, userspace); naive starts
-// the official NaiveProxy client as its child and passes connections on.
+// the official NaiveProxy client as its child and passes connections on; ovpn
+// starts uniray-ovpn (the OpenVPN 3 core) as its child, which hands it the
+// tunnel's packets for the same userspace stack as awg.
 //
 // The config file holds secrets, so it is read once and removed. Nothing
 // secret goes on the command line, which other users can read. The engine
@@ -58,11 +60,12 @@ type Config struct {
 
 	AWG   *AWGConfig   `json:"awg"`
 	Naive *NaiveConfig `json:"naive"`
+	OVPN  *OVPNConfig  `json:"ovpn"`
 }
 
 func main() {
 	if len(os.Args) < 2 {
-		fatalf("usage: uniray-engine awg|naive --config <file>")
+		fatalf("usage: uniray-engine awg|naive|ovpn --config <file>")
 	}
 	mode := os.Args[1]
 	flags := flag.NewFlagSet(mode, flag.ExitOnError)
@@ -100,6 +103,13 @@ func main() {
 		}
 		upstream, err = startNaive(config.Naive, filepath.Dir(*configPath), func(err error) {
 			fatalf("naive exited: %v", err)
+		})
+	case "ovpn":
+		if config.OVPN == nil {
+			fatalf("the config has no ovpn section")
+		}
+		upstream, err = startOVPN(config.OVPN, filepath.Dir(*configPath), func(err error) {
+			fatalf("uniray-ovpn exited: %v", err)
 		})
 	default:
 		fatalf("unknown mode %q", mode)
