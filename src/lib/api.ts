@@ -139,6 +139,52 @@ export interface Connection {
   mixedPort: number | null;
   /** The last check of this connection; repeated every 5 minutes. */
   check: CheckResult | null;
+  /** The corporate network's tunnel, when the connection has it. */
+  corp: CorpStatus | null;
+}
+
+/** The way to the corporate server: straight, through the main server, or
+ * through another server of the list. */
+export type CorpVia = { kind: "direct" } | { kind: "main" } | { kind: "server"; id: string };
+
+export interface CorpPushed {
+  routes: string[];
+  dns: string[];
+  domains: string[];
+}
+
+/** The corporate network next to the VPN (src-tauri/src/corp.rs). */
+export interface CorpNetwork {
+  enabled: boolean;
+  name: string;
+  info: { host: string; port: number; proto: "udp" | "tcp"; needsCredentials: boolean } | null;
+  username: string;
+  hasPassword: boolean;
+  usePushed: boolean;
+  routes: string[];
+  domains: string[];
+  dns: string[];
+  via: CorpVia;
+  /** What the server pushed last time. */
+  learned: CorpPushed;
+}
+
+export interface CorpUpdate {
+  enabled: boolean;
+  username: string;
+  /** null keeps the saved one. */
+  password: string | null;
+  usePushed: boolean;
+  routes: string[];
+  domains: string[];
+  dns: string[];
+  via: CorpVia;
+}
+
+export interface CorpStatus {
+  state: "connecting" | "up" | "down";
+  address: string | null;
+  error: string | null;
 }
 
 export interface Snapshot {
@@ -155,6 +201,9 @@ export interface Snapshot {
   /** What this edition offers: the Google Play one has no stealth mode and
    * no ad blocking (src-tauri/src/edition.rs). */
   features: { stealth: boolean; adBlock: boolean };
+  corp: CorpNetwork | null;
+  /** This build can run the corporate network (Linux for now). */
+  corpAvailable: boolean;
 }
 
 export interface Traffic {
@@ -250,6 +299,10 @@ export const api = {
   updateAllSubscriptions: () => invoke<ImportReport[]>("update_all_subscriptions"),
   deleteSubscription: (id: string) => invoke<void>("delete_subscription", { id }),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
+  /** An OpenVPN profile with the key files it names, as [name, text] pairs. */
+  corpImport: (files: [string, string][]) => invoke<void>("corp_import", { files }),
+  corpSave: (update: CorpUpdate) => invoke<void>("corp_save", { update }),
+  corpDelete: () => invoke<void>("corp_delete"),
   connect: () => invoke<void>("connect"),
   disconnect: () => invoke<void>("disconnect"),
   testDelays: (ids?: string[]) => invoke<void>("test_delays", { ids: ids ?? null }),

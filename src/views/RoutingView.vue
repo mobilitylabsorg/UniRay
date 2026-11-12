@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
 import AppIcon from "../components/AppIcon.vue";
+import CorpNetworkCard from "../components/CorpNetworkCard.vue";
 import ToggleSwitch from "../components/ToggleSwitch.vue";
 import type { Rule, RuleAction, RuleKind, RoutingPreset } from "../lib/api";
 import { useAppStore } from "../stores/app";
@@ -81,6 +82,8 @@ function move(index: number, by: number) {
         </span>
       </button>
     </div>
+
+    <CorpNetworkCard v-if="store.snapshot?.corpAvailable" />
 
     <div class="section-title">{{ t("routing.rules") }}</div>
     <div class="card mb-3 p-3">

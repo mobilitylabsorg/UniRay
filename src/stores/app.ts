@@ -93,7 +93,7 @@ export const useAppStore = defineStore("app", () => {
     const { t, te } = i18n.global;
     const key = `errors.${error.code}`;
     const title = te(key) ? t(key) : t("errors.other");
-    const detailed = ["core", "coreStopped", "teardown", "network", "http", "invalidLink", "invalidConfig", "invalidSettings", "other", "io"];
+    const detailed = ["corpVia", "core", "coreStopped", "teardown", "network", "http", "invalidLink", "invalidConfig", "invalidSettings", "other", "io"];
     return detailed.includes(error.code) && error.message ? `${title}: ${error.message}` : title;
   }
 

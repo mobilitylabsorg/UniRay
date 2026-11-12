@@ -170,6 +170,25 @@ const MODES: { value: Mode; label: string }[] = [
         </div>
       </Transition>
 
+      <Transition name="pop">
+        <RouterLink
+          v-if="connected && store.connection?.corp"
+          to="/routing"
+          class="card flex items-center gap-2 px-4 py-3 text-sm"
+        >
+          <AppIcon
+            :name="store.connection.corp.state === 'down' ? 'alert' : 'route'"
+            :size="16"
+            class="shrink-0"
+            :class="{ 'text-good': store.connection.corp.state === 'up', 'text-danger': store.connection.corp.state === 'down', 'text-muted': store.connection.corp.state === 'connecting' }"
+          />
+          <span class="font-medium">{{ t("corp.title") }}</span>
+          <span class="ml-auto min-w-0 truncate text-muted">
+            {{ t(`corp.state.${store.connection.corp.state}`) }}<template v-if="store.connection.corp.address"> · {{ store.connection.corp.address }}</template>
+          </span>
+        </RouterLink>
+      </Transition>
+
       <div class="grid grid-cols-2 gap-3">
         <button
           type="button"
