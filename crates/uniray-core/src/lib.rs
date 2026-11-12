@@ -6,6 +6,7 @@
 //! into the [`wireguard`] engine's configuration.
 
 pub mod config;
+pub mod corp;
 pub mod engine;
 pub mod error;
 pub mod hwid;

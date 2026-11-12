@@ -24,6 +24,12 @@ pub const TAG_METRICS: &str = "metrics";
 /// Inbound feeding the metrics service from `Runtime::metrics_socket`; its
 /// connections show up in the access log under this tag.
 pub const TAG_METRICS_IN: &str = "uniray-metrics";
+/// The corporate network's tunnel, see [`Corp`].
+pub const TAG_CORP: &str = "corp";
+/// Xray's loopback port that forwards to the corporate server, see [`CorpFront`].
+pub const TAG_CORP_FRONT: &str = "corp-front";
+/// The server in front of the corporate one, when it is not the main one.
+pub const TAG_CORP_VIA: &str = "corp-via";
 
 pub const TUN_MTU: u32 = 1500;
 /// TUN MTU for mobile interfaces: 1360 prevents packet fragmentation across
@@ -92,6 +98,46 @@ pub struct Runtime {
     pub log: LogSink,
     /// The engine running the server when Xray cannot (WireGuard, AmneziaWG).
     pub engine: Option<Engine>,
+    /// The corporate network next to the VPN, see `crate::corp`.
+    pub corp: Option<Corp>,
+}
+
+impl Runtime {
+    /// The engines Xray reaches: the server's and the corporate network's.
+    pub fn engines(&self) -> impl Iterator<Item = &Engine> {
+        self.engine.iter().chain(self.corp.iter().map(|corp| &corp.engine))
+    }
+}
+
+/// The corporate network: its engine, and what goes there through the
+/// [`TAG_CORP`] outbound - ahead of the user's rules and the preset, so that
+/// a corporate network among the private ones is not sent `direct`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Corp {
+    /// Its `bypass` is the corporate server when the engine reaches it
+    /// straight; with a front there is none, the engine connects to Xray.
+    pub engine: Engine,
+    /// CIDRs.
+    pub routes: Vec<String>,
+    /// Domain matchers (`domain:corp.example`).
+    pub domains: Vec<String>,
+    /// DNS servers inside the tunnel, which resolve `domains`.
+    pub dns: Vec<IpAddr>,
+    pub front: Option<CorpFront>,
+}
+
+/// A loopback port of Xray ([`TAG_CORP_FRONT`]) where the engine connects in
+/// place of the corporate server, forwarded to it through another server.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CorpFront {
+    pub port: u16,
+    /// The corporate server, resolved at the far end.
+    pub host: String,
+    pub remote_port: u16,
+    /// `"udp"` or `"tcp"`.
+    pub network: &'static str,
+    /// The server in front, as an outbound; `None` for the main server's.
+    pub outbound: Option<Value>,
 }
 
 /// A local engine (`engine/` in the repository) that runs a server Xray does
@@ -300,6 +346,9 @@ fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime, engin
         "outbounds": outbounds,
         "routing": { "domainStrategy": "IPIfNonMatch", "rules": rules },
     });
+    if let Some(corp) = &runtime.corp {
+        apply_corp(&mut config, settings, corp, Some(TAG_PROXY));
+    }
     apply_observability(&mut config, settings, runtime);
     Built {
         config,
@@ -421,6 +470,10 @@ fn from_config(source: &Value, settings: &Settings, runtime: &Runtime) -> Result
     if let Some(object) = config.as_object_mut() {
         object.remove("api");
     }
+    // The provider's routing picks the main server for the front's traffic.
+    if let Some(corp) = &runtime.corp {
+        apply_corp(&mut config, settings, corp, None);
+    }
     apply_observability(&mut config, settings, runtime);
     Ok(Built { config, proxy_tags })
 }
@@ -507,7 +560,7 @@ fn inbounds(settings: &Settings, runtime: &Runtime) -> Vec<Value> {
                 "dns": ["1.1.1.1"],
                 // Both families are captured even with IPv6 lookups off, so
                 // that IPv6 traffic cannot bypass the tunnel.
-                "autoSystemRoutingTable": tunnel_routes(runtime.engine.as_ref()),
+                "autoSystemRoutingTable": tunnel_routes(runtime.engines()),
                 "autoOutboundsInterface": "auto",
             },
             "sniffing": sniffing,
@@ -637,19 +690,90 @@ fn dns_hijack_rule(dns_outbound: &str) -> Value {
 }
 
 /// What a TUN that takes all traffic routes into itself: both address
-/// families but the addresses the engine connects to. The engine (and the
-/// naive it runs) is a process of its own, its sockets bound to no interface:
-/// its packets to the server then leave by the system's routes instead of
-/// passing through Xray a second time on their way out.
-pub fn tunnel_routes(engine: Option<&Engine>) -> Vec<String> {
-    let holes: Vec<(IpAddr, u8)> = engine
-        .iter()
+/// families but the addresses the engines connect to. An engine (and the
+/// naive or uniray-ovpn it runs) is a process of its own, its sockets bound to
+/// no interface: its packets to the server then leave by the system's routes
+/// instead of passing through Xray a second time on their way out.
+pub fn tunnel_routes<'a>(engines: impl IntoIterator<Item = &'a Engine>) -> Vec<String> {
+    let holes: Vec<(IpAddr, u8)> = engines
+        .into_iter()
         .flat_map(|engine| &engine.bypass)
         .map(|bypass| (bypass.addr.ip(), if bypass.addr.is_ipv4() { 32 } else { 128 }))
         .collect();
     let mut routes = routes::all_but(false, &holes);
     routes.extend(routes::all_but(true, &holes));
     routes
+}
+
+/// Wires the corporate network in: its outbound, the front's inbound and
+/// outbound, the rules sending its networks, domains and DNS servers to it
+/// (after the TUN's DNS hijack, ahead of everything else), and its DNS
+/// servers for its domains. `main` is the main server's outbound for a front
+/// through it; `None` leaves that to the provider's routing.
+fn apply_corp(config: &mut Value, settings: &Settings, corp: &Corp, main: Option<&str>) {
+    let mut outbound = corp.engine.outbound();
+    outbound["tag"] = TAG_CORP.into();
+    let mut new_outbounds = vec![outbound];
+    let mut rules: Vec<Value> = corp.engine.bypass.iter().map(bypass_rule).collect();
+    if let Some(front) = &corp.front {
+        if let Some(inbounds) = config["inbounds"].as_array_mut() {
+            inbounds.push(json!({
+                "tag": TAG_CORP_FRONT,
+                "listen": "127.0.0.1",
+                "port": front.port,
+                "protocol": "tunnel",
+                "settings": { "address": front.host, "port": front.remote_port, "network": front.network },
+            }));
+        }
+        let via = match &front.outbound {
+            // Made by `probe_outbound`, with the user's DPI settings.
+            Some(via) => {
+                let mut via = via.clone();
+                via["tag"] = TAG_CORP_VIA.into();
+                new_outbounds.push(via);
+                Some(TAG_CORP_VIA)
+            }
+            None => main,
+        };
+        if let Some(via) = via {
+            rules.push(json!({ "inboundTag": [TAG_CORP_FRONT], "outboundTag": via }));
+        }
+    }
+    if !corp.dns.is_empty() {
+        let servers: Vec<String> = corp.dns.iter().map(|ip| format!("{ip}/{}", if ip.is_ipv4() { 32 } else { 128 })).collect();
+        rules.push(json!({ "inboundTag": [TAG_DNS], "ip": servers, "outboundTag": TAG_CORP }));
+    }
+    if !corp.routes.is_empty() {
+        rules.push(json!({ "ip": corp.routes, "outboundTag": TAG_CORP }));
+    }
+    if !corp.domains.is_empty() {
+        rules.push(json!({ "domain": corp.domains, "outboundTag": TAG_CORP }));
+    }
+
+    if let Some(outbounds) = config["outbounds"].as_array_mut() {
+        let fragment_missing = new_outbounds.iter().any(|outbound| outbound["streamSettings"]["sockopt"]["dialerProxy"] == TAG_FRAGMENT)
+            && !outbounds.iter().any(|outbound| outbound["tag"] == TAG_FRAGMENT);
+        outbounds.extend(new_outbounds);
+        if fragment_missing {
+            outbounds.push(fragment_outbound(settings));
+        }
+    }
+    let routing = object_entry(config, "routing");
+    let existing = routing.entry("rules").or_insert_with(|| json!([]));
+    if let Some(existing) = existing.as_array_mut() {
+        let hijack = |rule: &Value| rule["port"] == "53" && rule["inboundTag"] == json!([TAG_TUN]);
+        let at = existing.iter().take_while(|rule| hijack(rule)).count();
+        existing.splice(at..at, rules);
+    }
+    if !corp.dns.is_empty() && !corp.domains.is_empty() {
+        let dns = object_entry(config, "dns");
+        let servers = dns.entry("servers").or_insert_with(|| json!([]));
+        if let Some(servers) = servers.as_array_mut() {
+            for (index, ip) in corp.dns.iter().enumerate() {
+                servers.insert(index, json!({ "address": ip.to_string(), "domains": corp.domains, "skipFallback": true }));
+            }
+        }
+    }
 }
 
 /// Lets the engine's own connections to `bypass` out past the tunnel.

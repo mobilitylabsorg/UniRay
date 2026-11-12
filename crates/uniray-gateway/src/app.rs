@@ -375,6 +375,7 @@ impl App {
             metrics_port: Some(metrics_port), metrics_socket: None,
             log: LogSink::Stdout,
             engine: engine_run.as_ref().map(|run| run.runtime.clone()),
+            corp: None,
         };
         let built = config::build(&server, &settings, &runtime).map_err(|err| err.to_string())?;
 

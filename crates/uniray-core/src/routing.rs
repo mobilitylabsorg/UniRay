@@ -64,7 +64,7 @@ fn custom_rule(rule: &Rule) -> Value {
 
 /// A bare `example.com` means the domain and its subdomains; Xray would read
 /// it as a substring match, which is rarely what the user wants.
-fn domain_matcher(value: &str) -> String {
+pub(crate) fn domain_matcher(value: &str) -> String {
     let value = value.trim();
     const PREFIXES: [&str; 7] = ["domain:", "full:", "keyword:", "regexp:", "geosite:", "ext:", "dotless:"];
     if PREFIXES.iter().any(|prefix| value.starts_with(prefix)) {

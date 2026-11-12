@@ -14,6 +14,7 @@ fn proxy_runtime() -> Runtime {
         metrics_port: Some(10809), metrics_socket: None,
         log: LogSink::Files { error: "/tmp/error.log".into(), access: "/tmp/access.log".into() },
         engine: None,
+        corp: None,
     }
 }
 
@@ -540,6 +541,7 @@ fn metrics_can_live_on_a_unix_socket() {
         metrics_socket: Some("/data/user/0/app/files/run/m.sock".into()),
         log: LogSink::Stdout,
         engine: None,
+        corp: None,
     };
     let config = build(&server, &Settings::default(), &runtime).unwrap().config;
     // No port anywhere: the metrics service is reached through the socket.
@@ -645,4 +647,89 @@ fn engine_without_udp_blocks_it_last() {
     let runtime = Runtime { engine: Some(engine(false)), ..proxy_runtime() };
     let config = build(&engine_server(), &settings, &runtime).unwrap().config;
     assert_eq!(config["dns"]["servers"].as_array().unwrap().last().unwrap(), "8.8.8.8");
+}
+
+fn corp(front: Option<CorpFront>) -> Corp {
+    let bypass = if front.is_some() { Vec::new() } else { vec![Bypass { addr: "198.51.100.5:1195".parse().unwrap(), network: "udp" }] };
+    Corp {
+        engine: Engine { port: 40200, user: "c".into(), pass: "cp".into(), bypass, block_udp: false, sniff_excluded: Vec::new() },
+        routes: vec!["192.168.254.0/24".into(), "10.99.0.0/24".into()],
+        domains: vec!["domain:corp.test".into()],
+        dns: vec!["10.8.0.1".parse().unwrap()],
+        front,
+    }
+}
+
+#[test]
+fn corp_network_goes_ahead_of_the_preset() {
+    let server = parse_link(VLESS_IP).unwrap();
+    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into() }), corp: Some(corp(None)), ..proxy_runtime() };
+    let config = build(&server, &Settings::default(), &runtime).unwrap().config;
+    let outbound = config["outbounds"].as_array().unwrap().iter().find(|outbound| outbound["tag"] == "corp").unwrap();
+    assert_eq!(outbound["settings"], json!({ "address": "127.0.0.1", "port": 40200, "user": "c", "pass": "cp" }));
+    let rules = config["routing"]["rules"].as_array().unwrap();
+    // The DNS hijack first, then the corporate network.
+    assert_eq!(rules[0]["outboundTag"], "dns-out");
+    assert_eq!(rules[1], json!({ "ip": ["198.51.100.5/32"], "port": "1195", "network": "udp", "outboundTag": "direct" }));
+    assert_eq!(rules[2], json!({ "inboundTag": ["dns"], "ip": ["10.8.0.1/32"], "outboundTag": "corp" }));
+    assert_eq!(rules[3], json!({ "ip": ["192.168.254.0/24", "10.99.0.0/24"], "outboundTag": "corp" }));
+    assert_eq!(rules[4], json!({ "domain": ["domain:corp.test"], "outboundTag": "corp" }));
+    let private = rules.iter().position(|rule| rule["ip"] == json!(["geoip:private"])).unwrap();
+    assert!(private > 4);
+    assert_eq!(config["dns"]["servers"][0], json!({ "address": "10.8.0.1", "domains": ["domain:corp.test"], "skipFallback": true }));
+    // The engine's packets to the corporate server stay out of the TUN.
+    let routes = config["inbounds"].as_array().unwrap().iter().find(|inbound| inbound["tag"] == "tun").unwrap()
+        ["settings"]["autoSystemRoutingTable"].as_array().unwrap().clone();
+    assert!(!routes.iter().any(|route| crate::routes::covers(route.as_str().unwrap(), "198.51.100.5".parse().unwrap())));
+    assert!(routes.iter().any(|route| crate::routes::covers(route.as_str().unwrap(), "192.168.254.10".parse().unwrap())));
+}
+
+#[test]
+fn corp_front_forwards_through_a_server() {
+    let server = parse_link(VLESS_IP).unwrap();
+    let front = |outbound| CorpFront { port: 40300, host: "vpn.corp.example".into(), remote_port: 1195, network: "udp", outbound };
+    // Through the main server.
+    let runtime = Runtime { corp: Some(corp(Some(front(None)))), ..proxy_runtime() };
+    let config = build(&server, &Settings::default(), &runtime).unwrap().config;
+    let inbound = config["inbounds"].as_array().unwrap().iter().find(|inbound| inbound["tag"] == "corp-front").unwrap().clone();
+    assert_eq!(
+        inbound,
+        json!({ "tag": "corp-front", "listen": "127.0.0.1", "port": 40300, "protocol": "tunnel",
+                "settings": { "address": "vpn.corp.example", "port": 1195, "network": "udp" } })
+    );
+    let rules = config["routing"]["rules"].as_array().unwrap();
+    assert_eq!(rules[0], json!({ "inboundTag": ["corp-front"], "outboundTag": "proxy" }));
+
+    // Through another server, with the user's fragmenting.
+    let other = parse_link("trojan://pw@203.0.113.20:443?security=tls#O").unwrap();
+    let settings = Settings { tls_fragment: true, ..Default::default() };
+    let via = probe_outbound(&other, "x", &settings).unwrap();
+    let runtime = Runtime { corp: Some(corp(Some(front(Some(via))))), ..proxy_runtime() };
+    let config = build(&server, &settings, &runtime).unwrap().config;
+    let outbounds = config["outbounds"].as_array().unwrap();
+    let via = outbounds.iter().find(|outbound| outbound["tag"] == "corp-via").unwrap();
+    assert_eq!(via["protocol"], "trojan");
+    assert_eq!(via["streamSettings"]["sockopt"]["dialerProxy"], "fragment");
+    assert_eq!(outbounds.iter().filter(|outbound| outbound["tag"] == "fragment").count(), 1);
+    assert_eq!(config["routing"]["rules"][0], json!({ "inboundTag": ["corp-front"], "outboundTag": "corp-via" }));
+}
+
+#[test]
+fn corp_network_joins_a_provider_config() {
+    let mut server = parse_link(VLESS_IP).unwrap();
+    let outbound = match &server.source { ServerSource::Outbound(outbound) => outbound.clone(), _ => unreachable!() };
+    let mut provider_outbound = outbound;
+    provider_outbound["tag"] = "p".into();
+    server.source = ServerSource::Config(json!({
+        "outbounds": [provider_outbound, { "tag": "d", "protocol": "freedom" }],
+        "routing": { "rules": [{ "ip": ["geoip:private"], "outboundTag": "d" }] },
+    }));
+    let runtime = Runtime { corp: Some(corp(Some(CorpFront { port: 1, host: "h".into(), remote_port: 2, network: "tcp", outbound: None }))), ..proxy_runtime() };
+    let config = build(&server, &Settings::default(), &runtime).unwrap().config;
+    let rules = config["routing"]["rules"].as_array().unwrap();
+    // No rule for the front: the provider's routing takes it to its server.
+    assert!(!rules.iter().any(|rule| rule["inboundTag"] == json!(["corp-front"])));
+    let corp_at = rules.iter().position(|rule| rule["outboundTag"] == "corp").unwrap();
+    let private_at = rules.iter().position(|rule| rule["outboundTag"] == "d").unwrap();
+    assert!(corp_at < private_at);
 }

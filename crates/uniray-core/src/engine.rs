@@ -34,7 +34,7 @@ pub struct EngineRun {
     /// The engine's mode, its first argument.
     pub mode: &'static str,
     /// The engine's config, without [`Peers`]; see [`Self::config_for`].
-    config: Value,
+    pub(crate) config: Value,
     /// What Xray's config needs, for [`config::Runtime::engine`].
     pub runtime: config::Engine,
     /// For the log: what of the server the engine cannot honour.
@@ -138,6 +138,14 @@ impl EngineRun {
     pub fn set_naive_binary(&mut self, binary: &Path) {
         if self.config["naive"].is_object() {
             self.config["naive"]["binary"] = binary.to_string_lossy().into_owned().into();
+        }
+    }
+
+    /// Points the engine at another copy of `uniray-ovpn`, as
+    /// [`Self::set_naive_binary`] does for naive.
+    pub fn set_ovpn_binary(&mut self, binary: &Path) {
+        if self.config["ovpn"].is_object() {
+            self.config["ovpn"]["binary"] = binary.to_string_lossy().into_owned().into();
         }
     }
 
