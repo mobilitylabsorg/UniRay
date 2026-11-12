@@ -5,6 +5,7 @@
 #   src-tauri/binaries/uniray-helper-<target triple>   built from crates/uniray-helper
 #   src-tauri/binaries/uniray-engine-<target triple>   built from engine/ (Go), see build-engine.sh
 #   src-tauri/binaries/uniray-naive-<target triple>    downloaded, see fetch-naive.sh
+#   src-tauri/binaries/uniray-ovpn-<target triple>     Linux: built from ovpn/ in Docker, see build-ovpn.sh
 #
 # Usage: scripts/prepare-sidecars.sh [--release] [target triple]
 # Runs before `tauri dev` and `tauri build` (see package.json).
@@ -48,3 +49,11 @@ install -m 755 "$out/uniray-helper$exe" "$root/src-tauri/binaries/uniray-helper-
 "$root/scripts/build-engine.sh" "$target" "$root/src-tauri/binaries/uniray-engine-$target$exe"
 naive="$root/src-tauri/binaries/uniray-naive-$target$exe"
 [[ -f "$naive" ]] || "$root/scripts/fetch-naive.sh" "$target" "$naive"
+# The corporate network's OpenVPN client, on Linux so far (tauri.linux.conf.json).
+if [[ "$target" == *-linux-gnu ]]; then
+  ovpn="$root/src-tauri/binaries/uniray-ovpn-$target"
+  # Built again when its source changed; the core is pinned in build-ovpn.sh.
+  if [[ ! -f "$ovpn" || "$root/ovpn/uniray-ovpn.cpp" -nt "$ovpn" || "$root/ovpn/CMakeLists.txt" -nt "$ovpn" || "$root/scripts/build-ovpn.sh" -nt "$ovpn" ]]; then
+    "$root/scripts/build-ovpn.sh" "$target" "$ovpn"
+  fi
+fi

@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use uniray_core::corp::CorpNetwork;
 use uniray_core::model::{Server, Settings, Subscription};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -13,6 +14,8 @@ pub struct Data {
     pub servers: Vec<Server>,
     pub subscriptions: Vec<Subscription>,
     pub settings: Settings,
+    /// The corporate network next to the VPN, see `crate::corp`.
+    pub corp: Option<CorpNetwork>,
     /// Random identifier standing in for the machine id where the OS gives none.
     pub device_seed: Option<String>,
 }

@@ -1,6 +1,7 @@
 mod app;
 mod commands;
 mod core;
+mod corp;
 mod deeplink;
 mod edition;
 mod device;
@@ -69,6 +70,8 @@ pub fn run() {
                 engine: sidecar("uniray-engine")?,
                 #[cfg(desktop)]
                 naive: sidecar("uniray-naive")?,
+                #[cfg(desktop)]
+                ovpn: sidecar("uniray-ovpn")?,
             };
             app.manage(App::new(store, device, paths));
             deeplink::install(&handle);
@@ -113,6 +116,9 @@ pub fn run() {
             commands::update_all_subscriptions,
             commands::delete_subscription,
             commands::save_settings,
+            corp::corp_import,
+            corp::corp_save,
+            corp::corp_delete,
             commands::connect,
             commands::disconnect,
             commands::test_delays,

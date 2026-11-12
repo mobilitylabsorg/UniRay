@@ -35,6 +35,9 @@ pub struct Paths {
     /// NaiveProxy's client, which the engine runs for a Naive server.
     #[cfg(desktop)]
     pub naive: PathBuf,
+    /// The OpenVPN client the engine runs for the corporate network.
+    #[cfg(desktop)]
+    pub ovpn: PathBuf,
 }
 
 pub struct App {
@@ -125,6 +128,9 @@ pub struct Snapshot {
     pub tv: bool,
     /// What this edition offers (the Google Play one has no stealth mode).
     pub features: crate::edition::Features,
+    pub corp: Option<crate::corp::CorpView>,
+    /// This build can run the corporate network.
+    pub corp_available: bool,
 }
 
 pub fn snapshot(app: &AppHandle) -> Snapshot {
@@ -148,6 +154,8 @@ pub fn snapshot(app: &AppHandle) -> Snapshot {
         testing: state.testing.load(Ordering::Relaxed),
         tv: state.tv.load(Ordering::Relaxed),
         features: crate::edition::FEATURES,
+        corp: store.data.corp.as_ref().map(crate::corp::CorpView::of),
+        corp_available: crate::corp::available(app),
     }
 }
 

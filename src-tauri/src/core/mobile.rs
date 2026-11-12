@@ -381,6 +381,7 @@ async fn start_vpn_service(
         metrics_socket: Some(metrics.to_owned()),
         log: log.clone(),
         engine: engine_run.as_ref().map(|run| run.runtime.clone()),
+        corp: None,
     };
     let mut built = config::build(server, settings, &runtime)?;
     apply_mobile_optimizations(&mut built.config);
@@ -401,7 +402,7 @@ async fn start_vpn_service(
         packages: settings.per_app.packages.clone(),
         dns: dns_endpoint,
         mtu: config::MOBILE_TUN_MTU,
-        routes: config::tunnel_routes(runtime.engine.as_ref()),
+        routes: config::tunnel_routes(runtime.engines()),
         session_name: name.to_owned(),
         server_name: server.name.clone(),
         server_id: server.id.clone(),
@@ -448,6 +449,7 @@ async fn start_stealth(
         metrics_socket: Some(metrics.to_owned()),
         log: log.clone(),
         engine: engine_run.as_ref().map(|run| run.runtime.clone()),
+        corp: None,
     };
     let mut built = config::build(server, settings, &runtime)?;
     apply_mobile_optimizations(&mut built.config);

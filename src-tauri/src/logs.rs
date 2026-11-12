@@ -47,6 +47,7 @@ pub fn push(app: &AppHandle, raw: &str) {
         logs.push_back(line.clone());
     }
     let _ = app.emit(EVENT, line);
+    crate::corp::on_log(app, raw);
 }
 
 /// The outbound an access log line says a connection to one of `targets`

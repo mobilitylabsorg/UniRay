@@ -8,7 +8,8 @@
 //!
 //! A server Xray cannot run (WireGuard, AmneziaWG) also gets `uniray-engine`,
 //! which Xray reaches as a SOCKS proxy (see `uniray_core::engine`): our child
-//! next to Xray in proxy mode, the helper's in TUN mode.
+//! next to Xray in proxy mode, the helper's in TUN mode. The corporate
+//! network (`uniray_core::corp`) is another engine, run the same way.
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::Path;
@@ -28,7 +29,7 @@ use uniray_core::config::{self, LogSink, Runtime, Tun};
 use uniray_core::engine::{EngineRun, Peers};
 use uniray_core::model::{Mode, Server, Settings};
 
-use super::{free_port, prepare_engine, PROBE_TIMEOUT};
+use super::{free_port, prepare_corp, prepare_engine, PROBE_TIMEOUT};
 use crate::app::App;
 use crate::error::{CmdError, CmdResult};
 use crate::state::write_private;
@@ -64,8 +65,8 @@ pub struct Running {
     stats: JoinHandle<()>,
     system_proxy: bool,
     mixed_port: u16,
-    /// The engine, when it is our child (proxy mode).
-    engine: Option<Supervised>,
+    /// The engines, when they are our children (proxy mode).
+    engines: Vec<Supervised>,
 }
 
 /// A child's stop trigger and supervising task, see [`spawn_supervised`].
@@ -93,6 +94,8 @@ impl Running {
         }
         let metrics_port = free_port()?;
         let engine_run = prepare_engine(app, server, settings).await?;
+        let corp_run = prepare_corp(app, server, settings).await?;
+        let engines: Vec<&EngineRun> = engine_run.iter().chain(corp_run.iter().map(|run| &run.engine)).collect();
 
         let runtime = Runtime {
             tun: tun.then(|| Tun::Managed { name: interface_name(&settings.interface_name) }),
@@ -100,6 +103,7 @@ impl Running {
             metrics_port: Some(metrics_port), metrics_socket: None,
             log: LogSink::Stdout,
             engine: engine_run.as_ref().map(|run| run.runtime.clone()),
+            corp: corp_run.as_ref().map(|run| run.runtime.clone()),
         };
         let built = config::build(server, settings, &runtime)?;
         let config_path = state.paths.run_dir.join("config.json");
@@ -107,16 +111,16 @@ impl Running {
         write_private(&config_path, &config_bytes).map_err(CmdError::io)?;
 
         let log_mark = logs::mark();
-        let (stop, supervisor, mut exited, tailer, engine) =
-            launch(app, tun, &config_path, engine_run.as_ref(), generation).await?;
+        let (stop, supervisor, mut exited, tailer, engine_children) =
+            launch(app, tun, &config_path, &engines, generation).await?;
 
         let timeout = if tun { READY_TIMEOUT_TUN } else { READY_TIMEOUT };
         let mut ports = vec![metrics_port, mixed_port];
-        ports.extend(engine_run.as_ref().map(|run| run.runtime.port));
+        ports.extend(engines.iter().map(|run| run.runtime.port));
         if let Err(err) = wait_ready(&ports, &mut exited, timeout).await {
             let _ = stop.send(());
             let _ = supervisor.await;
-            stop_engine(engine).await;
+            stop_engines(engine_children).await;
             if let Some(tailer) = tailer {
                 tailer.abort();
             }
@@ -146,7 +150,7 @@ impl Running {
             stats: stats::spawn(app.clone(), stats::MetricsSource::Port(metrics_port), built.proxy_tags),
             system_proxy,
             mixed_port,
-            engine,
+            engines: engine_children,
         })
     }
 
@@ -163,8 +167,8 @@ impl Running {
             let _ = stop.send(());
         }
         let _ = self.supervisor.await;
-        // After Xray, which has nothing to send it any more.
-        stop_engine(self.engine.take()).await;
+        // After Xray, which has nothing to send them any more.
+        stop_engines(std::mem::take(&mut self.engines)).await;
         if let Some(tailer) = self.tailer.take() {
             // Let it pick up the core's last words first.
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -172,8 +176,10 @@ impl Running {
         }
         let run_dir = &app.state::<App>().paths.run_dir;
         let _ = std::fs::remove_file(run_dir.join("config.json"));
-        // The engine removes it once read; not if it never started.
-        let _ = std::fs::remove_file(run_dir.join(ENGINE_CONFIG));
+        // An engine removes its config once read; not if it never started.
+        for index in 0..MAX_ENGINES {
+            let _ = std::fs::remove_file(run_dir.join(engine_config_name(index)));
+        }
         None
     }
 }
@@ -231,11 +237,16 @@ fn read_system_dns() -> Vec<String> {
     servers
 }
 
-/// The engine's config in the run directory, see `uniray_core::engine`.
-const ENGINE_CONFIG: &str = "engine.json";
+/// Engines of a run at most: the server's and the corporate network's.
+const MAX_ENGINES: usize = 2;
 
-async fn stop_engine(engine: Option<Supervised>) {
-    if let Some((stop, supervisor)) = engine {
+/// An engine's config in the run directory, see `uniray_core::engine`.
+fn engine_config_name(index: usize) -> String {
+    format!("engine-{index}.json")
+}
+
+async fn stop_engines(engines: Vec<Supervised>) {
+    for (stop, supervisor) in engines {
         let _ = stop.send(());
         let _ = supervisor.await;
     }
@@ -246,35 +257,41 @@ type Launched = (
     JoinHandle<()>,
     watch::Receiver<bool>,
     Option<JoinHandle<()>>,
-    Option<Supervised>,
+    Vec<Supervised>,
 );
 
 /// Starts the core: directly in proxy mode, through the elevated helper in
-/// TUN mode (pkexec on Linux, UAC on Windows), and the engine with it.
+/// TUN mode (pkexec on Linux, UAC on Windows), and the engines with it.
 async fn launch(
     app: &AppHandle,
     tun: bool,
     config_path: &Path,
-    engine: Option<&EngineRun>,
+    engines: &[&EngineRun],
     generation: u64,
 ) -> CmdResult<Launched> {
     let state = app.state::<App>();
-    let engine_config = state.paths.run_dir.join(ENGINE_CONFIG);
+    let engine_configs: Vec<std::path::PathBuf> =
+        (0..engines.len()).map(|index| state.paths.run_dir.join(engine_config_name(index))).collect();
     if tun {
         #[cfg(not(any(windows, target_os = "macos")))]
         let staged = root_readable(app)?;
-        // The helper tells the engine Xray's pid once it has started it.
-        if let Some(run) = engine {
+        // The helper tells the engines Xray's pid once it has started it.
+        for (run, path) in engines.iter().zip(&engine_configs) {
             #[cfg(not(any(windows, target_os = "macos")))]
             let run = {
-                let mut run = run.clone();
+                let mut run = (*run).clone();
                 run.set_naive_binary(&staged.naive);
+                run.set_ovpn_binary(&staged.ovpn);
                 run
             };
-            write_private(&engine_config, &run.config_for(&Peers::Pids(Vec::new()), false)).map_err(CmdError::io)?;
+            write_private(path, &run.config_for(&Peers::Pids(Vec::new()), false)).map_err(CmdError::io)?;
         }
         #[cfg(any(windows, target_os = "macos"))]
-        return spawn_elevated(app, config_path, engine.map(|run| (run.mode, engine_config.as_path())), generation).await;
+        {
+            let engines: Vec<(&str, &Path)> =
+                engines.iter().zip(&engine_configs).map(|(run, path)| (run.mode, path.as_path())).collect();
+            return spawn_elevated(app, config_path, &engines, generation).await;
+        }
         #[cfg(not(any(windows, target_os = "macos")))]
         {
             let mut command = Command::new("pkexec");
@@ -284,40 +301,40 @@ async fn launch(
                 .arg(config_path)
                 .arg(&staged.assets)
                 .stdin(Stdio::piped());
-            if let Some(run) = engine {
-                command.arg("--engine").arg(&staged.engine).arg(run.mode).arg(&engine_config);
+            for (run, path) in engines.iter().zip(&engine_configs) {
+                command.arg("--engine").arg(&staged.engine).arg(run.mode).arg(path);
             }
             let (stop, supervisor, exited, _) = spawn_supervised(app, command, Some(generation))?;
-            return Ok((stop, supervisor, exited, None, None));
+            return Ok((stop, supervisor, exited, None, Vec::new()));
         }
     }
 
     let command = xray_command(&state.paths.xray, config_path, &state.paths.assets);
     let (stop, supervisor, exited, xray_pid) = spawn_supervised(app, command, Some(generation))?;
-    let Some(run) = engine else {
-        return Ok((stop, supervisor, exited, None, None));
-    };
-    // Started after Xray, so that its config names Xray's process. Xray
-    // only connects to it for traffic, which waits for `wait_ready`.
-    let spawned = write_private(&engine_config, &run.config_for(&Peers::Pids(xray_pid.into_iter().collect()), false))
-        .map_err(CmdError::io)
-        .and_then(|()| {
-            let mut command = Command::new(&state.paths.engine);
-            command.arg(run.mode).arg("--config").arg(&engine_config).stdin(Stdio::piped());
-            #[cfg(windows)]
-            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-            spawn_supervised(app, command, Some(generation))
-        });
-    match spawned {
-        Ok((engine_stop, engine_supervisor, _, _)) => {
-            Ok((stop, supervisor, exited, None, Some((engine_stop, engine_supervisor))))
-        }
-        Err(err) => {
-            let _ = stop.send(());
-            let _ = supervisor.await;
-            Err(err)
+    // Started after Xray, so that their configs name Xray's process. Xray
+    // only connects to them for traffic, which waits for `wait_ready`.
+    let mut children = Vec::new();
+    for (run, path) in engines.iter().zip(&engine_configs) {
+        let spawned = write_private(path, &run.config_for(&Peers::Pids(xray_pid.into_iter().collect()), false))
+            .map_err(CmdError::io)
+            .and_then(|()| {
+                let mut command = Command::new(&state.paths.engine);
+                command.arg(run.mode).arg("--config").arg(path).stdin(Stdio::piped());
+                #[cfg(windows)]
+                command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+                spawn_supervised(app, command, Some(generation))
+            });
+        match spawned {
+            Ok((engine_stop, engine_supervisor, _, _)) => children.push((engine_stop, engine_supervisor)),
+            Err(err) => {
+                let _ = stop.send(());
+                let _ = supervisor.await;
+                stop_engines(children).await;
+                return Err(err);
+            }
         }
     }
+    Ok((stop, supervisor, exited, None, children))
 }
 
 /// What root runs in TUN mode, from where root can read it.
@@ -327,6 +344,7 @@ struct RootReadable {
     xray: PathBuf,
     engine: PathBuf,
     naive: PathBuf,
+    ovpn: PathBuf,
     assets: PathBuf,
 }
 
@@ -344,14 +362,21 @@ fn root_readable(app: &AppHandle) -> CmdResult<RootReadable> {
             xray: paths.xray.clone(),
             engine: paths.engine.clone(),
             naive: paths.naive.clone(),
+            ovpn: paths.ovpn.clone(),
             assets: paths.assets.clone(),
         });
     }
-    let binaries = [paths.helper.as_path(), &paths.xray, &paths.engine, &paths.naive];
-    let (binaries, assets) =
+    let mut binaries = vec![paths.helper.as_path(), &paths.xray, &paths.engine, &paths.naive];
+    // Only builds that have it.
+    let has_ovpn = paths.ovpn.is_file();
+    if has_ovpn {
+        binaries.push(&paths.ovpn);
+    }
+    let (mut binaries, assets) =
         stage_for_root(&paths.run_dir.join("elevated"), &binaries, &paths.assets).map_err(CmdError::io)?;
+    let ovpn = if has_ovpn { binaries.pop().expect("one copy per binary") } else { paths.ovpn.clone() };
     let [helper, xray, engine, naive] = <[PathBuf; 4]>::try_from(binaries).expect("one copy per binary");
-    Ok(RootReadable { helper, xray, engine, naive, assets })
+    Ok(RootReadable { helper, xray, engine, naive, ovpn, assets })
 }
 
 /// Copies the binaries (under their own names) and the files of the asset
@@ -394,7 +419,7 @@ fn stage_for_root(dir: &Path, binaries: &[&Path], assets: &Path) -> std::io::Res
 async fn spawn_elevated(
     app: &AppHandle,
     config_path: &Path,
-    engine: Option<(&str, &Path)>,
+    engines: &[(&str, &Path)],
     generation: u64,
 ) -> CmdResult<Launched> {
     use std::ffi::{OsStr, OsString};
@@ -418,8 +443,8 @@ async fn spawn_elevated(
         stop_file.clone().into_os_string(),
         log_file.clone().into_os_string(),
     ];
-    if let Some((mode, config)) = engine {
-        args.extend(["--engine".into(), state.paths.engine.clone().into_os_string(), mode.into(), config.into()]);
+    for (mode, config) in engines {
+        args.extend(["--engine".into(), state.paths.engine.clone().into_os_string(), (*mode).into(), (*config).into()]);
     }
     let launched = tauri::async_runtime::spawn_blocking(move || {
         let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
@@ -461,7 +486,7 @@ async fn spawn_elevated(
         }
         let _ = exited_tx.send(true);
     });
-    Ok((stop_tx, supervisor, exited_rx, Some(tailer), None))
+    Ok((stop_tx, supervisor, exited_rx, Some(tailer), Vec::new()))
 }
 
 fn xray_command(xray: &std::path::Path, config: &std::path::Path, assets: &std::path::Path) -> Command {

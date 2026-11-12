@@ -22,6 +22,7 @@ use std::sync::atomic::Ordering;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
+use uniray_core::corp::{CorpRun, Via, Way};
 use uniray_core::engine::{self, EngineRun};
 use uniray_core::model::{Mode, Server, Settings};
 
@@ -53,6 +54,8 @@ pub struct ConnectionInfo {
     pub mixed_port: Option<u16>,
     /// The last reachability check of this connection.
     pub check: Option<crate::monitor::CheckResult>,
+    /// The corporate network's tunnel, when the connection has it.
+    pub corp: Option<crate::corp::CorpStatus>,
 }
 
 /// Delay tests fetch this through each server. Shared by every platform so that
@@ -159,6 +162,55 @@ use desktop::run_engine_probe;
 #[cfg(mobile)]
 use mobile::run_engine_probe;
 
+/// The corporate network's engine run (see `uniray_core::corp`), when it is
+/// on, next to `server`. Resolving its server's name blocks, so it happens off
+/// the async runtime.
+#[cfg_attr(mobile, allow(dead_code))] // Android: still to come
+pub(crate) async fn prepare_corp(app: &AppHandle, server: &Server, settings: &Settings) -> CmdResult<Option<CorpRun>> {
+    if !crate::corp::available(app) {
+        return Ok(None);
+    }
+    let state = app.state::<App>();
+    let (corp, front) = {
+        let store = state.store.lock().unwrap();
+        let corp = store.data.corp.clone().filter(|corp| corp.enabled);
+        let front = match corp.as_ref().map(|corp| &corp.via) {
+            Some(Via::Server(id)) if *id != server.id => {
+                Some(store.data.servers.iter().find(|server| &server.id == id).cloned())
+            }
+            _ => None,
+        };
+        (corp, front)
+    };
+    let Some(corp) = corp else { return Ok(None) };
+    let way = match (&corp.via, front) {
+        (Via::Direct, _) => Way::Direct,
+        (_, None) => Way::Front { port: free_port()?, outbound: None },
+        (_, Some(None)) => {
+            return Err(CmdError::new("corpVia", "the server in front of the corporate network is no longer in the list"));
+        }
+        (_, Some(Some(front))) => {
+            if !front.source.is_xray() {
+                return Err(CmdError::new(
+                    "corpVia",
+                    format!("{} cannot stand in front of the corporate network: only servers Xray runs can (not WireGuard or Naive)", front.name),
+                ));
+            }
+            let outbound = uniray_core::config::probe_outbound(&front, uniray_core::config::TAG_CORP_VIA, settings)?;
+            Way::Front { port: free_port()?, outbound: Some(outbound) }
+        }
+    };
+    let (ipv6, port) = (settings.ipv6, free_port()?);
+    #[cfg(desktop)]
+    let binary = app.state::<App>().paths.ovpn.clone();
+    #[cfg(mobile)]
+    let binary = std::path::PathBuf::new();
+    let run = tauri::async_runtime::spawn_blocking(move || uniray_core::corp::prepare(&corp, port, ipv6, &binary, way))
+        .await
+        .map_err(|err| CmdError::core(err.to_string()))??;
+    Ok(Some(run))
+}
+
 /// The engine run for `server`, if Xray cannot run it (see
 /// `uniray_core::engine`), on a free port. Resolving the server's name
 /// blocks, so it happens off the async runtime.
@@ -198,9 +250,10 @@ pub async fn connect(app: &AppHandle) -> CmdResult<()> {
         }
     }
 
-    let (server, settings) = {
+    let (server, settings, corp) = {
         let store = state.store.lock().unwrap();
-        (store.selected_server().cloned(), store.data.settings.clone())
+        let corp = store.data.corp.as_ref().is_some_and(|corp| corp.enabled);
+        (store.selected_server().cloned(), store.data.settings.clone(), corp)
     };
     let Some(server) = server else {
         let err = CmdError::new("noServer", "no server selected");
@@ -216,6 +269,8 @@ pub async fn connect(app: &AppHandle) -> CmdResult<()> {
             status: Status::Connecting,
             server_id: Some(server.id.clone()),
             mode: settings.mode,
+            // Before the start: the engine may report the tunnel up during it.
+            corp: (corp && crate::corp::available(app)).then(Default::default),
             ..Default::default()
         }
     });
@@ -262,6 +317,21 @@ pub async fn reconnect_if_connected(app: &AppHandle) -> CmdResult<()> {
         connect(app).await
     } else {
         Ok(())
+    }
+}
+
+/// Connects again when run `generation` is still the live one, once a
+/// connect in progress (maybe that very run's) is through.
+pub(crate) async fn reconnect_run(app: &AppHandle, generation: u64) {
+    let state = app.state::<App>();
+    {
+        let _running = state.running.lock().await;
+        if state.generation.load(Ordering::SeqCst) != generation {
+            return;
+        }
+    }
+    if let Err(err) = reconnect_if_connected(app).await {
+        logs::push(app, &format!("[Error] {}", err.message));
     }
 }
 

@@ -24,11 +24,12 @@
 //! the stop file appears or the GUI process is gone.
 //!
 //! For a server Xray cannot run (WireGuard, AmneziaWG) the arguments end with
-//! `--engine <uniray-engine> <mode> <engine config>`. The helper then starts
-//! the engine before Xray, as root too - the engine only serves the process
-//! it is told is Xray, and checking another root process needs root - tells
-//! it Xray's pid over its stdin, and stops it after Xray. The engine exiting
-//! ends the run like Xray exiting does.
+//! `--engine <uniray-engine> <mode> <engine config>`, once more for the
+//! corporate network. The helper then starts the engines before Xray, as root
+//! too - an engine only serves the process it is told is Xray, and checking
+//! another root process needs root - tells them Xray's pid over their stdin,
+//! and stops them after Xray. An engine exiting ends the run like Xray exiting
+//! does.
 
 // Started hidden through UAC on Windows: no console window.
 #![cfg_attr(windows, windows_subsystem = "windows")]
@@ -49,13 +50,16 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::FAILURE
 }
 
-/// Splits off a trailing `--engine <binary> <mode> <config>`.
+/// Splits off the trailing `--engine <binary> <mode> <config>` groups.
 #[cfg(any(unix, windows))]
-fn split_engine(args: &[std::ffi::OsString]) -> (&[std::ffi::OsString], Option<&[std::ffi::OsString]>) {
-    match args.len().checked_sub(4) {
-        Some(at) if args[at] == "--engine" => (&args[..at], Some(&args[at + 1..])),
-        _ => (args, None),
+fn split_engines(args: &[std::ffi::OsString]) -> (&[std::ffi::OsString], Vec<&[std::ffi::OsString]>) {
+    let mut end = args.len();
+    let mut engines = Vec::new();
+    while let Some(at) = end.checked_sub(4).filter(|at| args[*at] == "--engine") {
+        engines.insert(0, &args[at + 1..end]);
+        end = at;
     }
+    (&args[..end], engines)
 }
 
 /// Starts the engine, its stdin a pipe that the helper holds: the engine
@@ -65,6 +69,26 @@ fn engine_command(engine: &[std::ffi::OsString]) -> std::process::Command {
     let mut command = std::process::Command::new(&engine[0]);
     command.arg(&engine[1]).arg("--config").arg(&engine[2]).stdin(std::process::Stdio::piped());
     command
+}
+
+/// The engines, all started or, should one fail, none: those started are
+/// killed.
+#[cfg(any(unix, windows))]
+fn spawn_all(spawns: impl Iterator<Item = std::io::Result<std::process::Child>>) -> std::io::Result<Vec<std::process::Child>> {
+    let mut started = Vec::new();
+    for spawned in spawns {
+        match spawned {
+            Ok(child) => started.push(child),
+            Err(err) => {
+                for mut child in started {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                return Err(err);
+            }
+        }
+    }
+    Ok(started)
 }
 
 /// Tells the engine which process is Xray.
@@ -114,7 +138,7 @@ mod unix {
 
     pub fn run() -> ExitCode {
         let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-        let (args, engine) = super::split_engine(&args);
+        let (args, engines) = super::split_engines(&args);
         let (xray, config, assets, detached) = match args {
             [xray, config, assets] => (xray, config, assets, None),
             [xray, config, assets, gui, stop_file, log_file] => {
@@ -131,7 +155,7 @@ mod unix {
             _ => {
                 eprintln!(
                     "usage: uniray-helper <xray> <config.json> <asset dir> [<GUI pid> <stop file> <log file>] \
-                     [--engine <engine> <mode> <config>]"
+                     [--engine <engine> <mode> <config>]..."
                 );
                 return ExitCode::from(2);
             }
@@ -152,8 +176,8 @@ mod unix {
             });
         }
 
-        let mut engine = match engine.map(|engine| spawn(super::engine_command(engine))).transpose() {
-            Ok(engine) => engine,
+        let mut engines = match super::spawn_all(engines.iter().map(|engine| spawn(super::engine_command(engine)))) {
+            Ok(engines) => engines,
             Err(err) => {
                 eprintln!("uniray-helper: cannot start the engine: {err}");
                 return ExitCode::FAILURE;
@@ -170,13 +194,11 @@ mod unix {
             Ok(child) => child,
             Err(err) => {
                 eprintln!("uniray-helper: cannot start {}: {err}", xray.to_string_lossy());
-                if let Some(engine) = engine.as_mut() {
-                    stop_engine(engine);
-                }
+                engines.iter_mut().for_each(stop_engine);
                 return ExitCode::FAILURE;
             }
         };
-        if let Some(engine) = engine.as_mut() {
+        for engine in &mut engines {
             super::register_peer(engine, &child);
         }
 
@@ -189,12 +211,10 @@ mod unix {
                     break ExitCode::FAILURE;
                 }
             }
-            if let Some(engine) = engine.as_mut() {
-                if !matches!(engine.try_wait(), Ok(None)) {
-                    eprintln!("uniray-helper: the engine exited");
-                    stop(&mut child);
-                    break ExitCode::FAILURE;
-                }
+            if engines.iter_mut().any(|engine| !matches!(engine.try_wait(), Ok(None))) {
+                eprintln!("uniray-helper: the engine exited");
+                stop(&mut child);
+                break ExitCode::FAILURE;
             }
             if STOP.load(Ordering::SeqCst) || detached.as_ref().is_some_and(Detached::should_stop) {
                 stop(&mut child);
@@ -202,9 +222,7 @@ mod unix {
             }
             thread::sleep(POLL);
         };
-        if let Some(engine) = engine.as_mut() {
-            stop_engine(engine);
-        }
+        engines.iter_mut().for_each(stop_engine);
         if let Some(detached) = &detached {
             let _ = std::fs::remove_file(&detached.stop_file);
         }
@@ -303,11 +321,11 @@ mod windows {
 
     pub fn run() -> ExitCode {
         let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-        let (args, engine) = super::split_engine(&args);
+        let (args, engines) = super::split_engines(&args);
         let [xray, config, assets, gui_pid, stop_file, log_file] = args else {
             eprintln!(
                 "usage: uniray-helper <xray> <config.json> <asset dir> <GUI pid> <stop file> <log file> \
-                 [--engine <engine> <mode> <config>]"
+                 [--engine <engine> <mode> <config>]..."
             );
             return ExitCode::from(2);
         };
@@ -327,8 +345,8 @@ mod windows {
             Ok(file) => file,
             Err(_) => return ExitCode::FAILURE,
         };
-        let mut engine = match engine.map(|engine| spawn_engine(engine, &output)).transpose() {
-            Ok(engine) => engine,
+        let mut engines = match super::spawn_all(engines.iter().map(|engine| spawn_engine(engine, &output))) {
+            Ok(engines) => engines,
             Err(err) => {
                 let _ = writeln!(&output, "uniray-helper: cannot start the engine: {err}");
                 return ExitCode::FAILURE;
@@ -349,14 +367,12 @@ mod windows {
             Ok(child) => child,
             Err(err) => {
                 eprintln!("uniray-helper: cannot start {}: {err}", xray.to_string_lossy());
-                if let Some(engine) = engine.as_mut() {
-                    stop_engine(engine);
-                }
+                engines.iter_mut().for_each(stop_engine);
                 return ExitCode::FAILURE;
             }
         };
         bind_to_self(&child);
-        if let Some(engine) = engine.as_mut() {
+        for engine in &mut engines {
             super::register_peer(engine, &child);
         }
 
@@ -374,7 +390,7 @@ mod windows {
                 Ok(None) => {}
                 Err(_) => break 1,
             }
-            let engine_gone = engine.as_mut().is_some_and(|engine| !matches!(engine.try_wait(), Ok(None)));
+            let engine_gone = engines.iter_mut().any(|engine| !matches!(engine.try_wait(), Ok(None)));
             if engine_gone || stop_file.exists() || !gui_alive() {
                 // Xray has no console to receive Ctrl+Break; Windows removes
                 // the Wintun adapter and its routes when the process ends.
@@ -384,9 +400,7 @@ mod windows {
             }
             thread::sleep(POLL);
         };
-        if let Some(engine) = engine.as_mut() {
-            stop_engine(engine);
-        }
+        engines.iter_mut().for_each(stop_engine);
         let _ = std::fs::remove_file(&stop_file);
         if !gui.is_null() {
             // SAFETY: the handle came from OpenProcess above.
@@ -435,5 +449,23 @@ mod windows {
             );
             AssignProcessToJobObject(job, child.as_raw_handle() as _);
         }
+    }
+}
+
+#[cfg(all(test, any(unix, windows)))]
+mod tests {
+    use std::ffi::OsString;
+
+    #[test]
+    fn engine_groups_are_split_off() {
+        let args: Vec<OsString> = ["x", "c", "a", "--engine", "e", "awg", "1.json", "--engine", "e", "ovpn", "2.json"]
+            .iter()
+            .map(OsString::from)
+            .collect();
+        let (rest, engines) = super::split_engines(&args);
+        assert_eq!(rest, &args[..3]);
+        assert_eq!(engines, [&args[4..7], &args[8..11]]);
+        let (rest, engines) = super::split_engines(&args[..3]);
+        assert_eq!((rest.len(), engines.len()), (3, 0));
     }
 }

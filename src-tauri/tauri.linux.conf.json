@@ -1,0 +1,5 @@
+{
+  "bundle": {
+    "externalBin": ["binaries/uniray-xray", "binaries/uniray-helper", "binaries/uniray-engine", "binaries/uniray-naive", "binaries/uniray-ovpn"]
+  }
+}
