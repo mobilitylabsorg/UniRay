@@ -11,7 +11,8 @@
 // awg runs WireGuard/AmneziaWG itself (amneziawg-go, userspace); naive starts
 // the official NaiveProxy client as its child and passes connections on; ovpn
 // starts uniray-ovpn (the OpenVPN 3 core) as its child, which hands it the
-// tunnel's packets for the same userspace stack as awg.
+// tunnel's packets for the same userspace stack as awg; it serves at once and
+// keeps the tunnel up meanwhile (see ovpnUpstream).
 //
 // The config file holds secrets, so it is read once and removed. Nothing
 // secret goes on the command line, which other users can read. The engine
@@ -108,9 +109,7 @@ func main() {
 		if config.OVPN == nil {
 			fatalf("the config has no ovpn section")
 		}
-		upstream, err = startOVPN(config.OVPN, filepath.Dir(*configPath), func(err error) {
-			fatalf("uniray-ovpn exited: %v", err)
-		})
+		upstream, err = startOVPN(config.OVPN, filepath.Dir(*configPath))
 	default:
 		fatalf("unknown mode %q", mode)
 	}

@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,240 +36,386 @@ type OVPNConfig struct {
 	Profile  string `json:"profile"`
 	Username string `json:"username"`
 	Password string `json:"password"`
+	// Where to connect instead of the profile's remote, when set: the address
+	// the app resolved it to (its rule sending these packets past the tunnel
+	// matches the address), or Xray's loopback port that forwards to the
+	// server through another server in front of it.
+	Server string `json:"server"`
+	Port   int    `json:"port"`
+	// "udp" or "tcp", when Server is set.
+	Proto string `json:"proto"`
 }
 
 // OVPNSettings is what the server pushed: the tunnel's address and MTU, and
 // the networks, DNS servers and domains reached through it.
 type OVPNSettings struct {
-	MTU       int
-	Addresses []netip.Prefix
-	Routes    []netip.Prefix
-	DNS       []netip.Addr
-	Domains   []string
+	MTU       int            `json:"mtu"`
+	Addresses []netip.Prefix `json:"addresses"`
+	Routes    []netip.Prefix `json:"routes"`
+	DNS       []netip.Addr   `json:"dns"`
+	Domains   []string       `json:"domains"`
 }
 
-const ovpnStartTimeout = 30 * time.Second
+const (
+	// How long a connection waits for the tunnel to come up (again).
+	ovpnDialWait = 20 * time.Second
+	// Between restarts of a uniray-ovpn that ended without saying why.
+	ovpnRetryMin = 2 * time.Second
+	ovpnRetryMax = time.Minute
+)
 
-type ovpnTunnel struct {
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	packets  *net.UnixConn
+// ovpnUpstream keeps a session of uniray-ovpn up. It serves at once: the
+// tunnel may need Xray, started after the engine is ready, to reach its
+// server, so connections wait for the tunnel instead. The OpenVPN core
+// reconnects on its own within a session; a session that ends on an error
+// the server gave (wrong password, a bad profile) is not retried, and
+// connections fail with that error.
+//
+// The app learns the tunnel's state from the log ("corp: up {settings}",
+// "corp: down <reason>"), which it reaches by every route the engine runs.
+type ovpnUpstream struct {
+	config *OVPNConfig
+	dir    string
+
+	mu      sync.Mutex
+	stack   *ovpnStack
+	failure error
+	// Closed and replaced whenever stack or failure changes.
+	changed chan struct{}
+
+	stop    chan struct{}
+	once    sync.Once
+	closing atomic.Bool
+	done    chan struct{}
+}
+
+// ovpnStack is the userspace network stack on the tunnel's address.
+type ovpnStack struct {
 	device   tun.Device
 	net      *netstack.Net
 	settings OVPNSettings
-	exited   chan struct{}
-	once     sync.Once
-	closing  atomic.Bool
 }
 
-// startOVPN starts uniray-ovpn with the profile in `dir` (private to the
-// app; uniray-ovpn removes the file once read) and the credentials on its
-// stdin, waits for the tunnel's settings, and brings the stack up with them.
-// onExit is called if uniray-ovpn ends on its own (not through Close).
-func startOVPN(config *OVPNConfig, dir string, onExit func(error)) (*ovpnTunnel, error) {
+func startOVPN(config *OVPNConfig, dir string) (Upstream, error) {
 	if config.Binary == "" || config.Profile == "" {
 		return nil, errors.New("the config has no uniray-ovpn binary or profile")
 	}
+	u := &ovpnUpstream{config: config, dir: dir, changed: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{})}
+	go u.run()
+	return u, nil
+}
+
+func (u *ovpnUpstream) run() {
+	defer close(u.done)
+	retry := ovpnRetryMin
+	for !u.closing.Load() {
+		started := time.Now()
+		err := u.session()
+		if u.closing.Load() {
+			return
+		}
+		var refused *ovpnRefused
+		if errors.As(err, &refused) {
+			logf("Error", "corp: down %s", refused.message)
+			u.update(func() { u.failure = errors.New("OpenVPN: " + refused.message) })
+			return
+		}
+		if time.Since(started) > ovpnRetryMax {
+			retry = ovpnRetryMin
+		}
+		logf("Warning", "corp: down %v; again in %v", err, retry)
+		select {
+		case <-u.stop:
+			return
+		case <-time.After(retry):
+		}
+		retry = min(retry*2, ovpnRetryMax)
+	}
+}
+
+// ovpnRefused is uniray-ovpn's "error" line: the server or the profile
+// refused the session, which starting again would not change.
+type ovpnRefused struct{ message string }
+
+func (e *ovpnRefused) Error() string { return e.message }
+
+// session runs uniray-ovpn until it exits.
+func (u *ovpnUpstream) session() error {
 	// Datagrams keep each packet whole, as a TUN does.
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
-		return nil, fmt.Errorf("packet socket: %w", err)
+		return fmt.Errorf("packet socket: %w", err)
 	}
 	ours, theirs := os.NewFile(uintptr(fds[0]), "ovpn-packets"), os.NewFile(uintptr(fds[1]), "ovpn-packets-child")
-	defer theirs.Close()
 	conn, err := net.FileConn(ours)
 	ours.Close()
 	if err != nil {
-		return nil, fmt.Errorf("packet socket: %w", err)
+		theirs.Close()
+		return fmt.Errorf("packet socket: %w", err)
 	}
 	packets := conn.(*net.UnixConn)
+	defer packets.Close()
 
-	profile := filepath.Join(dir, "ovpn-"+randomHex(8)+".ovpn")
-	if err := os.WriteFile(profile, []byte(config.Profile), 0o600); err != nil {
-		packets.Close()
-		return nil, fmt.Errorf("profile: %w", err)
+	// uniray-ovpn removes the profile once read; this, if it never does.
+	profile := filepath.Join(u.dir, "ovpn-"+randomHex(8)+".ovpn")
+	if err := os.WriteFile(profile, []byte(u.config.Profile), 0o600); err != nil {
+		theirs.Close()
+		return fmt.Errorf("profile: %w", err)
 	}
-	cmd := exec.Command(config.Binary, "--config", profile, "--packet-fd", "3")
+	defer os.Remove(profile)
+	args := []string{"--config", profile, "--packet-fd", "3"}
+	if u.config.Server != "" {
+		args = append(args, "--server", u.config.Server, "--port", strconv.Itoa(u.config.Port))
+		if u.config.Proto != "" {
+			args = append(args, "--proto", u.config.Proto)
+		}
+	}
+	cmd := exec.Command(u.config.Binary, args...)
 	cmd.ExtraFiles = []*os.File{theirs}
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		packets.Close()
-		return nil, err
+		theirs.Close()
+		return err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		packets.Close()
-		return nil, err
+		theirs.Close()
+		return err
 	}
 	setChildAttrs(cmd)
-	if err := cmd.Start(); err != nil {
-		os.Remove(profile)
-		packets.Close()
-		return nil, fmt.Errorf("starting uniray-ovpn: %w", err)
-	}
-	t := &ovpnTunnel{cmd: cmd, stdin: stdin, packets: packets, exited: make(chan struct{})}
-	if _, err := fmt.Fprintf(stdin, "%s\n%s\n", config.Username, config.Password); err != nil {
-		t.Close()
-		return nil, fmt.Errorf("credentials: %w", err)
-	}
-
-	lines := bufio.NewScanner(stdout)
-	ready := make(chan error, 1)
-	go func() {
-		ready <- t.readSettings(lines)
-		// After the settings: "connected"/"reconnecting" for the log, and
-		// "error" when the session ends.
-		for lines.Scan() {
-			logf("Info", "ovpn: %s", lines.Text())
-		}
-	}()
-	go func() {
-		err := cmd.Wait()
-		close(t.exited)
-		os.Remove(profile)
-		if !t.closing.Load() {
-			onExit(err)
-		}
-	}()
-
-	select {
-	case err := <-ready:
-		if err != nil {
-			t.Close()
-			return nil, err
-		}
-	case <-t.exited:
-		return nil, errors.New("uniray-ovpn exited before the tunnel came up")
-	case <-time.After(ovpnStartTimeout):
-		t.Close()
-		return nil, errors.New("the OpenVPN server did not answer in time")
-	}
-
-	addresses := make([]netip.Addr, 0, len(t.settings.Addresses))
-	for _, prefix := range t.settings.Addresses {
-		addresses = append(addresses, prefix.Addr())
-	}
-	dns := t.settings.DNS
-	if len(dns) == 0 {
-		for _, server := range DefaultDNS {
-			dns = append(dns, netip.MustParseAddr(server))
-		}
-	}
-	t.device, t.net, err = netstack.CreateNetTUN(addresses, dns, t.settings.MTU)
+	err = cmd.Start()
+	theirs.Close()
 	if err != nil {
-		t.Close()
-		return nil, fmt.Errorf("network stack: %w", err)
+		return fmt.Errorf("starting uniray-ovpn: %w", err)
 	}
-	if err := tuneTCP(t.net); err != nil {
-		t.Close()
-		return nil, fmt.Errorf("TCP of the network stack: %w", err)
+	// Closing stdin stops it: on Close, or when this session is over.
+	stopped := make(chan struct{})
+	go func() {
+		select {
+		case <-u.stop:
+		case <-stopped:
+		}
+		stdin.Close()
+		select {
+		case <-stopped:
+		case <-time.After(5 * time.Second):
+			cmd.Process.Kill()
+		}
+	}()
+	fmt.Fprintf(stdin, "%s\n%s\n", u.config.Username, u.config.Password)
+
+	go u.fromServer(packets)
+	refused := u.follow(stdout, packets, func() { stdin.Close() })
+	waitErr := cmd.Wait()
+	close(stopped)
+	u.update(func() { u.setStack(nil) })
+	if refused != nil {
+		return refused
 	}
-	go t.fromServer()
-	go t.toServer()
-	logf("Info", "ovpn: up, %v, routes %v, DNS %v, domains %v", t.settings.Addresses, t.settings.Routes, t.settings.DNS, t.settings.Domains)
-	return t, nil
+	if waitErr != nil {
+		return fmt.Errorf("uniray-ovpn: %w", waitErr)
+	}
+	return errors.New("uniray-ovpn ended")
 }
 
-// readSettings takes uniray-ovpn's lines up to the first "connected".
-func (t *ovpnTunnel) readSettings(lines *bufio.Scanner) error {
+// follow reads uniray-ovpn's lines until it exits: the tunnel's settings,
+// then "connected" each time the tunnel is up. Returns its "error", if any;
+// after one it is told to stop with `quit`, should it not have already.
+func (u *ovpnUpstream) follow(stdout io.Reader, packets *net.UnixConn, quit func()) error {
+	lines := bufio.NewScanner(stdout)
+	var pending OVPNSettings
+	var refused error
 	for lines.Scan() {
 		key, value, _ := strings.Cut(lines.Text(), " ")
 		switch key {
 		case "tun":
-			t.settings = OVPNSettings{}
-			t.settings.MTU, _ = strconv.Atoi(value)
+			pending = OVPNSettings{}
+			pending.MTU, _ = strconv.Atoi(value)
 		case "address":
 			if prefix, err := netip.ParsePrefix(value); err == nil {
-				t.settings.Addresses = append(t.settings.Addresses, prefix)
+				pending.Addresses = append(pending.Addresses, prefix)
 			}
 		case "route":
 			if prefix, err := netip.ParsePrefix(value); err == nil {
-				t.settings.Routes = append(t.settings.Routes, prefix.Masked())
+				pending.Routes = append(pending.Routes, prefix.Masked())
 			}
 		case "dns":
-			if addr, err := netip.ParseAddr(value); err == nil {
-				t.settings.DNS = append(t.settings.DNS, addr)
+			if addr, err := netip.ParseAddr(value); err == nil && !slices.Contains(pending.DNS, addr) {
+				pending.DNS = append(pending.DNS, addr)
 			}
 		case "domain":
-			t.settings.Domains = append(t.settings.Domains, value)
+			if !slices.Contains(pending.Domains, value) {
+				pending.Domains = append(pending.Domains, value)
+			}
 		case "connected":
-			if len(t.settings.Addresses) == 0 {
-				return errors.New("the OpenVPN server gave no tunnel address")
+			if err := u.up(pending, packets); err != nil {
+				logf("Error", "corp: down %v", err)
 			}
-			if t.settings.MTU <= 0 {
-				t.settings.MTU = 1500
-			}
-			return nil
+		case "reconnecting":
+			logf("Warning", "corp: reconnecting")
 		case "error":
-			return fmt.Errorf("OpenVPN: %s", value)
+			refused = &ovpnRefused{message: value}
+			quit()
 		}
 	}
-	return errors.New("uniray-ovpn ended before the tunnel came up")
+	return refused
 }
 
-// fromServer feeds the packets uniray-ovpn decrypted to the stack.
-func (t *ovpnTunnel) fromServer() {
+// up puts the tunnel to use with `settings`: the stack it has, when the
+// address is the same (connections survive a reconnect), else a new one.
+func (u *ovpnUpstream) up(settings OVPNSettings, packets *net.UnixConn) error {
+	if len(settings.Addresses) == 0 {
+		return errors.New("the OpenVPN server gave no tunnel address")
+	}
+	if settings.MTU <= 0 {
+		settings.MTU = 1500
+	}
+	u.mu.Lock()
+	current := u.stack
+	u.mu.Unlock()
+	if current == nil || !slices.Equal(current.settings.Addresses, settings.Addresses) || current.settings.MTU != settings.MTU {
+		addresses := make([]netip.Addr, 0, len(settings.Addresses))
+		for _, prefix := range settings.Addresses {
+			addresses = append(addresses, prefix.Addr())
+		}
+		dns := settings.DNS
+		if len(dns) == 0 {
+			for _, server := range DefaultDNS {
+				dns = append(dns, netip.MustParseAddr(server))
+			}
+		}
+		device, tnet, err := netstack.CreateNetTUN(addresses, dns, settings.MTU)
+		if err != nil {
+			return fmt.Errorf("network stack: %w", err)
+		}
+		if err := tuneTCP(tnet); err != nil {
+			device.Close()
+			return fmt.Errorf("TCP of the network stack: %w", err)
+		}
+		current = &ovpnStack{device: device, net: tnet}
+		go toServer(current.device, packets)
+	}
+	current.settings = settings
+	u.update(func() {
+		u.setStack(current)
+		u.failure = nil
+	})
+	report, _ := json.Marshal(settings)
+	logf("Info", "corp: up %s", report)
+	return nil
+}
+
+// setStack, under mu: replaces the stack, closing the one it replaces.
+func (u *ovpnUpstream) setStack(stack *ovpnStack) {
+	if u.stack != nil && u.stack != stack {
+		u.stack.device.Close()
+	}
+	u.stack = stack
+}
+
+func (u *ovpnUpstream) update(change func()) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	change()
+	close(u.changed)
+	u.changed = make(chan struct{})
+}
+
+// fromServer feeds the packets uniray-ovpn decrypted to the stack of the
+// moment, until the session's socket closes.
+func (u *ovpnUpstream) fromServer(packets *net.UnixConn) {
 	buf := make([]byte, 65535)
 	for {
-		n, err := t.packets.Read(buf)
+		n, err := packets.Read(buf)
 		if err != nil {
 			return
 		}
-		if _, err := t.device.Write([][]byte{buf[:n]}, 0); err != nil && !t.closing.Load() {
-			logf("Warning", "ovpn: to the stack: %v", err)
+		u.mu.Lock()
+		stack := u.stack
+		u.mu.Unlock()
+		if stack == nil {
+			continue
+		}
+		if _, err := stack.device.Write([][]byte{buf[:n]}, 0); err != nil && !u.closing.Load() {
+			logf("Warning", "corp: to the stack: %v", err)
 		}
 	}
 }
 
-// toServer hands the stack's packets to uniray-ovpn to encrypt and send.
-func (t *ovpnTunnel) toServer() {
-	batch := t.device.BatchSize()
+// toServer hands a stack's packets to uniray-ovpn to encrypt and send,
+// until the stack or the socket closes.
+func toServer(device tun.Device, packets *net.UnixConn) {
+	batch := device.BatchSize()
 	bufs := make([][]byte, batch)
 	for i := range bufs {
 		bufs[i] = make([]byte, 65535)
 	}
 	sizes := make([]int, batch)
 	for {
-		n, err := t.device.Read(bufs, sizes, 0)
+		n, err := device.Read(bufs, sizes, 0)
 		if err != nil {
 			return
 		}
 		for i := 0; i < n; i++ {
-			if _, err := t.packets.Write(bufs[i][:sizes[i]]); err != nil {
-				if !t.closing.Load() {
-					logf("Warning", "ovpn: to the server: %v", err)
+			if _, err := packets.Write(bufs[i][:sizes[i]]); err != nil {
+				if !errors.Is(err, net.ErrClosed) && !errors.Is(err, syscall.ENOBUFS) {
+					return
 				}
-				return
 			}
 		}
 	}
 }
 
-func (t *ovpnTunnel) DialTCP(ctx context.Context, host string, port uint16) (net.Conn, error) {
-	return t.net.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(int(port))))
+// net waits for the tunnel to be up, at most ovpnDialWait.
+func (u *ovpnUpstream) net(ctx context.Context) (*netstack.Net, error) {
+	timeout := time.NewTimer(ovpnDialWait)
+	defer timeout.Stop()
+	for {
+		u.mu.Lock()
+		stack, failure, changed := u.stack, u.failure, u.changed
+		u.mu.Unlock()
+		switch {
+		case stack != nil:
+			return stack.net, nil
+		case failure != nil:
+			return nil, failure
+		case u.closing.Load():
+			return nil, net.ErrClosed
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timeout.C:
+			return nil, errors.New("the OpenVPN tunnel is not up")
+		}
+	}
 }
 
-func (t *ovpnTunnel) DialUDP(ctx context.Context, host string, port uint16) (net.Conn, error) {
-	return t.net.DialContext(ctx, "udp", net.JoinHostPort(host, strconv.Itoa(int(port))))
+func (u *ovpnUpstream) DialTCP(ctx context.Context, host string, port uint16) (net.Conn, error) {
+	tnet, err := u.net(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return tnet.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(int(port))))
+}
+
+func (u *ovpnUpstream) DialUDP(ctx context.Context, host string, port uint16) (net.Conn, error) {
+	tnet, err := u.net(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return tnet.DialContext(ctx, "udp", net.JoinHostPort(host, strconv.Itoa(int(port))))
 }
 
 // Close ends the session: uniray-ovpn stops when its stdin closes.
-func (t *ovpnTunnel) Close() error {
-	t.once.Do(func() {
-		t.closing.Store(true)
-		t.stdin.Close()
-		select {
-		case <-t.exited:
-		case <-time.After(5 * time.Second):
-			if t.cmd.Process != nil {
-				t.cmd.Process.Kill()
-			}
-		}
-		t.packets.Close()
-		if t.device != nil {
-			t.device.Close()
-		}
+func (u *ovpnUpstream) Close() error {
+	u.once.Do(func() {
+		u.closing.Store(true)
+		close(u.stop)
+		<-u.done
+		u.update(func() { u.setStack(nil) })
 	})
 	return nil
 }

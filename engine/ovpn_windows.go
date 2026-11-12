@@ -9,8 +9,11 @@ type OVPNConfig struct {
 	Profile  string `json:"profile"`
 	Username string `json:"username"`
 	Password string `json:"password"`
+	Server   string `json:"server"`
+	Port     int    `json:"port"`
+	Proto    string `json:"proto"`
 }
 
-func startOVPN(*OVPNConfig, string, func(error)) (Upstream, error) {
+func startOVPN(*OVPNConfig, string) (Upstream, error) {
 	return nil, errors.New("OpenVPN is not supported on Windows yet")
 }

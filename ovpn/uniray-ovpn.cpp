@@ -4,6 +4,11 @@
 // of, and the engine's userspace stack (gVisor) turns them into connections.
 //
 // Usage: uniray-ovpn --config <file.ovpn> --packet-fd <fd>
+//                    [--server <address> --port <port> [--proto udp|tcp]]
+//
+// --server connects there instead of the profile's remote: the address the
+// app resolved it to, or a loopback port where Xray forwards to the server
+// through another server in front of it.
 //
 // - The profile is read once and removed (it may hold keys).
 // - The credentials come on stdin, a line each: the username, the password.
@@ -172,6 +177,9 @@ class Client : public ClientAPI::OpenVPNClient
         {
             failed = true;
             say("error " + ev.name + (ev.info.empty() ? "" : ": " + ev.info));
+            // The core reports AUTH_FAILED and the like but keeps connect()
+            // waiting; stop() is posted to its loop, from outside it.
+            std::thread([this] { stop(); }).detach();
         }
         std::cerr << "ovpn: event " << ev.name << (ev.info.empty() ? "" : " " + ev.info) << std::endl;
     }
@@ -207,17 +215,26 @@ class Client : public ClientAPI::OpenVPNClient
     TunBuilderCapture::Ptr capture;
 };
 
+// Ends the process without running destructors: the thread watching stdin
+// still holds the client.
+[[noreturn]] void quit(int code)
+{
+    std::cout.flush();
+    std::cerr.flush();
+    std::_Exit(code);
+}
+
 [[noreturn]] void fail(const std::string &message)
 {
     say("error " + message);
-    std::exit(1);
+    quit(1);
 }
 
 } // namespace
 
 int main(int argc, char *argv[])
 {
-    std::string config_path;
+    std::string config_path, server, port, proto;
     int packet_fd = -1;
     for (int i = 1; i + 1 < argc; i += 2)
     {
@@ -226,6 +243,12 @@ int main(int argc, char *argv[])
             config_path = argv[i + 1];
         else if (flag == "--packet-fd")
             packet_fd = std::atoi(argv[i + 1]);
+        else if (flag == "--server")
+            server = argv[i + 1];
+        else if (flag == "--port")
+            port = argv[i + 1];
+        else if (flag == "--proto")
+            proto = argv[i + 1];
     }
     if (config_path.empty() || packet_fd < 0)
         fail("usage: uniray-ovpn --config <file.ovpn> --packet-fd <fd>");
@@ -250,6 +273,9 @@ int main(int argc, char *argv[])
     // The engine reconnects on its own terms; the core retries within a session.
     config.connTimeout = 0;
     config.retryOnAuthFailed = false;
+    config.serverOverride = server;
+    config.portOverride = port;
+    config.protoOverride = proto;
     const ClientAPI::EvalConfig eval = client.eval_config(config);
     if (eval.error)
         fail("the profile: " + eval.message);
@@ -274,7 +300,9 @@ int main(int argc, char *argv[])
     watcher.detach();
 
     const ClientAPI::Status status = client.connect();
+    if (client.failed)
+        quit(1);
     if (status.error)
         fail(status.status + (status.message.empty() ? "" : ": " + status.message));
-    return client.failed ? 1 : 0;
+    quit(0);
 }
