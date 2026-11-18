@@ -5,6 +5,7 @@ import { useI18n } from "vue-i18n";
 
 import type { Server } from "../lib/api";
 import { renderQr } from "../lib/qr";
+import { nameLine, parseServerName } from "../lib/serverName";
 import { useAppStore } from "../stores/app";
 import AppIcon from "./AppIcon.vue";
 import ModalSheet from "./ModalSheet.vue";
@@ -31,7 +32,7 @@ async function copy() {
 </script>
 
 <template>
-  <ModalSheet :title="server.name" @close="emit('close')">
+  <ModalSheet :title="nameLine(parseServerName(server.name))" @close="emit('close')">
     <template v-if="server.link">
       <img v-if="qr" :src="qr" alt="QR" class="mx-auto w-full max-w-72 rounded-2xl" />
       <p class="selectable mt-4 max-h-24 overflow-y-auto rounded-xl bg-raised p-3 font-mono text-xs break-all text-muted">
