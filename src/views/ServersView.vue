@@ -408,7 +408,7 @@ async function confirm() {
               <span v-else-if="testing" class="shrink-0 animate-pulse text-xs text-muted">…</span>
             </Transition>
           </button>
-          <div class="row-actions flex shrink-0 items-center pr-1">
+          <div class="flex shrink-0 items-center pr-1">
             <button class="icon-btn" :aria-label="t('servers.share')" :title="t('servers.share')" @click="sharing = server">
               <AppIcon name="qr" :size="18" />
             </button>

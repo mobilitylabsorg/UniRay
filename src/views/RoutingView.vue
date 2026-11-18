@@ -123,7 +123,7 @@ function move(index: number, by: number) {
             <span class="selectable min-w-0 truncate font-mono text-xs">{{ rule.value }}</span>
             <span class="tag shrink-0" :class="ACTION_CLASS[rule.action]">{{ t(`routing.${rule.action}`) }}</span>
           </div>
-          <div class="row-actions flex shrink-0 items-center">
+          <div class="flex shrink-0 items-center">
             <button class="icon-btn" :disabled="index === 0" :aria-label="t('routing.moveUp')" :title="t('routing.moveUp')" @click="move(index, -1)">
               <AppIcon name="up" :size="16" />
             </button>

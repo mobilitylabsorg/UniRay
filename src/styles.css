@@ -197,23 +197,6 @@ html.tv {
   }
 }
 
-/* Row actions (share, delete) that would repeat on every row of a long list:
-   with a mouse they show for the row under it or holding the focus; touch
-   screens and TVs always show them. */
-@media (hover: hover) and (pointer: fine) {
-  .row-actions {
-    opacity: 0;
-    transition: opacity 150ms var(--ease-out);
-  }
-  .group:hover .row-actions,
-  .group:focus-within .row-actions {
-    opacity: 1;
-  }
-}
-.tv .row-actions {
-  opacity: 1;
-}
-
 /* Horizontal chip rows scroll without a bar. */
 .no-scrollbar {
   scrollbar-width: none;
