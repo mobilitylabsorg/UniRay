@@ -52,11 +52,11 @@ async function copyAll() {
 </script>
 
 <template>
-  <div class="flex h-full flex-col px-4 py-5">
-    <header class="mb-3 flex items-center gap-2">
-      <h1 class="flex-1 text-xl font-semibold">{{ t("logs.title") }}</h1>
-      <label class="flex items-center gap-2 text-xs text-muted">
-        {{ t("logs.showAccess") }}
+  <div class="page flex h-full flex-col md:max-w-5xl">
+    <header class="page-header">
+      <h1 class="page-title">{{ t("logs.title") }}</h1>
+      <label class="flex items-center gap-2 pr-1 text-xs text-muted">
+        <span class="max-[360px]:hidden">{{ t("logs.showAccess") }}</span>
         <ToggleSwitch v-model="showAccess" :label="t('logs.showAccess')" />
       </label>
       <button
@@ -80,18 +80,18 @@ async function copyAll() {
     </header>
 
     <div v-if="lines.length === 0" class="card flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-      <AppIcon name="logs" :size="36" class="text-muted" />
+      <AppIcon name="logs" :size="32" class="text-muted" />
       <div class="font-medium">{{ t("logs.empty") }}</div>
-      <p class="text-sm text-muted">{{ t("logs.emptyHint") }}</p>
+      <p class="max-w-sm text-sm text-muted">{{ t("logs.emptyHint") }}</p>
     </div>
     <div
       v-else
       ref="list"
-      class="card selectable min-h-0 flex-1 overflow-y-auto p-3 font-mono text-[11px] leading-relaxed"
+      class="card selectable min-h-0 flex-1 overflow-y-auto px-4 py-3 font-mono text-[11px] leading-relaxed"
       @scroll.passive="onScroll"
     >
-      <div v-for="line in lines" :key="line.id" class="break-all" :class="LEVEL_CLASS[line.level]">
-        <span class="text-muted">{{ formatClock(line.time) }}</span> {{ line.text }}
+      <div v-for="line in lines" :key="line.id" class="[overflow-wrap:anywhere]" :class="LEVEL_CLASS[line.level]">
+        <span class="text-muted opacity-70">{{ formatClock(line.time) }}</span> {{ line.text }}
       </div>
     </div>
   </div>
