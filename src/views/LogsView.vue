@@ -52,7 +52,7 @@ async function copyAll() {
 </script>
 
 <template>
-  <div class="page flex h-full flex-col md:max-w-5xl">
+  <div class="page flex h-full flex-col md:max-w-none">
     <header class="page-header">
       <h1 class="page-title">{{ t("logs.title") }}</h1>
       <label class="flex items-center gap-2 pr-1 text-xs text-muted">
