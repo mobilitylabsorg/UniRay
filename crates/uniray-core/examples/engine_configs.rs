@@ -28,7 +28,7 @@ fn main() {
         .expect("prepare the engine")
         .expect("a server for the engine");
     let runtime = Runtime {
-        tun: rest.first().is_some_and(|mode| mode == "tun").then(|| Tun::Managed { name: "uniray0".into() }),
+        tun: rest.first().is_some_and(|mode| mode == "tun").then(|| Tun::Managed { name: "uniray0".into(), ipv6: true }),
         mixed_port: Some(mixed_port.parse().expect("mixed port")),
         metrics_port: None,
         metrics_socket: None,

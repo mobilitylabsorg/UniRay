@@ -113,7 +113,7 @@ fn bypass_ru_resolves_ru_domains_directly() {
 #[test]
 fn managed_tun_hijacks_dns_and_routes_everything() {
     let server = parse_link(VLESS).unwrap();
-    let runtime = Runtime { tun: Some(Tun::Managed { name: "uniray0".into() }), ..proxy_runtime() };
+    let runtime = Runtime { tun: Some(Tun::Managed { name: "uniray0".into(), ipv6: true }), ..proxy_runtime() };
     let config = build(&server, &Settings::default(), &runtime).unwrap().config;
 
     assert_eq!(tags(&config, "inbounds"), ["mixed", "tun"]);
@@ -126,6 +126,16 @@ fn managed_tun_hijacks_dns_and_routes_everything() {
         config["routing"]["rules"][0],
         json!({ "inboundTag": ["tun"], "port": "53", "outboundTag": "dns-out" })
     );
+}
+
+#[test]
+fn managed_tun_without_system_ipv6_has_no_ipv6_address_or_routes() {
+    let server = parse_link(VLESS).unwrap();
+    let runtime = Runtime { tun: Some(Tun::Managed { name: "uniray0".into(), ipv6: false }), ..proxy_runtime() };
+    let config = build(&server, &Settings::default(), &runtime).unwrap().config;
+    let tun = &config["inbounds"][1]["settings"];
+    assert_eq!(tun["gateway"], json!([TUN_ADDRESS_V4]));
+    assert_eq!(tun["autoSystemRoutingTable"], json!(["0.0.0.0/0"]));
 }
 
 #[test]
@@ -337,7 +347,7 @@ fn balancer_config() -> Value {
 #[test]
 fn balancer_config_keeps_observatory_and_follows_our_inbounds() {
     let server = Server { protocol: "balancer".into(), ..config_server(balancer_config()) };
-    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into() }), ..proxy_runtime() };
+    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into(), ipv6: true }), ..proxy_runtime() };
     let config = build(&server, &Settings::default(), &runtime).unwrap().config;
 
     // The balancer needs the observatory's measurements to pick a server.
@@ -575,7 +585,7 @@ fn engine_servers_go_through_a_socks_outbound() {
     // Without its engine there is nothing to build.
     assert!(build(&server, &Settings::default(), &proxy_runtime()).is_err());
 
-    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into() }), engine: Some(engine(false)), ..proxy_runtime() };
+    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into(), ipv6: true }), engine: Some(engine(false)), ..proxy_runtime() };
     let built = build(&server, &Settings::default(), &runtime).unwrap();
     let config = built.config;
     assert_eq!(built.proxy_tags, ["proxy"]);
@@ -600,7 +610,7 @@ fn engine_servers_go_through_a_socks_outbound() {
 #[test]
 fn the_tun_leaves_the_engine_servers_address_out() {
     let tun_routes = |engine: Engine| {
-        let runtime = Runtime { tun: Some(Tun::Managed { name: "utun9".into() }), engine: Some(engine), ..proxy_runtime() };
+        let runtime = Runtime { tun: Some(Tun::Managed { name: "utun9".into(), ipv6: true }), engine: Some(engine), ..proxy_runtime() };
         let config = build(&engine_server(), &Settings::default(), &runtime).unwrap().config;
         let tun = config["inbounds"].as_array().unwrap().iter().find(|inbound| inbound["tag"] == "tun").unwrap().clone();
         serde_json::from_value::<Vec<String>>(tun["settings"]["autoSystemRoutingTable"].clone()).unwrap()
@@ -618,7 +628,7 @@ fn sniffing_keeps_the_engine_servers_address() {
     // replace the address the bypass rule matches, and the connection would go
     // to the proxy: back into the engine.
     let engine = Engine { sniff_excluded: vec!["naive.example.com".into()], ..engine(true) };
-    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into() }), engine: Some(engine), ..proxy_runtime() };
+    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into(), ipv6: true }), engine: Some(engine), ..proxy_runtime() };
     let config = build(&engine_server(), &Settings::default(), &runtime).unwrap().config;
     let inbounds = config["inbounds"].as_array().unwrap();
     assert!(inbounds.iter().any(|inbound| inbound["tag"] == "tun"));
@@ -663,7 +673,7 @@ fn corp(front: Option<CorpFront>) -> Corp {
 #[test]
 fn corp_network_goes_ahead_of_the_preset() {
     let server = parse_link(VLESS_IP).unwrap();
-    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into() }), corp: Some(corp(None)), ..proxy_runtime() };
+    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into(), ipv6: true }), corp: Some(corp(None)), ..proxy_runtime() };
     let config = build(&server, &Settings::default(), &runtime).unwrap().config;
     let outbound = config["outbounds"].as_array().unwrap().iter().find(|outbound| outbound["tag"] == "corp").unwrap();
     assert_eq!(outbound["settings"], json!({ "address": "127.0.0.1", "port": 40200, "user": "c", "pass": "cp" }));

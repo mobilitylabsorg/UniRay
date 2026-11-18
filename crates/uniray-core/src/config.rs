@@ -46,8 +46,11 @@ pub const TUN_ADDRESS_V6: &str = "fdfe:dcba:9876::1/126";
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tun {
     /// Xray creates the interface, assigns addresses and installs routes
-    /// itself (desktop, needs elevated privileges).
-    Managed { name: String },
+    /// itself (desktop, needs elevated privileges). `ipv6`: whether the
+    /// system has IPv6; where it is turned off, the kernel refuses an IPv6
+    /// address on the interface ("permission denied"), and there is no IPv6
+    /// traffic to capture anyway.
+    Managed { name: String, ipv6: bool },
     /// The OS VPN service owns the interface and hands its file descriptor to
     /// the core (Android, iOS). `name` is only a cosmetic hint in the config:
     /// the kernel names the interface itself and apps cannot rename it.
@@ -548,19 +551,22 @@ fn inbounds(settings: &Settings, runtime: &Runtime) -> Vec<Value> {
         }));
     }
     match &runtime.tun {
-        Some(Tun::Managed { name }) => inbounds.push(json!({
+        Some(Tun::Managed { name, ipv6 }) => inbounds.push(json!({
             "tag": TAG_TUN,
             "protocol": "tun",
             "settings": {
                 "name": name,
                 "mtu": TUN_MTU,
-                "gateway": [TUN_ADDRESS_V4, TUN_ADDRESS_V6],
+                "gateway": if *ipv6 { vec![TUN_ADDRESS_V4, TUN_ADDRESS_V6] } else { vec![TUN_ADDRESS_V4] },
                 // Windows only: DNS servers of the interface. Any routed
                 // address works, queries are answered by the built-in DNS.
                 "dns": ["1.1.1.1"],
                 // Both families are captured even with IPv6 lookups off, so
                 // that IPv6 traffic cannot bypass the tunnel.
-                "autoSystemRoutingTable": tunnel_routes(runtime.engines()),
+                "autoSystemRoutingTable": tunnel_routes(runtime.engines())
+                    .into_iter()
+                    .filter(|route| *ipv6 || !route.contains(':'))
+                    .collect::<Vec<_>>(),
                 "autoOutboundsInterface": "auto",
             },
             "sniffing": sniffing,

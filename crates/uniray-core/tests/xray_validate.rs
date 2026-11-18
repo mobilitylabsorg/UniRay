@@ -126,7 +126,7 @@ fn runtimes(dir: &Path) -> Vec<Runtime> {
     let files = LogSink::Files { error: log("error.log"), access: log("access.log") };
     vec![
         Runtime { tun: None, mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout, engine: None, corp: None },
-        Runtime { tun: Some(Tun::Managed { name: "uniraytest0".into() }), mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout, engine: None, corp: None },
+        Runtime { tun: Some(Tun::Managed { name: "uniraytest0".into(), ipv6: true }), mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout, engine: None, corp: None },
         Runtime { tun: Some(Tun::External { name: "rmnet3".into() }), mixed_port: None, metrics_port: None, metrics_socket: Some("@uniray-validate-metrics".into()), log: files, engine: None, corp: None },
         Runtime { tun: Some(Tun::Transparent { port: 28082 }), mixed_port: None, metrics_port: None, metrics_socket: Some("@uniray-validate-tproxy".into()), log: LogSink::Stdout, engine: None, corp: None },
         Runtime {

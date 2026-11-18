@@ -98,7 +98,7 @@ impl Running {
         let engines: Vec<&EngineRun> = engine_run.iter().chain(corp_run.iter().map(|run| &run.engine)).collect();
 
         let runtime = Runtime {
-            tun: tun.then(|| Tun::Managed { name: interface_name(&settings.interface_name) }),
+            tun: tun.then(|| Tun::Managed { name: interface_name(&settings.interface_name), ipv6: system_has_ipv6() }),
             mixed_port: Some(mixed_port),
             metrics_port: Some(metrics_port), metrics_socket: None,
             log: LogSink::Stdout,
@@ -204,6 +204,19 @@ fn read_system_dns() -> Vec<String> {
         }
     }
     Vec::new()
+}
+
+/// Whether a new interface may have an IPv6 address: on Linux not where
+/// IPv6 is turned off (`net.ipv6.conf.default.disable_ipv6`, or no IPv6 at
+/// all), which Xray's TUN would fail on.
+#[cfg(target_os = "linux")]
+fn system_has_ipv6() -> bool {
+    std::fs::read_to_string("/proc/sys/net/ipv6/conf/default/disable_ipv6").is_ok_and(|value| value.trim() == "0")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn system_has_ipv6() -> bool {
+    true
 }
 
 #[cfg(windows)]
