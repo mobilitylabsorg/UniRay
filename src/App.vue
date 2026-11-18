@@ -30,12 +30,24 @@ watch(
   { immediate: true },
 );
 
-// A subscription offered by a uniray:// link is confirmed in the servers
-// page's import dialog.
+// A subscription offered by a uniray:// link is confirmed in the server
+// list's import dialog (the servers tab, or the list on a wide window).
 watch(
   () => store.pendingImport,
   (url) => {
-    if (url) void router.push({ name: "connect", hash: "#servers" });
+    if (url) void router.push({ name: "servers" });
+  },
+);
+
+// The servers are a tab of their own on a narrow window and part of the
+// connection screen on a wide one: a window resized across the line keeps
+// showing them.
+watch(
+  [() => store.wide, () => router.currentRoute.value.fullPath],
+  ([wide]) => {
+    const route = router.currentRoute.value;
+    if (wide && route.name === "servers") void router.replace({ name: "connect", hash: "#servers" });
+    else if (!wide && route.name === "connect" && route.hash === "#servers") void router.replace({ name: "servers" });
   },
 );
 

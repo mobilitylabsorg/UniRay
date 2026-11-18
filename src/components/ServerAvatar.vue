@@ -18,7 +18,7 @@ import type { ServerName } from "../lib/serverName";
 import AppIcon from "./AppIcon.vue";
 
 /** A server's round picture: its country's flag, a globe, or a server. */
-const props = defineProps<{ name: ServerName; small?: boolean }>();
+const props = defineProps<{ name: ServerName }>();
 
 const flag = computed(() => (props.name.country ? flagUrl(props.name.country) : null));
 </script>
@@ -26,7 +26,6 @@ const flag = computed(() => (props.name.country ? flagUrl(props.name.country) : 
 <template>
   <span
     class="avatar"
-    :class="{ small }"
     :style="flag ? { backgroundImage: `url(${flag})` } : undefined"
     :title="name.country ?? undefined"
     aria-hidden="true"
@@ -50,9 +49,5 @@ const flag = computed(() => (props.name.country ? flagUrl(props.name.country) : 
   background: var(--color-raised) center / cover no-repeat;
   box-shadow: inset 0 0 0 1px rgb(127 127 127 / 0.22);
   color: var(--color-muted);
-}
-.avatar.small {
-  width: 1.875rem;
-  height: 1.875rem;
 }
 </style>

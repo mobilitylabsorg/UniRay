@@ -7,6 +7,7 @@ const en: typeof ru = {
     logs: "Logs",
     settings: "Settings",
     connection: "Connection",
+    servers: "Servers",
   },
   common: {
     clear: "Clear",
@@ -48,6 +49,7 @@ const en: typeof ru = {
     exitIp: "IP {ip}",
     modeProxyShort: "Proxy",
     pickHint: "Pick a server in the list and press the button",
+    pickHintTab: "Pick a server on the Servers tab and press the button",
     chartDown: "download · {total} total",
     chartUp: "upload · {total}",
     legendDown: "download",

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 
 // The app's own icon, the one the window and the launcher show.
@@ -11,16 +12,19 @@ import AppIcon, { type IconName } from "./AppIcon.vue";
  * sidebar: the column on the left of a wide desktop window.
  * rail: the TV's tabs on the left, one per row, in the 10-foot layout.
  */
-withDefaults(defineProps<{ variant?: "bar" | "sidebar" | "rail" }>(), { variant: "bar" });
+const props = withDefaults(defineProps<{ variant?: "bar" | "sidebar" | "rail" }>(), { variant: "bar" });
 const { t } = useI18n();
 const store = useAppStore();
 
-const TABS: { to: string; icon: IconName; label: string }[] = [
+const TABS: { to: string; icon: IconName; label: string; narrow?: boolean }[] = [
   { to: "/", icon: "power", label: "nav.connection" },
+  // The sidebar's connection screen has the list next to the switch.
+  { to: "/servers", icon: "server", label: "nav.servers", narrow: true },
   { to: "/routing", icon: "route", label: "nav.routing" },
   { to: "/logs", icon: "logs", label: "nav.logs" },
   { to: "/settings", icon: "settings", label: "nav.settings" },
 ];
+const tabs = computed(() => TABS.filter((tab) => !tab.narrow || props.variant !== "sidebar"));
 </script>
 
 <template>
@@ -39,7 +43,7 @@ const TABS: { to: string; icon: IconName; label: string }[] = [
       UniRay
     </div>
     <RouterLink
-      v-for="tab in TABS"
+      v-for="tab in tabs"
       :key="tab.to"
       :to="tab.to"
       class="group flex items-center text-muted transition-colors duration-200 hover:text-ink"

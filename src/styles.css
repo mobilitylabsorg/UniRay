@@ -198,6 +198,24 @@ html.tv {
     @apply border-accent bg-accent text-accent-ink;
   }
 
+  /* A line of the connection's details: a title over a muted text, maybe a
+     control on the right (the check, the corporate network, the mode). */
+  .sline {
+    @apply flex min-h-[var(--sline-height,3rem)] items-center gap-3;
+  }
+  .sline-body {
+    @apply min-w-0 flex-1;
+  }
+  .sline-title {
+    @apply flex items-center gap-1.5 font-medium;
+  }
+  .sline-text {
+    @apply truncate text-[0.8125rem] text-muted;
+  }
+  .sline-button {
+    @apply inline-flex size-9 shrink-0 items-center justify-center rounded-[0.625rem] text-muted transition-colors hover:bg-raised hover:text-ink disabled:opacity-40;
+  }
+
   /* A small rounded label: a state, an action, a learned value. */
   .tag {
     @apply inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] leading-4;

@@ -19,6 +19,7 @@ import ShareDialog from "./ShareDialog.vue";
  * protocol filters, the fastest one after a ping test, and what can be done
  * with each. The right pane of the connection screen, or its lower part.
  */
+defineProps<{ /** The servers tab of a narrow window or a TV, not a pane. */ standalone?: boolean }>();
 const store = useAppStore();
 const { t, locale } = useI18n();
 
@@ -230,7 +231,7 @@ async function confirm() {
 </script>
 
 <template>
-  <section id="server-list" class="list" :class="{ 'is-tv': store.isTv }">
+  <section id="server-list" class="list" :class="{ wide: store.wide && !standalone }">
     <div class="list-head">
       <h1>{{ t("servers.title") }}</h1>
       <button
@@ -376,7 +377,13 @@ async function confirm() {
 
       <TransitionGroup tag="ul" name="list" class="rows" role="radiogroup" :aria-label="group.subscription?.name ?? t('servers.manual')">
         <li v-for="server in group.servers" :key="server.id" class="server" :class="{ sel: server.id === selectedId }" :title="server.name">
-          <button role="radio" :aria-checked="server.id === selectedId" class="row-main" @click="select(server)">
+          <button
+            role="radio"
+            :aria-checked="server.id === selectedId"
+            :data-autofocus="(standalone && server.id === selectedId) || undefined"
+            class="row-main"
+            @click="select(server)"
+          >
             <ServerAvatar :name="nameOf(server)" />
             <span class="body">
               <span class="row-title"><ServerTitle :name="nameOf(server)" /></span>
@@ -699,18 +706,16 @@ async function confirm() {
 }
 
 /* Wide: the right pane. */
-@media (min-width: 900px) {
-  .list:not(.is-tv) {
-    padding: 2.5rem 3rem 3.5rem;
-  }
-  .list:not(.is-tv) .toolbar {
-    flex-wrap: nowrap;
-  }
-  .list:not(.is-tv) .search {
-    flex: 1;
-  }
-  .list:not(.is-tv) .sort {
-    flex: none;
-  }
+.list.wide {
+  padding: 2.5rem 3rem 3.5rem;
+}
+.list.wide .toolbar {
+  flex-wrap: nowrap;
+}
+.list.wide .search {
+  flex: 1;
+}
+.list.wide .sort {
+  flex: none;
 }
 </style>

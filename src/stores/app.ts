@@ -27,6 +27,10 @@ export interface Toast {
 
 const NO_TRAFFIC: Traffic = { up: 0, down: 0, upSpeed: 0, downSpeed: 0 };
 
+/** The window's width from which the sidebar and the two-pane connection
+ * screen are used (styles.css: --breakpoint-nav). */
+const WIDE_QUERY = "(min-width: 900px)";
+
 export const useAppStore = defineStore("app", () => {
   // The backend owns the state and sends it whole on every change.
   const snapshot = shallowRef<Snapshot | null>(null);
@@ -51,6 +55,12 @@ export const useAppStore = defineStore("app", () => {
   const isDesktop = computed(() => !["android", "ios"].includes(snapshot.value?.platform ?? ""));
   /** Android TV: D-pad navigation and the 10-foot layout. */
   const isTv = computed(() => snapshot.value?.tv === true);
+  const wideQuery = window.matchMedia(WIDE_QUERY);
+  const wideWindow = ref(wideQuery.matches);
+  wideQuery.addEventListener("change", (event) => (wideWindow.value = event.matches));
+  /** A wide desktop window: the connection and the servers on one screen.
+   * Narrow windows, phones and TVs have them as two tabs. */
+  const wide = computed(() => wideWindow.value && !isTv.value);
   /** TUN needs the elevated helper: pkexec on Linux, UAC on Windows, the
    * administrator prompt on macOS. */
   const tunSupported = computed(() => ["linux", "windows", "macos"].includes(snapshot.value?.platform ?? ""));
@@ -170,6 +180,7 @@ export const useAppStore = defineStore("app", () => {
     status,
     isDesktop,
     isTv,
+    wide,
     tunSupported,
     selectedServer,
     traffic,

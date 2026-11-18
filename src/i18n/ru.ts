@@ -5,6 +5,7 @@ export default {
     logs: "Журнал",
     settings: "Настройки",
     connection: "Подключение",
+    servers: "Серверы",
   },
   common: {
     clear: "Очистить",
@@ -46,6 +47,7 @@ export default {
     exitIp: "IP {ip}",
     modeProxyShort: "Прокси",
     pickHint: "Выберите сервер в списке и нажмите кнопку",
+    pickHintTab: "Выберите сервер на вкладке «Серверы» и нажмите кнопку",
     chartDown: "загрузка · всего {total}",
     chartUp: "отдача · {total}",
     legendDown: "загрузка",
