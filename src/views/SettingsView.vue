@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
-import AppIcon from "../components/AppIcon.vue";
+import AppIcon, { type IconName } from "../components/AppIcon.vue";
 import BackupModal from "../components/BackupModal.vue";
 import DiagnosticsModal from "../components/DiagnosticsModal.vue";
 import PerAppDialog from "../components/PerAppDialog.vue";
+import SettingRow from "../components/SettingRow.vue";
 import ServiceCheckModal from "../components/ServiceCheckModal.vue";
 import SpeedTestModal from "../components/SpeedTestModal.vue";
 import ToggleSwitch from "../components/ToggleSwitch.vue";
@@ -56,6 +57,13 @@ const showBackup = ref(false);
 const showServiceCheck = ref(false);
 const showSpeedTest = ref(false);
 const showDiagnostics = ref(false);
+
+const TOOLS: { key: string; icon: IconName; open: () => void }[] = [
+  { key: "serviceCheck", icon: "check", open: () => (showServiceCheck.value = true) },
+  { key: "speedTest", icon: "gauge", open: () => (showSpeedTest.value = true) },
+  { key: "diagnostics", icon: "alert", open: () => (showDiagnostics.value = true) },
+  { key: "backup", icon: "copy", open: () => (showBackup.value = true) },
+];
 
 function savePerAppMode(mode: string) {
   return save({ perApp: { mode: mode as PerAppMode, packages: store.settings!.perApp.packages } });
@@ -219,625 +227,588 @@ async function authorizeShizuku() {
 onMounted(() => {
   if (store.snapshot?.features.stealth) void refreshPrivilege();
 });
+
+// The page's sections, in order: the index on a wide window lists them, and
+// the one at the top of the view is marked there.
+const sections = computed(() => {
+  const desktop = store.isDesktop;
+  const list: { id: string; title: string }[] = [{ id: "connection", title: t("settings.connection") }];
+  if (store.tunSupported) list.push({ id: "mode", title: t("settings.mode") });
+  if (desktop) list.push({ id: "proxy", title: t("settings.sectionProxy") });
+  list.push({ id: "network", title: t("settings.network") }, { id: "dns", title: t("settings.dns") });
+  if (!desktop) list.push({ id: "perApp", title: t("settings.perApp") });
+  if (!desktop && store.snapshot?.features.stealth) list.push({ id: "stealth", title: t("settings.stealth") });
+  list.push(
+    { id: "subscriptions", title: t("settings.subscriptions") },
+    { id: "delay", title: t("settings.delayTesting") },
+    { id: "dpi", title: t("settings.dpiBypass") },
+    { id: "advanced", title: t("settings.advanced") },
+    { id: "tools", title: t("tools.title") },
+    { id: "app", title: t("settings.app") },
+  );
+  return list;
+});
+
+const current = ref("connection");
+let observer: IntersectionObserver | null = null;
+
+function jump(id: string) {
+  current.value = id;
+  document.getElementById(`settings-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+onMounted(() => {
+  // A section counts as current while it crosses the upper third of the view.
+  observer = new IntersectionObserver(
+    (entries) => {
+      const seen = entries.filter((entry) => entry.isIntersecting).map((entry) => entry.target.id.replace("settings-", ""));
+      if (seen.length) current.value = seen[0];
+    },
+    { root: document.querySelector("main"), rootMargin: "0px 0px -66% 0px" },
+  );
+  for (const element of document.querySelectorAll("[id^='settings-']")) observer.observe(element);
+});
+onBeforeUnmount(() => observer?.disconnect());
+
+const proxyAddress = computed(() => `socks5://127.0.0.1:${store.settings?.mixedPort ?? ""}`);
 </script>
 
 <template>
-  <div v-if="store.settings && store.snapshot" class="page">
+  <div v-if="store.settings && store.snapshot" class="page lg:max-w-6xl 2xl:max-w-[96rem]">
     <header class="page-header">
       <h1 class="page-title">{{ t("settings.title") }}</h1>
     </header>
 
-    <div class="section-title">{{ t("settings.connection") }}</div>
-    <div class="card group-card">
-      <div class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.autoConnect") }}</div>
-          <div class="row-hint">{{ t("settings.autoConnectHint") }}</div>
-        </div>
-        <ToggleSwitch
-          :model-value="store.settings.autoConnect"
-          :label="t('settings.autoConnect')"
-          @update:model-value="(autoConnect: boolean) => save({ autoConnect })"
-        />
-      </div>
-      <div class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.autoFailover") }}</div>
-          <div class="row-hint">{{ t("settings.autoFailoverHint") }}</div>
-        </div>
-        <ToggleSwitch
-          :model-value="store.settings.autoFailover"
-          :label="t('settings.autoFailover')"
-          @update:model-value="(autoFailover: boolean) => save({ autoFailover })"
-        />
-      </div>
-      <div class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.autoRecover") }}</div>
-          <div class="row-hint">{{ t("settings.autoRecoverHint") }}</div>
-        </div>
-        <ToggleSwitch
-          :model-value="store.settings.autoRecover"
-          :label="t('settings.autoRecover')"
-          @update:model-value="(autoRecover: boolean) => save({ autoRecover })"
-        />
-      </div>
-      <div v-if="!store.isDesktop" class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.keepAwake") }}</div>
-          <div class="row-hint">{{ t(store.isTv ? "settings.keepAwakeTvHint" : "settings.keepAwakeHint") }}</div>
-          <div v-if="store.settings.keepAwake && batteryExempt === false" class="mt-1 text-xs text-warn">
-            {{ t("settings.keepAwakeNoExemption") }}
-          </div>
-        </div>
-        <ToggleSwitch
-          :model-value="store.settings.keepAwake"
-          :label="t('settings.keepAwake')"
-          @update:model-value="saveKeepAwake"
-        />
-      </div>
-      <div v-if="store.tunSupported" class="px-4 py-3" role="radiogroup" :aria-label="t('settings.mode')">
-        <div class="mb-2 font-medium">{{ t("settings.mode") }}</div>
+    <div class="lg:flex lg:items-start lg:gap-10">
+      <!-- A wide window: the sections listed on the left, the current one marked. -->
+      <nav class="sticky top-6 hidden w-48 shrink-0 flex-col gap-0.5 lg:flex" :aria-label="t('settings.sections')">
         <button
-          v-for="mode in MODES"
-          :key="mode"
-          role="radio"
-          :aria-checked="store.settings.mode === mode"
-          class="-mx-2 flex w-[calc(100%+1rem)] items-start gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-raised"
-          @click="save({ mode })"
+          v-for="section in sections"
+          :key="section.id"
+          type="button"
+          class="rounded-lg px-3 py-1.5 text-left text-sm leading-snug transition-colors"
+          :class="current === section.id ? 'bg-raised font-medium text-ink' : 'text-muted hover:text-ink'"
+          :aria-current="current === section.id || undefined"
+          @click="jump(section.id)"
         >
-          <span class="radio-mark mt-0.5" :class="{ 'is-on': store.settings.mode === mode }">
-            <Transition name="pop">
-              <AppIcon v-if="store.settings.mode === mode" name="check" :size="12" />
-            </Transition>
-          </span>
-          <span>
-            <span class="block text-sm font-medium">{{ t(mode === "proxy" ? "home.modeProxy" : "home.modeTun") }}</span>
-            <span class="block text-xs text-muted">
-              {{ t(mode === "proxy" ? "settings.modeProxyHint" : "settings.modeTunHint") }}
-            </span>
-          </span>
+          {{ section.title }}
         </button>
-      </div>
-      <label v-if="store.isDesktop" class="row">
-        <span class="min-w-0 flex-1 font-medium">{{ t("settings.mixedPort") }}</span>
-        <input
-          v-model="draft.mixedPort"
-          class="field selectable w-24 text-right font-mono"
-          inputmode="numeric"
-          @blur="savePort"
-          @keydown.enter="($event.target as HTMLInputElement).blur()"
-        />
-      </label>
-      <div v-if="store.isDesktop" class="px-4 py-3">
-        <div class="flex items-center gap-3">
-          <div class="min-w-0 flex-1">
-            <div class="font-medium">{{ t("settings.proxyAuth") }}</div>
-            <div class="row-hint">{{ t("settings.proxyAuthHint") }}</div>
-          </div>
-          <ToggleSwitch
-            :model-value="store.settings.proxyAuth"
-            :label="t('settings.proxyAuth')"
-            @update:model-value="(proxyAuth: boolean) => save({ proxyAuth })"
-          />
-        </div>
-        <Transition name="pop">
-          <div v-if="store.settings.proxyAuth" class="mt-3 grid grid-cols-2 gap-2">
-            <label class="block">
-              <span class="mb-1 block text-xs text-muted">{{ t("settings.proxyUser") }}</span>
-              <input
-                v-model="draft.proxyUser"
-                class="field selectable font-mono text-xs"
-                spellcheck="false"
-                autocapitalize="off"
-                autocomplete="off"
-                @blur="saveCredential('proxyUser')"
-                @keydown.enter="($event.target as HTMLInputElement).blur()"
-              />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs text-muted">{{ t("settings.proxyPassword") }}</span>
-              <input
-                v-model="draft.proxyPassword"
-                class="field selectable font-mono text-xs"
-                spellcheck="false"
-                autocapitalize="off"
-                autocomplete="off"
-                @blur="saveCredential('proxyPassword')"
-                @keydown.enter="($event.target as HTMLInputElement).blur()"
-              />
-            </label>
-          </div>
-        </Transition>
-        <button class="btn btn-quiet btn-sm mt-3" @click="copyProxyAddress">
-          <AppIcon name="copy" :size="16" />{{ t("settings.proxyCopy") }}
-        </button>
-      </div>
-      <div v-if="store.isDesktop" class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.allowLan") }}</div>
-          <div class="row-hint">{{ t("settings.allowLanHint") }}</div>
-        </div>
-        <ToggleSwitch
-          :model-value="store.settings.allowLan"
-          :label="t('settings.allowLan')"
-          @update:model-value="(allowLan: boolean) => save({ allowLan })"
-        />
-      </div>
-      <div class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.ipv6") }}</div>
-          <div class="row-hint">{{ t("settings.ipv6Hint") }}</div>
-        </div>
-        <ToggleSwitch
-          :model-value="store.settings.ipv6"
-          :label="t('settings.ipv6')"
-          @update:model-value="(ipv6: boolean) => save({ ipv6 })"
-        />
-      </div>
-      <div v-if="store.snapshot?.features.adBlock" class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.blockAds") }}</div>
-          <div class="row-hint">{{ t("settings.blockAdsHint") }}</div>
-        </div>
-        <ToggleSwitch
-          :model-value="store.settings.blockAds"
-          :label="t('settings.blockAds')"
-          @update:model-value="(blockAds: boolean) => save({ blockAds })"
-        />
-      </div>
-      <label class="block px-4 py-3">
-        <span class="mb-1.5 block font-medium">{{ t("settings.interfaceName") }}</span>
-        <input
-          v-model="draft.interfaceName"
-          class="field selectable font-mono text-xs"
-          spellcheck="false"
-          autocapitalize="off"
-          maxlength="15"
-          @blur="saveInterfaceName"
-          @keydown.enter="($event.target as HTMLInputElement).blur()"
-        />
-        <span class="mt-1.5 block text-xs text-muted">
-          {{ store.isDesktop ? t("settings.interfaceNameHintDesktop") : t("settings.interfaceNameHintMobile") }}
-        </span>
-      </label>
-    </div>
+      </nav>
 
-    <div class="section-title">{{ t("settings.dpiBypass") }}</div>
-    <div class="card group-card">
-      <div class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.tlsFragment") }}</div>
-          <div class="row-hint">{{ t("settings.tlsFragmentHint") }}</div>
-        </div>
-        <ToggleSwitch
-          :model-value="store.settings.tlsFragment"
-          :label="t('settings.tlsFragment')"
-          @update:model-value="(tlsFragment: boolean) => save({ tlsFragment })"
-        />
-      </div>
-      <Transition name="pop">
-        <div v-if="store.settings.tlsFragment" class="space-y-3 px-4 py-3">
-          <div class="flex flex-wrap items-center gap-2 mb-2">
-            <span class="text-xs text-muted">{{ t("settings.presets") }}</span>
-            <button
-              type="button"
-              class="btn btn-quiet btn-sm"
-              @click="setFragmentPreset('100-200', '10-20')"
+      <div class="min-w-0 flex-1 lg:max-w-3xl 2xl:max-w-none 2xl:columns-2 2xl:gap-8">
+        <section id="settings-connection" class="settings-section">
+          <h2 class="section-title">{{ t("settings.connection") }}</h2>
+          <div class="card divide-y divide-line">
+            <SettingRow v-slot="{ id }" :label="t('settings.autoConnect')" :hint="t('settings.autoConnectHint')">
+              <ToggleSwitch
+                :id="id"
+                :model-value="store.settings.autoConnect"
+                :label="t('settings.autoConnect')"
+                @update:model-value="(autoConnect: boolean) => save({ autoConnect })"
+              />
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.autoFailover')" :hint="t('settings.autoFailoverHint')">
+              <ToggleSwitch
+                :id="id"
+                :model-value="store.settings.autoFailover"
+                :label="t('settings.autoFailover')"
+                @update:model-value="(autoFailover: boolean) => save({ autoFailover })"
+              />
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.autoRecover')" :hint="t('settings.autoRecoverHint')">
+              <ToggleSwitch
+                :id="id"
+                :model-value="store.settings.autoRecover"
+                :label="t('settings.autoRecover')"
+                @update:model-value="(autoRecover: boolean) => save({ autoRecover })"
+              />
+            </SettingRow>
+            <SettingRow
+              v-if="!store.isDesktop"
+              :label="t('settings.keepAwake')"
+              :hint="t(store.isTv ? 'settings.keepAwakeTvHint' : 'settings.keepAwakeHint')"
             >
-              {{ t("settings.presetStandard") }}
-            </button>
-            <button
-              type="button"
-              class="btn btn-quiet btn-sm"
-              @click="setFragmentPreset('10-30', '5-15')"
-            >
-              {{ t("settings.presetAggressive") }}
-            </button>
+              <template #default="{ id }">
+                <ToggleSwitch :id="id" :model-value="store.settings.keepAwake" :label="t('settings.keepAwake')" @update:model-value="saveKeepAwake" />
+              </template>
+              <template #below>
+                <p v-if="store.settings.keepAwake && batteryExempt === false" class="mt-2 rounded-lg bg-warn-soft px-3 py-2 text-xs text-warn">
+                  {{ t("settings.keepAwakeNoExemption") }}
+                </p>
+              </template>
+            </SettingRow>
           </div>
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <label class="block">
-              <span class="mb-1 block text-xs text-muted">{{ t("settings.tlsFragmentPackets") }}</span>
-              <input
-                v-model="draft.tlsFragmentPackets"
-                class="field selectable font-mono text-xs"
-                spellcheck="false"
-                autocapitalize="off"
-                placeholder="tlshello"
-                @blur="saveDraft('tlsFragmentPackets')"
-                @keydown.enter="($event.target as HTMLInputElement).blur()"
-              />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs text-muted">{{ t("settings.tlsFragmentLength") }}</span>
-              <input
-                v-model="draft.tlsFragmentLength"
-                class="field selectable font-mono text-xs"
-                spellcheck="false"
-                autocapitalize="off"
-                placeholder="100-200"
-                @blur="saveDraft('tlsFragmentLength')"
-                @keydown.enter="($event.target as HTMLInputElement).blur()"
-              />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-xs text-muted">{{ t("settings.tlsFragmentInterval") }}</span>
-              <input
-                v-model="draft.tlsFragmentInterval"
-                class="field selectable font-mono text-xs"
-                spellcheck="false"
-                autocapitalize="off"
-                placeholder="10-20"
-                @blur="saveDraft('tlsFragmentInterval')"
-                @keydown.enter="($event.target as HTMLInputElement).blur()"
-              />
-            </label>
-          </div>
-        </div>
-      </Transition>
-      <label class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.tlsFingerprint") }}</div>
-          <div class="row-hint">{{ t("settings.tlsFingerprintHint") }}</div>
-        </div>
-        <select
-          class="field w-40 shrink-0 px-2 sm:w-48"
-          :value="store.settings.tlsFingerprint || 'auto'"
-          @change="save({ tlsFingerprint: ($event.target as HTMLSelectElement).value })"
-        >
-          <option v-for="fp in TLS_FINGERPRINTS" :key="fp.value" :value="fp.value">{{ t(fp.label) }}</option>
-        </select>
-      </label>
-      <div class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.tcpFastOpen") }}</div>
-          <div class="row-hint">{{ t("settings.tcpFastOpenHint") }}</div>
-        </div>
-        <ToggleSwitch
-          :model-value="store.settings.tcpFastOpen"
-          :label="t('settings.tcpFastOpen')"
-          @update:model-value="(tcpFastOpen: boolean) => save({ tcpFastOpen })"
-        />
-      </div>
-      <div class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.allowInsecure") }}</div>
-          <div class="row-hint">{{ t("settings.allowInsecureHint") }}</div>
-        </div>
-        <ToggleSwitch
-          :model-value="store.settings.allowInsecure"
-          :label="t('settings.allowInsecure')"
-          @update:model-value="(allowInsecure: boolean) => save({ allowInsecure })"
-        />
-      </div>
-      <label class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.wgMtu") }}</div>
-          <div class="row-hint">{{ t("settings.wgMtuHint") }}</div>
-        </div>
-        <select
-          class="field w-40 shrink-0 px-2 sm:w-48"
-          :value="store.settings.wgMtu || 1280"
-          @change="save({ wgMtu: Number(($event.target as HTMLSelectElement).value) })"
-        >
-          <option v-for="mtu in WG_MTU_OPTIONS" :key="mtu" :value="mtu">
-            {{ mtu }} {{ mtu === 1280 ? t('settings.wgMtuRecommended') : '' }}
-          </option>
-        </select>
-      </label>
-    </div>
+        </section>
 
-    <template v-if="!store.isDesktop">
-      <div class="section-title">{{ t("settings.perApp") }}</div>
-      <div class="card group-card">
-        <label class="row">
-          <span class="min-w-0 flex-1 font-medium">{{ t("settings.perAppMode") }}</span>
-          <select
-            class="field w-40 shrink-0 px-2 sm:w-48"
-            :value="store.settings.perApp.mode"
-            @change="savePerAppMode(($event.target as HTMLSelectElement).value)"
-          >
-            <option v-for="item in PER_APP_MODES" :key="item.value" :value="item.value">{{ t(item.label) }}</option>
-          </select>
-        </label>
-        <Transition name="pop">
-          <button
-            v-if="store.settings.perApp.mode !== 'off'"
-            class="flex w-full items-center gap-3 px-4 py-3 text-left"
-            @click="choosingApps = true"
-          >
-            <span class="flex-1">
-              <span class="block font-medium">{{ t("settings.perAppChoose") }}</span>
-              <span class="block text-xs text-muted">
-                {{ t("settings.perAppSelected", { count: store.settings.perApp.packages.length }) }}
+        <section v-if="store.tunSupported" id="settings-mode" class="settings-section">
+          <h2 class="section-title">{{ t("settings.mode") }}</h2>
+          <div class="card divide-y divide-line overflow-hidden" role="radiogroup" :aria-label="t('settings.mode')">
+            <button
+              v-for="mode in MODES"
+              :key="mode"
+              role="radio"
+              :aria-checked="store.settings.mode === mode"
+              class="row-button"
+              @click="save({ mode })"
+            >
+              <span class="radio-mark" :class="{ 'is-on': store.settings.mode === mode }">
+                <Transition name="pop">
+                  <AppIcon v-if="store.settings.mode === mode" name="check" :size="12" />
+                </Transition>
               </span>
-            </span>
-            <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
-          </button>
-        </Transition>
-        <div v-if="store.settings.stealth && canStealth" class="bg-warn-soft px-4 py-2.5 text-xs text-warn">
-          {{ t("settings.perAppStealthWarning") }}
-        </div>
-      </div>
+              <span class="min-w-0">
+                <span class="row-label">{{ t(mode === "proxy" ? "home.modeProxy" : "home.modeTun") }}</span>
+                <span class="row-hint">{{ t(mode === "proxy" ? "settings.modeProxyHint" : "settings.modeTunHint") }}</span>
+              </span>
+            </button>
+          </div>
+        </section>
 
-      <div v-if="store.snapshot?.features.stealth" class="section-title">{{ t("settings.stealth") }}</div>
-      <div v-if="store.snapshot?.features.stealth" class="card group-card">
-        <div class="row">
-          <div class="min-w-0 flex-1">
-            <div class="font-medium">{{ t("settings.privilege") }}</div>
-            <div class="row-hint">{{ t(privilegeLabel) }}</div>
+        <section v-if="store.isDesktop" id="settings-proxy" class="settings-section">
+          <h2 class="section-title">{{ t("settings.sectionProxy") }}</h2>
+          <div class="card divide-y divide-line">
+            <SettingRow v-slot="{ id }" :label="t('settings.mixedPort')">
+              <input
+                :id="id"
+                v-model="draft.mixedPort"
+                class="field selectable w-24 text-right font-mono"
+                inputmode="numeric"
+                @blur="savePort"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.proxyAddress')" :hint="proxyAddress">
+              <button :id="id" class="icon-btn" :aria-label="t('settings.proxyCopy')" :title="t('settings.proxyCopy')" @click="copyProxyAddress">
+                <AppIcon name="copy" :size="18" />
+              </button>
+            </SettingRow>
+            <SettingRow :label="t('settings.proxyAuth')" :hint="t('settings.proxyAuthHint')">
+              <template #default="{ id }">
+                <ToggleSwitch
+                  :id="id"
+                  :model-value="store.settings.proxyAuth"
+                  :label="t('settings.proxyAuth')"
+                  @update:model-value="(proxyAuth: boolean) => save({ proxyAuth })"
+                />
+              </template>
+              <template #below>
+                <Transition name="pop">
+                  <div v-if="store.settings.proxyAuth" class="mt-3 grid grid-cols-2 gap-2">
+                    <input
+                      v-model="draft.proxyUser"
+                      class="field selectable font-mono text-xs"
+                      :placeholder="t('settings.proxyUser')"
+                      :aria-label="t('settings.proxyUser')"
+                      spellcheck="false"
+                      autocapitalize="off"
+                      autocomplete="off"
+                      @blur="saveCredential('proxyUser')"
+                      @keydown.enter="($event.target as HTMLInputElement).blur()"
+                    />
+                    <input
+                      v-model="draft.proxyPassword"
+                      class="field selectable font-mono text-xs"
+                      :placeholder="t('settings.proxyPassword')"
+                      :aria-label="t('settings.proxyPassword')"
+                      spellcheck="false"
+                      autocapitalize="off"
+                      autocomplete="off"
+                      @blur="saveCredential('proxyPassword')"
+                      @keydown.enter="($event.target as HTMLInputElement).blur()"
+                    />
+                  </div>
+                </Transition>
+              </template>
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.allowLan')" :hint="t('settings.allowLanHint')">
+              <ToggleSwitch
+                :id="id"
+                :model-value="store.settings.allowLan"
+                :label="t('settings.allowLan')"
+                @update:model-value="(allowLan: boolean) => save({ allowLan })"
+              />
+            </SettingRow>
           </div>
-          <button
-            v-if="privilege?.shizukuAvailable && !privilege?.shizukuGranted"
-            class="btn btn-quiet"
-            @click="authorizeShizuku"
-          >
-            {{ t("settings.privAuthorizeShizuku") }}
-          </button>
-          <button v-else class="icon-btn" :aria-label="t('common.refresh')" :title="t('common.refresh')" @click="refreshPrivilege">
-            <AppIcon name="refresh" :size="18" />
-          </button>
-        </div>
-        <div class="row">
-          <div class="min-w-0 flex-1">
-            <div class="font-medium">{{ t("settings.stealthEnable") }}</div>
-            <div class="row-hint">{{ canStealth ? t("settings.stealthHint") : t("settings.stealthNeedsRoot") }}</div>
+        </section>
+
+        <section id="settings-network" class="settings-section">
+          <h2 class="section-title">{{ t("settings.network") }}</h2>
+          <div class="card divide-y divide-line">
+            <SettingRow v-slot="{ id }" :label="t('settings.ipv6')" :hint="t('settings.ipv6Hint')">
+              <ToggleSwitch :id="id" :model-value="store.settings.ipv6" :label="t('settings.ipv6')" @update:model-value="(ipv6: boolean) => save({ ipv6 })" />
+            </SettingRow>
+            <SettingRow v-if="store.snapshot.features.adBlock" v-slot="{ id }" :label="t('settings.blockAds')" :hint="t('settings.blockAdsHint')">
+              <ToggleSwitch
+                :id="id"
+                :model-value="store.settings.blockAds"
+                :label="t('settings.blockAds')"
+                @update:model-value="(blockAds: boolean) => save({ blockAds })"
+              />
+            </SettingRow>
           </div>
-          <ToggleSwitch
-            :model-value="store.settings.stealth"
-            :disabled="!canStealth"
-            :label="t('settings.stealthEnable')"
-            @update:model-value="(stealth: boolean) => save({ stealth })"
-          />
-        </div>
-        <Transition name="pop">
-          <div v-if="store.settings.stealth && canStealth" class="row">
-            <div class="min-w-0 flex-1">
-              <div class="font-medium">{{ t("settings.stealthRootTun") }}</div>
-              <div class="row-hint">{{ t(stealthRootTunHint) }}</div>
-            </div>
-            <ToggleSwitch
-              :model-value="store.settings.stealthRootTun"
+        </section>
+
+        <section id="settings-dns" class="settings-section">
+          <h2 class="section-title">{{ t("settings.dns") }}</h2>
+          <div class="card divide-y divide-line">
+            <SettingRow v-slot="{ id }" :label="t('settings.remoteDns')" wide>
+              <input
+                :id="id"
+                v-model="draft.remoteDns"
+                class="field selectable font-mono text-xs"
+                spellcheck="false"
+                autocapitalize="off"
+                @blur="saveDns('remoteDns')"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.directDns')" :hint="t('settings.directDnsHint')" wide>
+              <input
+                :id="id"
+                v-model="draft.directDns"
+                class="field selectable font-mono text-xs transition-opacity disabled:opacity-50"
+                :disabled="store.settings.directDnsFromNetwork"
+                spellcheck="false"
+                autocapitalize="off"
+                @blur="saveDns('directDns')"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.directDnsFromNetwork')" :hint="t('settings.directDnsFromNetworkHint')">
+              <ToggleSwitch
+                :id="id"
+                :model-value="store.settings.directDnsFromNetwork"
+                :label="t('settings.directDnsFromNetwork')"
+                @update:model-value="(directDnsFromNetwork: boolean) => save({ directDnsFromNetwork })"
+              />
+            </SettingRow>
+          </div>
+        </section>
+
+        <section v-if="!store.isDesktop" id="settings-perApp" class="settings-section">
+          <h2 class="section-title">{{ t("settings.perApp") }}</h2>
+          <div class="card divide-y divide-line overflow-hidden">
+            <SettingRow v-slot="{ id }" :label="t('settings.perAppMode')">
+              <select
+                :id="id"
+                class="field w-44 px-2 sm:w-52"
+                :value="store.settings.perApp.mode"
+                @change="savePerAppMode(($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="item in PER_APP_MODES" :key="item.value" :value="item.value">{{ t(item.label) }}</option>
+              </select>
+            </SettingRow>
+            <button v-if="store.settings.perApp.mode !== 'off'" class="row-button" @click="choosingApps = true">
+              <span class="min-w-0 flex-1">
+                <span class="row-label">{{ t("settings.perAppChoose") }}</span>
+                <span class="row-hint">{{ t("settings.perAppSelected", { count: store.settings.perApp.packages.length }) }}</span>
+              </span>
+              <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
+            </button>
+            <p v-if="store.settings.stealth && canStealth" class="bg-warn-soft px-4 py-2.5 text-xs text-warn">
+              {{ t("settings.perAppStealthWarning") }}
+            </p>
+          </div>
+        </section>
+
+        <section v-if="!store.isDesktop && store.snapshot.features.stealth" id="settings-stealth" class="settings-section">
+          <h2 class="section-title">{{ t("settings.stealth") }}</h2>
+          <div class="card divide-y divide-line">
+            <SettingRow :label="t('settings.privilege')" :hint="t(privilegeLabel)">
+              <button v-if="privilege?.shizukuAvailable && !privilege?.shizukuGranted" class="btn btn-quiet btn-sm" @click="authorizeShizuku">
+                {{ t("settings.privAuthorizeShizuku") }}
+              </button>
+              <button v-else class="icon-btn" :aria-label="t('common.refresh')" :title="t('common.refresh')" @click="refreshPrivilege">
+                <AppIcon name="refresh" :size="18" />
+              </button>
+            </SettingRow>
+            <SettingRow
+              v-slot="{ id }"
+              :label="t('settings.stealthEnable')"
+              :hint="canStealth ? t('settings.stealthHint') : t('settings.stealthNeedsRoot')"
+            >
+              <ToggleSwitch
+                :id="id"
+                :model-value="store.settings.stealth"
+                :disabled="!canStealth"
+                :label="t('settings.stealthEnable')"
+                @update:model-value="(stealth: boolean) => save({ stealth })"
+              />
+            </SettingRow>
+            <SettingRow
+              v-if="store.settings.stealth && canStealth"
+              v-slot="{ id }"
               :label="t('settings.stealthRootTun')"
-              @update:model-value="(stealthRootTun: boolean) => save({ stealthRootTun })"
-            />
-          </div>
-        </Transition>
-      </div>
-    </template>
-
-    <div class="section-title">{{ t("settings.dns") }}</div>
-    <div class="card group-card">
-      <label class="block px-4 py-3">
-        <span class="mb-1.5 block font-medium">{{ t("settings.remoteDns") }}</span>
-        <input
-          v-model="draft.remoteDns"
-          class="field selectable font-mono text-xs"
-          spellcheck="false"
-          autocapitalize="off"
-          @blur="saveDns('remoteDns')"
-          @keydown.enter="($event.target as HTMLInputElement).blur()"
-        />
-      </label>
-      <label class="block px-4 py-3">
-        <span class="mb-1.5 block font-medium">{{ t("settings.directDns") }}</span>
-        <input
-          v-model="draft.directDns"
-          class="field selectable font-mono text-xs transition-opacity disabled:opacity-50"
-          :disabled="store.settings.directDnsFromNetwork"
-          spellcheck="false"
-          autocapitalize="off"
-          @blur="saveDns('directDns')"
-          @keydown.enter="($event.target as HTMLInputElement).blur()"
-        />
-        <span class="mt-1.5 block text-xs text-muted">{{ t("settings.directDnsHint") }}</span>
-      </label>
-      <div class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.directDnsFromNetwork") }}</div>
-          <div class="row-hint">{{ t("settings.directDnsFromNetworkHint") }}</div>
-        </div>
-        <ToggleSwitch
-          :model-value="store.settings.directDnsFromNetwork"
-          :label="t('settings.directDnsFromNetwork')"
-          @update:model-value="(directDnsFromNetwork: boolean) => save({ directDnsFromNetwork })"
-        />
-      </div>
-    </div>
-
-    <div class="section-title">{{ t("settings.delayTesting") }}</div>
-    <div class="card group-card">
-      <label class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.delayTestMode") }}</div>
-          <div class="row-hint">{{ t("settings.delayTestModeHint") }}</div>
-        </div>
-        <select
-          class="field w-40 shrink-0 px-2 sm:w-48"
-          :value="store.settings.delayTestMode"
-          @change="save({ delayTestMode: ($event.target as HTMLSelectElement).value as DelayTestMode })"
-        >
-          <option v-for="item in DELAY_TEST_MODES" :key="item.value" :value="item.value">{{ t(item.label) }}</option>
-        </select>
-      </label>
-      <Transition name="pop">
-        <div v-if="store.settings.delayTestMode === 'http'" class="px-4 py-3">
-          <label class="block">
-            <span class="mb-1 block font-medium">{{ t("settings.probeUrl") }}</span>
-            <input
-              v-model="draft.probeUrl"
-              class="field selectable font-mono text-xs"
-              spellcheck="false"
-              autocapitalize="off"
-              @blur="saveDraft('probeUrl')"
-              @keydown.enter="($event.target as HTMLInputElement).blur()"
-            />
-            <span class="mt-1 block text-xs text-muted">{{ t("settings.probeUrlHint") }}</span>
-          </label>
-          <div class="mt-2.5 flex flex-wrap gap-2">
-            <button
-              type="button"
-              class="btn btn-quiet btn-sm"
-              @click="setProbeUrlPreset('http://cp.cloudflare.com/generate_204')"
+              :hint="t(stealthRootTunHint)"
             >
-              Cloudflare (HTTP)
-            </button>
-            <button
-              type="button"
-              class="btn btn-quiet btn-sm"
-              @click="setProbeUrlPreset('https://www.gstatic.com/generate_204')"
+              <ToggleSwitch
+                :id="id"
+                :model-value="store.settings.stealthRootTun"
+                :label="t('settings.stealthRootTun')"
+                @update:model-value="(stealthRootTun: boolean) => save({ stealthRootTun })"
+              />
+            </SettingRow>
+          </div>
+        </section>
+
+        <section id="settings-subscriptions" class="settings-section">
+          <h2 class="section-title">{{ t("settings.subscriptions") }}</h2>
+          <div class="card divide-y divide-line">
+            <SettingRow v-slot="{ id }" :label="t('settings.sendHwid')" :hint="t('settings.sendHwidHint')">
+              <ToggleSwitch
+                :id="id"
+                :model-value="store.settings.sendHwid"
+                :label="t('settings.sendHwid')"
+                @update:model-value="(sendHwid: boolean) => save({ sendHwid })"
+              />
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.hwid')" :hint="store.snapshot.device.hwid">
+              <button :id="id" class="icon-btn" :aria-label="t('common.copy')" :title="t('common.copy')" @click="copyHwid">
+                <AppIcon name="copy" :size="18" />
+              </button>
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.autoUpdate')" :hint="t('settings.autoUpdateHint')" wide>
+              <select
+                :id="id"
+                class="field px-2"
+                :value="store.settings.autoUpdateHours"
+                @change="save({ autoUpdateHours: Number(($event.target as HTMLSelectElement).value) })"
+              >
+                <option :value="0">{{ t("settings.autoUpdateDisabled") }}</option>
+                <option :value="6">{{ t("settings.autoUpdate6h") }}</option>
+                <option :value="12">{{ t("settings.autoUpdate12h") }}</option>
+                <option :value="24">{{ t("settings.autoUpdate24h") }}</option>
+              </select>
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.userAgent')" :hint="t('settings.userAgentHint')" wide>
+              <select
+                :id="id"
+                class="field px-2"
+                :value="store.settings.userAgent || ''"
+                @change="save({ userAgent: ($event.target as HTMLSelectElement).value })"
+              >
+                <option v-for="ua in UA_PRESETS" :key="ua.value" :value="ua.value">{{ t(ua.label) }}</option>
+              </select>
+            </SettingRow>
+          </div>
+        </section>
+
+        <section id="settings-delay" class="settings-section">
+          <h2 class="section-title">{{ t("settings.delayTesting") }}</h2>
+          <div class="card divide-y divide-line">
+            <SettingRow v-slot="{ id }" :label="t('settings.delayTestMode')" :hint="t('settings.delayTestModeHint')" wide>
+              <select
+                :id="id"
+                class="field px-2"
+                :value="store.settings.delayTestMode"
+                @change="save({ delayTestMode: ($event.target as HTMLSelectElement).value as DelayTestMode })"
+              >
+                <option v-for="item in DELAY_TEST_MODES" :key="item.value" :value="item.value">{{ t(item.label) }}</option>
+              </select>
+            </SettingRow>
+            <SettingRow v-if="store.settings.delayTestMode === 'http'" :label="t('settings.probeUrl')" :hint="t('settings.probeUrlHint')" wide>
+              <template #default="{ id }">
+                <input
+                  :id="id"
+                  v-model="draft.probeUrl"
+                  class="field selectable font-mono text-xs"
+                  spellcheck="false"
+                  autocapitalize="off"
+                  @blur="saveDraft('probeUrl')"
+                  @keydown.enter="($event.target as HTMLInputElement).blur()"
+                />
+              </template>
+              <template #below>
+                <div class="mt-2 flex flex-wrap justify-end gap-2">
+                  <button type="button" class="btn btn-quiet btn-sm" @click="setProbeUrlPreset('http://cp.cloudflare.com/generate_204')">
+                    Cloudflare (HTTP)
+                  </button>
+                  <button type="button" class="btn btn-quiet btn-sm" @click="setProbeUrlPreset('https://www.gstatic.com/generate_204')">
+                    Google (HTTPS)
+                  </button>
+                </div>
+              </template>
+            </SettingRow>
+          </div>
+        </section>
+
+        <section id="settings-dpi" class="settings-section">
+          <h2 class="section-title">{{ t("settings.dpiBypass") }}</h2>
+          <div class="card divide-y divide-line">
+            <SettingRow :label="t('settings.tlsFragment')" :hint="t('settings.tlsFragmentHint')">
+              <template #default="{ id }">
+                <ToggleSwitch
+                  :id="id"
+                  :model-value="store.settings.tlsFragment"
+                  :label="t('settings.tlsFragment')"
+                  @update:model-value="(tlsFragment: boolean) => save({ tlsFragment })"
+                />
+              </template>
+              <template #below>
+                <Transition name="pop">
+                  <div v-if="store.settings.tlsFragment" class="mt-3 rounded-xl bg-raised/60 p-3">
+                    <div class="mb-3 flex flex-wrap items-center gap-2">
+                      <span class="text-xs text-muted">{{ t("settings.presets") }}</span>
+                      <button type="button" class="btn btn-quiet btn-sm bg-surface" @click="setFragmentPreset('100-200', '10-20')">
+                        {{ t("settings.presetStandard") }}
+                      </button>
+                      <button type="button" class="btn btn-quiet btn-sm bg-surface" @click="setFragmentPreset('10-30', '5-15')">
+                        {{ t("settings.presetAggressive") }}
+                      </button>
+                    </div>
+                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                      <label class="block">
+                        <span class="mb-1 block text-xs text-muted">{{ t("settings.tlsFragmentPackets") }}</span>
+                        <input
+                          v-model="draft.tlsFragmentPackets"
+                          class="field selectable font-mono text-xs"
+                          spellcheck="false"
+                          autocapitalize="off"
+                          placeholder="tlshello"
+                          @blur="saveDraft('tlsFragmentPackets')"
+                          @keydown.enter="($event.target as HTMLInputElement).blur()"
+                        />
+                      </label>
+                      <label class="block">
+                        <span class="mb-1 block text-xs text-muted">{{ t("settings.tlsFragmentLength") }}</span>
+                        <input
+                          v-model="draft.tlsFragmentLength"
+                          class="field selectable font-mono text-xs"
+                          spellcheck="false"
+                          autocapitalize="off"
+                          placeholder="100-200"
+                          @blur="saveDraft('tlsFragmentLength')"
+                          @keydown.enter="($event.target as HTMLInputElement).blur()"
+                        />
+                      </label>
+                      <label class="block">
+                        <span class="mb-1 block text-xs text-muted">{{ t("settings.tlsFragmentInterval") }}</span>
+                        <input
+                          v-model="draft.tlsFragmentInterval"
+                          class="field selectable font-mono text-xs"
+                          spellcheck="false"
+                          autocapitalize="off"
+                          placeholder="10-20"
+                          @blur="saveDraft('tlsFragmentInterval')"
+                          @keydown.enter="($event.target as HTMLInputElement).blur()"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                </Transition>
+              </template>
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.tlsFingerprint')" :hint="t('settings.tlsFingerprintHint')" wide>
+              <select
+                :id="id"
+                class="field px-2"
+                :value="store.settings.tlsFingerprint || 'auto'"
+                @change="save({ tlsFingerprint: ($event.target as HTMLSelectElement).value })"
+              >
+                <option v-for="fp in TLS_FINGERPRINTS" :key="fp.value" :value="fp.value">{{ t(fp.label) }}</option>
+              </select>
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.tcpFastOpen')" :hint="t('settings.tcpFastOpenHint')">
+              <ToggleSwitch
+                :id="id"
+                :model-value="store.settings.tcpFastOpen"
+                :label="t('settings.tcpFastOpen')"
+                @update:model-value="(tcpFastOpen: boolean) => save({ tcpFastOpen })"
+              />
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.allowInsecure')" :hint="t('settings.allowInsecureHint')">
+              <ToggleSwitch
+                :id="id"
+                :model-value="store.settings.allowInsecure"
+                :label="t('settings.allowInsecure')"
+                @update:model-value="(allowInsecure: boolean) => save({ allowInsecure })"
+              />
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.wgMtu')" :hint="t('settings.wgMtuHint')" wide>
+              <select
+                :id="id"
+                class="field px-2"
+                :value="store.settings.wgMtu || 1280"
+                @change="save({ wgMtu: Number(($event.target as HTMLSelectElement).value) })"
+              >
+                <option v-for="mtu in WG_MTU_OPTIONS" :key="mtu" :value="mtu">
+                  {{ mtu }} {{ mtu === 1280 ? t("settings.wgMtuRecommended") : "" }}
+                </option>
+              </select>
+            </SettingRow>
+          </div>
+        </section>
+
+        <section id="settings-advanced" class="settings-section">
+          <h2 class="section-title">{{ t("settings.advanced") }}</h2>
+          <div class="card divide-y divide-line">
+            <SettingRow
+              v-slot="{ id }"
+              :label="t('settings.interfaceName')"
+              :hint="store.isDesktop ? t('settings.interfaceNameHintDesktop') : t('settings.interfaceNameHintMobile')"
             >
-              Google (HTTPS)
+              <input
+                :id="id"
+                v-model="draft.interfaceName"
+                class="field selectable w-32 font-mono text-xs"
+                spellcheck="false"
+                autocapitalize="off"
+                maxlength="15"
+                @blur="saveInterfaceName"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+              />
+            </SettingRow>
+            <SettingRow v-slot="{ id }" :label="t('settings.logLevel')">
+              <select :id="id" class="field w-32 px-2" :value="store.settings.logLevel" @change="save({ logLevel: ($event.target as HTMLSelectElement).value })">
+                <option v-for="level in LOG_LEVELS" :key="level" :value="level">{{ level }}</option>
+              </select>
+            </SettingRow>
+          </div>
+        </section>
+
+        <section id="settings-tools" class="settings-section">
+          <h2 class="section-title">{{ t("tools.title") }}</h2>
+          <div class="card divide-y divide-line overflow-hidden">
+            <button v-for="tool in TOOLS" :key="tool.key" class="row-button" @click="tool.open()">
+              <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-raised text-muted">
+                <AppIcon :name="tool.icon" :size="18" />
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="row-label">{{ t(`tools.${tool.key}`) }}</span>
+                <span class="row-hint">{{ t(`tools.${tool.key}Hint`) }}</span>
+              </span>
+              <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
             </button>
           </div>
-        </div>
-      </Transition>
-    </div>
+        </section>
 
-    <div class="section-title">{{ t("settings.subscriptions") }}</div>
-    <div class="card group-card">
-      <div class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.sendHwid") }}</div>
-          <div class="row-hint">{{ t("settings.sendHwidHint") }}</div>
-        </div>
-        <ToggleSwitch
-          :model-value="store.settings.sendHwid"
-          :label="t('settings.sendHwid')"
-          @update:model-value="(sendHwid: boolean) => save({ sendHwid })"
-        />
-      </div>
-      <div class="flex items-center gap-2 py-2 pr-2 pl-4">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.hwid") }}</div>
-          <div class="selectable truncate font-mono text-xs text-muted">{{ store.snapshot.device.hwid }}</div>
-        </div>
-        <button class="icon-btn" :aria-label="t('common.copy')" :title="t('common.copy')" @click="copyHwid">
-          <AppIcon name="copy" :size="18" />
-        </button>
-      </div>
-      <label class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.autoUpdate") }}</div>
-          <div class="row-hint">{{ t("settings.autoUpdateHint") }}</div>
-        </div>
-        <select
-          class="field w-40 shrink-0 px-2 sm:w-48"
-          :value="store.settings.autoUpdateHours"
-          @change="save({ autoUpdateHours: Number(($event.target as HTMLSelectElement).value) })"
-        >
-          <option :value="0">{{ t("settings.autoUpdateDisabled") }}</option>
-          <option :value="6">{{ t("settings.autoUpdate6h") }}</option>
-          <option :value="12">{{ t("settings.autoUpdate12h") }}</option>
-          <option :value="24">{{ t("settings.autoUpdate24h") }}</option>
-        </select>
-      </label>
-      <label class="row">
-        <div class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("settings.userAgent") }}</div>
-          <div class="row-hint">{{ t("settings.userAgentHint") }}</div>
-        </div>
-        <select
-          class="field w-40 shrink-0 px-2 sm:w-48"
-          :value="store.settings.userAgent || ''"
-          @change="save({ userAgent: ($event.target as HTMLSelectElement).value })"
-        >
-          <option v-for="ua in UA_PRESETS" :key="ua.value" :value="ua.value">{{ t(ua.label) }}</option>
-        </select>
-      </label>
-    </div>
-
-    <div class="section-title">{{ t("tools.title") }}</div>
-    <div class="card group-card">
-      <button
-        class="row-button"
-        @click="showServiceCheck = true"
-      >
-        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-raised text-muted">
-          <AppIcon name="check" :size="18" />
-        </span>
-        <span class="min-w-0 flex-1">
-          <span class="block font-medium">{{ t("tools.serviceCheck") }}</span>
-          <span class="block text-xs text-muted">{{ t("tools.serviceCheckHint") }}</span>
-        </span>
-        <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
-      </button>
-
-      <button
-        class="row-button"
-        @click="showSpeedTest = true"
-      >
-        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-raised text-muted">
-          <AppIcon name="gauge" :size="18" />
-        </span>
-        <span class="min-w-0 flex-1">
-          <span class="block font-medium">{{ t("tools.speedTest") }}</span>
-          <span class="block text-xs text-muted">{{ t("tools.speedTestHint") }}</span>
-        </span>
-        <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
-      </button>
-
-      <button
-        class="row-button"
-        @click="showDiagnostics = true"
-      >
-        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-raised text-muted">
-          <AppIcon name="alert" :size="18" />
-        </span>
-        <span class="min-w-0 flex-1">
-          <span class="block font-medium">{{ t("tools.diagnostics") }}</span>
-          <span class="block text-xs text-muted">{{ t("tools.diagnosticsHint") }}</span>
-        </span>
-        <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
-      </button>
-
-      <button
-        class="row-button"
-        @click="showBackup = true"
-      >
-        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-raised text-muted">
-          <AppIcon name="copy" :size="18" />
-        </span>
-        <span class="min-w-0 flex-1">
-          <span class="block font-medium">{{ t("tools.backup") }}</span>
-          <span class="block text-xs text-muted">{{ t("tools.backupHint") }}</span>
-        </span>
-        <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
-      </button>
-    </div>
-
-    <div class="section-title">{{ t("settings.app") }}</div>
-    <div class="card group-card">
-      <label class="row">
-        <span class="min-w-0 flex-1 font-medium">{{ t("settings.language") }}</span>
-        <select
-          class="field w-40 shrink-0 px-2 sm:w-48"
-          :value="store.settings.locale ?? ''"
-          @change="save({ locale: ($event.target as HTMLSelectElement).value || null })"
-        >
-          <option value="">{{ t("settings.languageSystem") }}</option>
-          <option v-for="locale in LOCALES" :key="locale" :value="locale">{{ LOCALE_NAMES[locale] }}</option>
-        </select>
-      </label>
-      <label class="row">
-        <span class="min-w-0 flex-1 font-medium">{{ t("settings.logLevel") }}</span>
-        <select
-          class="field w-40 shrink-0 px-2 sm:w-48"
-          :value="store.settings.logLevel"
-          @change="save({ logLevel: ($event.target as HTMLSelectElement).value })"
-        >
-          <option v-for="level in LOG_LEVELS" :key="level" :value="level">{{ level }}</option>
-        </select>
-      </label>
-      <div class="row">
-        <span class="min-w-0 flex-1 font-medium">{{ t("settings.version") }}</span>
-        <span class="selectable font-mono text-sm text-muted">{{ store.snapshot.version }}</span>
+        <section id="settings-app" class="settings-section">
+          <h2 class="section-title">{{ t("settings.app") }}</h2>
+          <div class="card divide-y divide-line overflow-hidden">
+            <SettingRow v-slot="{ id }" :label="t('settings.language')">
+              <select
+                :id="id"
+                class="field w-40 px-2"
+                :value="store.settings.locale ?? ''"
+                @change="save({ locale: ($event.target as HTMLSelectElement).value || null })"
+              >
+                <option value="">{{ t("settings.languageSystem") }}</option>
+                <option v-for="locale in LOCALES" :key="locale" :value="locale">{{ LOCALE_NAMES[locale] }}</option>
+              </select>
+            </SettingRow>
+            <div class="row">
+              <span class="min-w-0 flex-1 font-medium">{{ t("settings.version") }}</span>
+              <span class="selectable font-mono text-sm text-muted">{{ store.snapshot.version }}</span>
+            </div>
+            <button v-if="store.isDesktop" class="row-button text-danger" @click="api.quit()">
+              <AppIcon name="power" :size="18" class="shrink-0" />
+              <span class="font-medium">{{ t("settings.quit") }}</span>
+            </button>
+          </div>
+        </section>
       </div>
     </div>
 
-    <button v-if="store.isDesktop" class="btn btn-danger w-full" @click="api.quit()">
-      <AppIcon name="power" :size="18" />{{ t("settings.quit") }}
-    </button>
     <Transition name="sheet">
       <PerAppDialog v-if="choosingApps" @close="choosingApps = false" />
     </Transition>
@@ -855,3 +826,12 @@ onMounted(() => {
     </Transition>
   </div>
 </template>
+
+<style scoped>
+@reference "../styles.css";
+
+/* A titled group; in two columns it never breaks across them. */
+.settings-section {
+  @apply mb-7 break-inside-avoid scroll-mt-6;
+}
+</style>
