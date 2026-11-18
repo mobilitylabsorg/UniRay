@@ -434,6 +434,8 @@ async function confirm() {
 <style scoped>
 /* Sizes follow the approved mock (px / 16 = rem). */
 .list {
+  /* rem, not the body's 15px, so that a TV scales the text too. */
+  font-size: 0.9375rem;
   container-type: inline-size;
   padding: 1.5rem 1rem 1.75rem;
 }

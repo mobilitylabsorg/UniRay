@@ -102,6 +102,8 @@ onBeforeUnmount(() => {
 /* Under a phone's status bar too: <main> is padded by the safe area, and the
    bar reaches up over that padding so the list does not show through it. */
 .mini {
+  /* rem, not the body's 15px, so that a TV scales the text too. */
+  font-size: 0.9375rem;
   --inset: env(safe-area-inset-top, 0px);
   position: sticky;
   top: calc(0px - var(--inset));

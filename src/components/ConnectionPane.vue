@@ -313,6 +313,8 @@ const MODES: { value: Mode; label: string }[] = [
 /* Sizes follow the approved mock (px / 16 = rem, so a TV scales them). The
    narrow layout is the default; the wide one is in the media rules below. */
 .pane {
+  /* rem, not the body's 15px, so that a TV scales the text too. */
+  font-size: 0.9375rem;
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
