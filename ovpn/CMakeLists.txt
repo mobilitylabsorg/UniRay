@@ -12,3 +12,8 @@ include(findcoredeps)
 
 add_executable(uniray-ovpn uniray-ovpn.cpp)
 add_core_dependencies(uniray-ovpn)
+
+# Windows: the TAP driver's header the core's Windows code includes (win/).
+if (WIN32)
+    target_include_directories(uniray-ovpn PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/win)
+endif ()

@@ -1,10 +1,8 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package main
 
 import "os/exec"
 
-// setChildAttrs: on Windows the job object the engine runs in (the app's or
-// the helper's) takes its children down with it; on macOS the engine stops
-// naive itself.
+// setChildAttrs: on macOS the engine stops its children itself.
 func setChildAttrs(*exec.Cmd) {}

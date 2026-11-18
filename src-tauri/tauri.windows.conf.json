@@ -1,5 +1,6 @@
 {
   "bundle": {
+    "externalBin": ["binaries/uniray-xray", "binaries/uniray-helper", "binaries/uniray-engine", "binaries/uniray-naive", "binaries/uniray-ovpn"],
     "resources": {
       "resources/geoip.dat": "resources/geoip.dat",
       "resources/geosite.dat": "resources/geosite.dat",

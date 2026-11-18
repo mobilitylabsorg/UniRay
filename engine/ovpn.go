@@ -1,5 +1,3 @@
-//go:build !windows
-
 package main
 
 import (
@@ -19,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
@@ -29,7 +26,8 @@ import (
 // OVPNConfig runs an OpenVPN server through uniray-ovpn, the OpenVPN 3 core
 // without a TUN device (ovpn/uniray-ovpn.cpp): it reads and writes the
 // tunnel's IP packets on a socket whose other end feeds this engine's
-// userspace stack, as for AmneziaWG.
+// userspace stack, as for AmneziaWG. The socket is a socketpair on Unix and a
+// loopback UDP port on Windows (see openPackets).
 type OVPNConfig struct {
 	Binary string `json:"binary"`
 	// The .ovpn profile as the user imported it.
@@ -141,29 +139,21 @@ func (e *ovpnRefused) Error() string { return e.message }
 
 // session runs uniray-ovpn until it exits.
 func (u *ovpnUpstream) session() error {
-	// Datagrams keep each packet whole, as a TUN does.
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC, 0)
+	channel, err := openPackets()
 	if err != nil {
 		return fmt.Errorf("packet socket: %w", err)
 	}
-	ours, theirs := os.NewFile(uintptr(fds[0]), "ovpn-packets"), os.NewFile(uintptr(fds[1]), "ovpn-packets-child")
-	conn, err := net.FileConn(ours)
-	ours.Close()
-	if err != nil {
-		theirs.Close()
-		return fmt.Errorf("packet socket: %w", err)
-	}
-	packets := conn.(*net.UnixConn)
+	packets := channel.conn
 	defer packets.Close()
+	defer channel.release()
 
 	// uniray-ovpn removes the profile once read; this, if it never does.
 	profile := filepath.Join(u.dir, "ovpn-"+randomHex(8)+".ovpn")
 	if err := os.WriteFile(profile, []byte(u.config.Profile), 0o600); err != nil {
-		theirs.Close()
 		return fmt.Errorf("profile: %w", err)
 	}
 	defer os.Remove(profile)
-	args := []string{"--config", profile, "--packet-fd", "3"}
+	args := append([]string{"--config", profile}, channel.args...)
 	if u.config.Server != "" {
 		args = append(args, "--server", u.config.Server, "--port", strconv.Itoa(u.config.Port))
 		if u.config.Proto != "" {
@@ -171,21 +161,19 @@ func (u *ovpnUpstream) session() error {
 		}
 	}
 	cmd := exec.Command(u.config.Binary, args...)
-	cmd.ExtraFiles = []*os.File{theirs}
+	channel.prepare(cmd)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		theirs.Close()
 		return err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		theirs.Close()
 		return err
 	}
 	setChildAttrs(cmd)
 	err = cmd.Start()
-	theirs.Close()
+	channel.release()
 	if err != nil {
 		return fmt.Errorf("starting uniray-ovpn: %w", err)
 	}
@@ -204,6 +192,9 @@ func (u *ovpnUpstream) session() error {
 		}
 	}()
 	fmt.Fprintf(stdin, "%s\n%s\n", u.config.Username, u.config.Password)
+	if channel.token != "" {
+		fmt.Fprintf(stdin, "%s\n", channel.token)
+	}
 
 	go u.fromServer(packets)
 	refused := u.follow(stdout, packets, func() { stdin.Close() })
@@ -222,7 +213,7 @@ func (u *ovpnUpstream) session() error {
 // follow reads uniray-ovpn's lines until it exits: the tunnel's settings,
 // then "connected" each time the tunnel is up. Returns its "error", if any;
 // after one it is told to stop with `quit`, should it not have already.
-func (u *ovpnUpstream) follow(stdout io.Reader, packets *net.UnixConn, quit func()) error {
+func (u *ovpnUpstream) follow(stdout io.Reader, packets ovpnPackets, quit func()) error {
 	lines := bufio.NewScanner(stdout)
 	var pending OVPNSettings
 	var refused error
@@ -264,7 +255,7 @@ func (u *ovpnUpstream) follow(stdout io.Reader, packets *net.UnixConn, quit func
 
 // up puts the tunnel to use with `settings`: the stack it has, when the
 // address is the same (connections survive a reconnect), else a new one.
-func (u *ovpnUpstream) up(settings OVPNSettings, packets *net.UnixConn) error {
+func (u *ovpnUpstream) up(settings OVPNSettings, packets ovpnPackets) error {
 	if len(settings.Addresses) == 0 {
 		return errors.New("the OpenVPN server gave no tunnel address")
 	}
@@ -324,7 +315,7 @@ func (u *ovpnUpstream) update(change func()) {
 
 // fromServer feeds the packets uniray-ovpn decrypted to the stack of the
 // moment, until the session's socket closes.
-func (u *ovpnUpstream) fromServer(packets *net.UnixConn) {
+func (u *ovpnUpstream) fromServer(packets ovpnPackets) {
 	buf := make([]byte, 65535)
 	for {
 		n, err := packets.Read(buf)
@@ -345,7 +336,7 @@ func (u *ovpnUpstream) fromServer(packets *net.UnixConn) {
 
 // toServer hands a stack's packets to uniray-ovpn to encrypt and send,
 // until the stack or the socket closes.
-func toServer(device tun.Device, packets *net.UnixConn) {
+func toServer(device tun.Device, packets ovpnPackets) {
 	batch := device.BatchSize()
 	bufs := make([][]byte, batch)
 	for i := range bufs {
@@ -359,9 +350,10 @@ func toServer(device tun.Device, packets *net.UnixConn) {
 		}
 		for i := 0; i < n; i++ {
 			if _, err := packets.Write(bufs[i][:sizes[i]]); err != nil {
-				if !errors.Is(err, net.ErrClosed) && !errors.Is(err, syscall.ENOBUFS) {
+				if errors.Is(err, net.ErrClosed) {
 					return
 				}
+				// Else a full buffer: the packet is dropped, as a TUN would.
 			}
 		}
 	}

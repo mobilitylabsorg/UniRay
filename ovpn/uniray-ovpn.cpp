@@ -3,8 +3,13 @@
 // core reads and writes IP packets on a socket the engine holds the other end
 // of, and the engine's userspace stack (gVisor) turns them into connections.
 //
-// Usage: uniray-ovpn --config <file.ovpn> --packet-fd <fd>
+// Usage: uniray-ovpn --config <file.ovpn> (--packet-fd <fd> | --packet-udp <port>)
 //                    [--server <address> --port <port> [--proto udp|tcp]]
+//
+// --packet-fd (Unix): a datagram socket inherited from the engine.
+// --packet-udp (Windows, which has no socketpair to inherit): the engine's UDP
+// port on 127.0.0.1. The first datagram is the token (a third line on stdin);
+// the engine takes packets from that sender only, and sends to it.
 //
 // --server connects there instead of the profile's remote: the address the
 // app resolved it to, or a loopback port where Xray forwards to the server
@@ -28,10 +33,15 @@
 //
 // The core asks for a TUN through TunBuilderBase (USE_TUN_BUILDER, as on
 // Android and iOS); tun_builder_establish hands it the packet socket, which
-// it reads and writes like a TUN's file descriptor.
+// it reads and writes like a TUN's file descriptor. On Windows the core's TUN
+// client for that wants a POSIX descriptor, so there PacketTun, given to the
+// core as an external TUN factory, does the same on the UDP socket.
 
 // The core's TUN abstraction on every platform, not only Android and iOS.
 #define USE_TUN_BUILDER
+#if defined(_WIN32)
+#define OPENVPN_EXTERNAL_TUN_FACTORY
+#endif
 #include <client/ovpncli.cpp>
 #include <openvpn/tun/builder/capture.hpp>
 
@@ -43,7 +53,9 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#if !defined(_WIN32)
 #include <unistd.h>
+#endif
 
 using namespace openvpn;
 
@@ -57,13 +69,193 @@ void say(const std::string &line)
     std::cout << line << std::endl;
 }
 
+#if defined(_WIN32)
+// The tunnel's packets on a UDP socket to the engine's port on 127.0.0.1, one
+// per datagram, as the TUN builder's client does on a descriptor. The core
+// makes one for each connection; each greets the engine with the token.
+class PacketTun : public TunClient
+{
+  public:
+    typedef RCPtr<PacketTun> Ptr;
+
+    PacketTun(openvpn_io::io_context &io_context, TunClientParent &parent, const ExternalTun::Config &config, TunBuilderBase *builder, unsigned short port, const std::string &token)
+        : io_context(io_context), parent(parent), config(config), builder(builder), port(port), token(token), state(new TunProp::State())
+    {
+    }
+
+    void tun_start(const OptionList &opt, TransportClient &transcli, CryptoDCSettings &) override
+    {
+        if (socket)
+            return;
+        try
+        {
+            if (!builder->tun_builder_new())
+                throw Exception("tun_builder_new failed");
+            parent.tun_pre_tun_config();
+            TunProp::configure_builder(builder, state.get(), config.stats.get(), transcli.server_endpoint_addr(), config.tun_prop, opt, nullptr, false);
+
+            const openvpn_io::ip::address loopback = openvpn_io::ip::address_v4::loopback();
+            socket.reset(new openvpn_io::ip::udp::socket(io_context));
+            socket->open(openvpn_io::ip::udp::v4());
+            socket->set_option(openvpn_io::socket_base::receive_buffer_size(4 << 20));
+            socket->set_option(openvpn_io::socket_base::send_buffer_size(4 << 20));
+            socket->bind(openvpn_io::ip::udp::endpoint(loopback, 0));
+            socket->connect(openvpn_io::ip::udp::endpoint(loopback, port));
+            socket->send(openvpn_io::buffer(token));
+
+            // Reports the settings to the engine.
+            builder->tun_builder_establish();
+            queue_read();
+            parent.tun_connected();
+        }
+        catch (const std::exception &e)
+        {
+            stop();
+            parent.tun_error(Error::TUN_SETUP_FAILED, e.what());
+        }
+    }
+
+    bool tun_send(BufferAllocated &buf) override
+    {
+        if (halt || !socket)
+            return false;
+        openvpn_io::error_code error;
+        socket->send(buf.const_buffer(), 0, error);
+        if (config.stats && !error)
+        {
+            config.stats->inc_stat(SessionStats::TUN_BYTES_OUT, buf.size());
+            config.stats->inc_stat(SessionStats::TUN_PACKETS_OUT, 1);
+        }
+        // A full buffer drops the packet, as a TUN would.
+        return !error;
+    }
+
+    std::string tun_name() const override
+    {
+        return "uniray";
+    }
+
+    std::string vpn_ip4() const override
+    {
+        return state->vpn_ip4_addr.specified() ? state->vpn_ip4_addr.to_string() : "";
+    }
+
+    std::string vpn_ip6() const override
+    {
+        return state->vpn_ip6_addr.specified() ? state->vpn_ip6_addr.to_string() : "";
+    }
+
+    std::string vpn_gw4() const override
+    {
+        return state->vpn_ip4_gw.specified() ? state->vpn_ip4_gw.to_string() : "";
+    }
+
+    std::string vpn_gw6() const override
+    {
+        return state->vpn_ip6_gw.specified() ? state->vpn_ip6_gw.to_string() : "";
+    }
+
+    int vpn_mtu() const override
+    {
+        return state->mtu;
+    }
+
+    void set_disconnect() override
+    {
+    }
+
+    void stop() override
+    {
+        if (halt)
+            return;
+        halt = true;
+        if (socket)
+        {
+            openvpn_io::error_code ignored;
+            socket->close(ignored);
+        }
+    }
+
+  private:
+    void queue_read()
+    {
+        (*config.frame)[Frame::READ_TUN].prepare(incoming);
+        socket->async_receive((*config.frame)[Frame::READ_TUN].mutable_buffer(incoming),
+                              [self = Ptr(this)](const openvpn_io::error_code &error, const size_t size)
+                              {
+            OPENVPN_ASYNC_HANDLER;
+            self->received(error, size);
+        });
+    }
+
+    void received(const openvpn_io::error_code &error, const size_t size)
+    {
+        if (halt)
+            return;
+        if (error)
+        {
+            parent.tun_error(Error::TUN_READ_ERROR, "packet socket: " + error.message());
+            return;
+        }
+        incoming.set_size(size);
+        if (config.stats)
+        {
+            config.stats->inc_stat(SessionStats::TUN_BYTES_IN, size);
+            config.stats->inc_stat(SessionStats::TUN_PACKETS_IN, 1);
+        }
+        parent.tun_recv(incoming);
+        queue_read();
+    }
+
+    openvpn_io::io_context &io_context;
+    TunClientParent &parent;
+    ExternalTun::Config config;
+    TunBuilderBase *builder;
+    unsigned short port;
+    std::string token;
+    TunProp::State::Ptr state;
+    std::unique_ptr<openvpn_io::ip::udp::socket> socket;
+    BufferAllocated incoming;
+    bool halt = false;
+};
+
+class PacketTunFactory : public TunClientFactory
+{
+  public:
+    PacketTunFactory(const ExternalTun::Config &config, TunBuilderBase *builder, unsigned short port, const std::string &token)
+        : config(config), builder(builder), port(port), token(token)
+    {
+    }
+
+    TunClient::Ptr new_tun_client_obj(openvpn_io::io_context &io_context, TunClientParent &parent, TransportClient *) override
+    {
+        return TunClient::Ptr(new PacketTun(io_context, parent, config, builder, port, token));
+    }
+
+  private:
+    ExternalTun::Config config;
+    TunBuilderBase *builder;
+    unsigned short port;
+    std::string token;
+};
+#endif
+
 class Client : public ClientAPI::OpenVPNClient
 {
   public:
-    explicit Client(int packet_fd)
-        : packet_fd(packet_fd)
+    // packet_fd: the inherited socket (Unix); packet_port and token: the
+    // engine's UDP port and the greeting (Windows).
+    Client(int packet_fd, unsigned short packet_port, const std::string &token)
+        : packet_fd(packet_fd), packet_port(packet_port), token(token)
     {
     }
+
+#if defined(_WIN32)
+    TunClientFactory *new_tun_factory(const ExternalTun::Config &config, const OptionList &) override
+    {
+        return new PacketTunFactory(config, this, packet_port, token);
+    }
+#endif
 
     bool tun_builder_new() override
     {
@@ -145,7 +337,11 @@ class Client : public ClientAPI::OpenVPNClient
         for (const auto &domain : capture->dns_options.search_domains)
             say("domain " + domain.domain);
         say("established");
+#if defined(_WIN32)
+        return 0; // PacketTun has the socket
+#else
         return ::dup(packet_fd);
+#endif
     }
 
     bool tun_builder_persist() override
@@ -212,6 +408,8 @@ class Client : public ClientAPI::OpenVPNClient
 
   private:
     int packet_fd;
+    unsigned short packet_port;
+    std::string token;
     TunBuilderCapture::Ptr capture;
 };
 
@@ -235,7 +433,7 @@ class Client : public ClientAPI::OpenVPNClient
 int main(int argc, char *argv[])
 {
     std::string config_path, server, port, proto;
-    int packet_fd = -1;
+    int packet_fd = -1, packet_port = 0;
     for (int i = 1; i + 1 < argc; i += 2)
     {
         const std::string flag = argv[i];
@@ -243,6 +441,8 @@ int main(int argc, char *argv[])
             config_path = argv[i + 1];
         else if (flag == "--packet-fd")
             packet_fd = std::atoi(argv[i + 1]);
+        else if (flag == "--packet-udp")
+            packet_port = std::atoi(argv[i + 1]);
         else if (flag == "--server")
             server = argv[i + 1];
         else if (flag == "--port")
@@ -250,8 +450,13 @@ int main(int argc, char *argv[])
         else if (flag == "--proto")
             proto = argv[i + 1];
     }
+#if defined(_WIN32)
+    if (config_path.empty() || packet_port <= 0 || packet_port > 65535)
+        fail("usage: uniray-ovpn --config <file.ovpn> --packet-udp <port>");
+#else
     if (config_path.empty() || packet_fd < 0)
         fail("usage: uniray-ovpn --config <file.ovpn> --packet-fd <fd>");
+#endif
 
     std::ifstream file(config_path);
     if (!file)
@@ -264,9 +469,14 @@ int main(int argc, char *argv[])
     std::string username, password;
     std::getline(std::cin, username);
     std::getline(std::cin, password);
+    std::string token;
+    if (packet_port > 0)
+        std::getline(std::cin, token);
+    if (packet_port > 0 && token.empty())
+        fail("no token for the packet socket");
 
     ClientAPI::OpenVPNClientHelper helper;
-    Client client(packet_fd);
+    Client client(packet_fd, static_cast<unsigned short>(packet_port), token);
 
     ClientAPI::Config config;
     config.content = profile.str();
