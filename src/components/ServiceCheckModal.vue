@@ -159,7 +159,7 @@ onMounted(() => {
             <template v-else-if="results[service.id]?.status === 'ok'">
               <span class="flex items-center gap-1 rounded-full bg-good/10 px-2 py-0.5 text-xs font-medium text-good">
                 <AppIcon name="check" :size="12" />
-                <span>{{ results[service.id]?.latency }} ms</span>
+                <span>{{ results[service.id]?.latency }} {{ t('servers.ms') }}</span>
               </span>
             </template>
             <template v-else-if="results[service.id]?.status === 'blocked'">

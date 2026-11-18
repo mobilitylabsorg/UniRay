@@ -137,7 +137,7 @@ onMounted(() => {
       <!-- Clean Network Banner -->
       <div
         v-if="report && !hasBlocked"
-        class="card flex items-start gap-3 border border-good/20 bg-good-soft p-3.5"
+        class="flex items-start gap-3 rounded-2xl bg-good-soft p-3.5"
       >
         <span class="flex size-7 shrink-0 items-center justify-center rounded-lg bg-good/20 text-good">
           <AppIcon name="check" :size="16" />
@@ -149,13 +149,13 @@ onMounted(() => {
 
       <!-- Actionable Advice & Apply Button -->
       <div v-if="report && canApply" class="space-y-3">
-        <div class="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-3.5">
-          <div class="flex items-center gap-2 text-xs font-semibold text-amber-400">
+        <div class="rounded-2xl bg-warn-soft p-3.5">
+          <div class="flex items-center gap-2 text-xs font-semibold text-warn">
             <AppIcon name="alert" :size="14" />
-            <span>Обнаружена фильтрация провайдера</span>
+            <span>{{ t('tools.diagnosticsFiltering') }}</span>
           </div>
           <p class="mt-1.5 text-xs leading-relaxed text-ink/80">
-            Рекомендуется включить фрагментацию TLS (обход ТСПУ), эмуляцию Chrome uTLS и защищённый DoH DNS в туннеле.
+            {{ t('tools.diagnosticsAdvice') }}
           </p>
         </div>
 

@@ -111,9 +111,9 @@ const displayPing = computed(() => {
 const displayJitter = computed(() => {
   const j = isRunning.value ? currentJitter.value : primaryResult.value?.jitterMs;
   if (j !== null && j !== undefined) {
-    return `±${j} мс`;
+    return `±${j} ${t("servers.ms")}`;
   }
-  return "мс";
+  return t("servers.ms");
 });
 
 // Comparison delta
@@ -462,7 +462,7 @@ function cleanupRun() {
             ? 'bg-accent/10 text-accent border border-accent/25 shadow-sm shadow-accent/5'
             : primaryResult
               ? 'bg-good/10 text-good border border-good/25'
-              : 'bg-card text-muted border border-line/40'"
+              : 'bg-raised text-muted border border-transparent'"
         >
           <span v-if="isRunning" class="relative flex size-1.5 shrink-0">
             <span class="absolute inline-flex size-full animate-ping rounded-full bg-accent opacity-75" />
@@ -493,13 +493,13 @@ function cleanupRun() {
           <div class="my-auto font-mono text-xl font-bold tracking-tight text-accent tabular-nums">
             {{ displayDownload }}
           </div>
-          <div class="text-[11px] text-muted font-medium">Мбит/с</div>
+          <div class="text-[11px] text-muted font-medium">{{ t('tools.mbps') }}</div>
         </div>
 
         <!-- Upload -->
         <div
           class="card p-3 flex flex-col items-center justify-between min-h-[96px] text-center transition-all duration-300"
-          :class="isRunning && currentPhase === 'upload' ? 'border-good shadow-[0_0_15px_-3px_#22c55e] bg-good/5' : ''"
+          :class="isRunning && currentPhase === 'upload' ? 'border-good shadow-[0_0_15px_-3px_var(--color-good)] bg-good/5' : ''"
         >
           <div class="flex items-center gap-1 text-xs font-medium text-muted">
             <AppIcon
@@ -513,7 +513,7 @@ function cleanupRun() {
           <div class="my-auto font-mono text-xl font-bold tracking-tight text-good tabular-nums">
             {{ displayUpload }}
           </div>
-          <div class="text-[11px] text-muted font-medium">Мбит/с</div>
+          <div class="text-[11px] text-muted font-medium">{{ t('tools.mbps') }}</div>
         </div>
 
         <!-- Ping & Jitter -->
@@ -547,13 +547,13 @@ function cleanupRun() {
             {{ t('tools.speedTestScopeTunnel') }}
           </span>
           <span class="font-mono text-ink">
-            ↓ {{ formatRate(primaryResult.downloadMbps).value }} &nbsp; ↑ {{ formatRate(primaryResult.uploadMbps).value }} Мбит/с
+            ↓ {{ formatRate(primaryResult.downloadMbps).value }} &nbsp; ↑ {{ formatRate(primaryResult.uploadMbps).value }} {{ t('tools.mbps') }}
           </span>
         </div>
         <div class="flex items-center justify-between font-semibold text-muted">
           <span>{{ t('tools.speedTestScopeDirect') }} ({{ directResult.path || underlyingType }})</span>
           <span class="font-mono text-ink">
-            ↓ {{ formatRate(directResult.downloadMbps).value }} &nbsp; ↑ {{ formatRate(directResult.uploadMbps).value }} Мбит/с
+            ↓ {{ formatRate(directResult.downloadMbps).value }} &nbsp; ↑ {{ formatRate(directResult.uploadMbps).value }} {{ t('tools.mbps') }}
           </span>
         </div>
         <div v-if="downloadDeltaPercent !== null" class="border-t border-line/60 pt-2 flex items-center justify-between">
@@ -578,7 +578,7 @@ function cleanupRun() {
             <button
               type="button"
               class="py-1.5 text-xs font-medium rounded-lg transition-all text-center"
-              :class="scope === 'tunnel' ? 'bg-accent text-white shadow-sm font-semibold' : 'text-muted hover:text-ink'"
+              :class="scope === 'tunnel' ? 'bg-accent text-accent-ink shadow-sm font-semibold' : 'text-muted hover:text-ink'"
               :disabled="isRunning"
               @click="selectScope('tunnel')"
             >
@@ -587,7 +587,7 @@ function cleanupRun() {
             <button
               type="button"
               class="py-1.5 text-xs font-medium rounded-lg transition-all text-center"
-              :class="scope === 'direct' ? 'bg-accent text-white shadow-sm font-semibold' : 'text-muted hover:text-ink'"
+              :class="scope === 'direct' ? 'bg-accent text-accent-ink shadow-sm font-semibold' : 'text-muted hover:text-ink'"
               :disabled="isRunning"
               @click="selectScope('direct')"
             >
@@ -596,7 +596,7 @@ function cleanupRun() {
             <button
               type="button"
               class="py-1.5 text-xs font-medium rounded-lg transition-all text-center"
-              :class="scope === 'both' ? 'bg-accent text-white shadow-sm font-semibold' : 'text-muted hover:text-ink'"
+              :class="scope === 'both' ? 'bg-accent text-accent-ink shadow-sm font-semibold' : 'text-muted hover:text-ink'"
               :disabled="isRunning"
               @click="selectScope('both')"
             >
@@ -615,7 +615,7 @@ function cleanupRun() {
           </div>
           <select
             v-model="selectedServerId"
-            class="input w-full text-xs py-2 px-3 bg-surface border border-line rounded-xl text-ink"
+            class="field text-xs"
             :disabled="isRunning"
             @change="onServerSelectChange"
           >
@@ -651,7 +651,7 @@ function cleanupRun() {
           >
             <div class="flex flex-col truncate max-w-[50%]">
               <span class="font-medium text-ink truncate">
-                {{ item.serverName || item.endpointLabel.split('·')[0].trim() || 'Сервер' }}
+                {{ item.serverName || item.endpointLabel.split('·')[0].trim() || t('tools.speedTestServer') }}
               </span>
               <span class="text-[10px] text-muted">
                 {{ formatClock(item.atMillis) }} · {{ item.direct ? t('tools.speedTestDirect') : t('tools.speedTestViaTunnel') }}
@@ -660,7 +660,7 @@ function cleanupRun() {
             <div class="flex items-center gap-2.5 shrink-0 font-mono text-xs">
               <span class="text-accent font-semibold">↓ {{ formatRate(item.downloadMbps).value }}</span>
               <span class="text-good font-semibold">↑ {{ formatRate(item.uploadMbps).value }}</span>
-              <span v-if="item.pingMs" class="text-muted text-[11px] min-w-[32px] text-right">{{ item.pingMs }} мс</span>
+              <span v-if="item.pingMs" class="text-muted text-[11px] min-w-[32px] text-right">{{ item.pingMs }} {{ t('servers.ms') }}</span>
             </div>
           </div>
         </div>
