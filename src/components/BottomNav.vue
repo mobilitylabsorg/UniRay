@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 
+// The app's own icon, the one the window and the launcher show.
+import logo from "../../src-tauri/icons/64x64.png";
 import { useAppStore } from "../stores/app";
 import AppIcon, { type IconName } from "./AppIcon.vue";
 
@@ -33,7 +35,10 @@ const TABS: { to: string; icon: IconName; label: string }[] = [
       'w-52 flex-col gap-1 self-start rounded-3xl bg-surface p-2': variant === 'rail',
     }"
   >
-    <div v-if="variant === 'sidebar'" class="mb-4 px-3 text-sm font-semibold tracking-tight">UniRay</div>
+    <div v-if="variant === 'sidebar'" class="mb-4 flex items-center gap-2.5 px-2.5 text-sm font-semibold tracking-tight">
+      <img :src="logo" alt="" class="size-7 shrink-0" draggable="false" />
+      UniRay
+    </div>
     <RouterLink
       v-for="tab in TABS"
       :key="tab.to"
