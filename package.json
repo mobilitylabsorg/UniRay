@@ -17,6 +17,7 @@
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-clipboard-manager": "^2.5.0",
     "@tauri-apps/plugin-opener": "^2.7.2",
+    "flag-icons": "7.2.3",
     "jsqr": "^1.4.0",
     "pinia": "^4.1.0",
     "qrcode": "^1.5.4",

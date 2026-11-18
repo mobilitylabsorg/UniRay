@@ -9,6 +9,12 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [vue(), tailwindcss()],
 
+  build: {
+    // Country flags stay files next to the bundle (loaded when shown), not
+    // data URLs inside the script.
+    assetsInlineLimit: (file: string) => (file.includes("/flag-icons/") ? false : undefined),
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors
