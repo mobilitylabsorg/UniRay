@@ -222,15 +222,17 @@ onMounted(() => {
 </script>
 
 <template>
-  <div v-if="store.settings && store.snapshot" class="px-4 py-5">
-    <h1 class="mb-4 text-xl font-semibold">{{ t("settings.title") }}</h1>
+  <div v-if="store.settings && store.snapshot" class="page">
+    <header class="page-header">
+      <h1 class="page-title">{{ t("settings.title") }}</h1>
+    </header>
 
     <div class="section-title">{{ t("settings.connection") }}</div>
-    <div class="card mb-6 divide-y divide-line">
-      <div class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+    <div class="card group-card">
+      <div class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.autoConnect") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.autoConnectHint") }}</div>
+          <div class="row-hint">{{ t("settings.autoConnectHint") }}</div>
         </div>
         <ToggleSwitch
           :model-value="store.settings.autoConnect"
@@ -238,10 +240,10 @@ onMounted(() => {
           @update:model-value="(autoConnect: boolean) => save({ autoConnect })"
         />
       </div>
-      <div class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+      <div class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.autoFailover") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.autoFailoverHint") }}</div>
+          <div class="row-hint">{{ t("settings.autoFailoverHint") }}</div>
         </div>
         <ToggleSwitch
           :model-value="store.settings.autoFailover"
@@ -249,10 +251,10 @@ onMounted(() => {
           @update:model-value="(autoFailover: boolean) => save({ autoFailover })"
         />
       </div>
-      <div class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+      <div class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.autoRecover") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.autoRecoverHint") }}</div>
+          <div class="row-hint">{{ t("settings.autoRecoverHint") }}</div>
         </div>
         <ToggleSwitch
           :model-value="store.settings.autoRecover"
@@ -260,11 +262,11 @@ onMounted(() => {
           @update:model-value="(autoRecover: boolean) => save({ autoRecover })"
         />
       </div>
-      <div v-if="!store.isDesktop" class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+      <div v-if="!store.isDesktop" class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.keepAwake") }}</div>
-          <div class="text-xs text-muted">{{ t(store.isTv ? "settings.keepAwakeTvHint" : "settings.keepAwakeHint") }}</div>
-          <div v-if="store.settings.keepAwake && batteryExempt === false" class="mt-1 text-xs text-amber-500">
+          <div class="row-hint">{{ t(store.isTv ? "settings.keepAwakeTvHint" : "settings.keepAwakeHint") }}</div>
+          <div v-if="store.settings.keepAwake && batteryExempt === false" class="mt-1 text-xs text-warn">
             {{ t("settings.keepAwakeNoExemption") }}
           </div>
         </div>
@@ -281,13 +283,10 @@ onMounted(() => {
           :key="mode"
           role="radio"
           :aria-checked="store.settings.mode === mode"
-          class="flex w-full items-start gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-raised"
+          class="-mx-2 flex w-[calc(100%+1rem)] items-start gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-raised"
           @click="save({ mode })"
         >
-          <span
-            class="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors duration-200"
-            :class="store.settings.mode === mode ? 'border-accent bg-accent text-accent-ink' : 'border-line'"
-          >
+          <span class="radio-mark mt-0.5" :class="{ 'is-on': store.settings.mode === mode }">
             <Transition name="pop">
               <AppIcon v-if="store.settings.mode === mode" name="check" :size="12" />
             </Transition>
@@ -300,8 +299,8 @@ onMounted(() => {
           </span>
         </button>
       </div>
-      <label v-if="store.isDesktop" class="flex items-center gap-3 px-4 py-3">
-        <span class="flex-1 font-medium">{{ t("settings.mixedPort") }}</span>
+      <label v-if="store.isDesktop" class="row">
+        <span class="min-w-0 flex-1 font-medium">{{ t("settings.mixedPort") }}</span>
         <input
           v-model="draft.mixedPort"
           class="field selectable w-24 text-right font-mono"
@@ -312,9 +311,9 @@ onMounted(() => {
       </label>
       <div v-if="store.isDesktop" class="px-4 py-3">
         <div class="flex items-center gap-3">
-          <div class="flex-1">
+          <div class="min-w-0 flex-1">
             <div class="font-medium">{{ t("settings.proxyAuth") }}</div>
-            <div class="text-xs text-muted">{{ t("settings.proxyAuthHint") }}</div>
+            <div class="row-hint">{{ t("settings.proxyAuthHint") }}</div>
           </div>
           <ToggleSwitch
             :model-value="store.settings.proxyAuth"
@@ -350,14 +349,14 @@ onMounted(() => {
             </label>
           </div>
         </Transition>
-        <button class="btn btn-quiet mt-3 w-full" @click="copyProxyAddress">
+        <button class="btn btn-quiet btn-sm mt-3" @click="copyProxyAddress">
           <AppIcon name="copy" :size="16" />{{ t("settings.proxyCopy") }}
         </button>
       </div>
-      <div v-if="store.isDesktop" class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+      <div v-if="store.isDesktop" class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.allowLan") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.allowLanHint") }}</div>
+          <div class="row-hint">{{ t("settings.allowLanHint") }}</div>
         </div>
         <ToggleSwitch
           :model-value="store.settings.allowLan"
@@ -365,10 +364,10 @@ onMounted(() => {
           @update:model-value="(allowLan: boolean) => save({ allowLan })"
         />
       </div>
-      <div class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+      <div class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.ipv6") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.ipv6Hint") }}</div>
+          <div class="row-hint">{{ t("settings.ipv6Hint") }}</div>
         </div>
         <ToggleSwitch
           :model-value="store.settings.ipv6"
@@ -376,10 +375,10 @@ onMounted(() => {
           @update:model-value="(ipv6: boolean) => save({ ipv6 })"
         />
       </div>
-      <div v-if="store.snapshot?.features.adBlock" class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+      <div v-if="store.snapshot?.features.adBlock" class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.blockAds") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.blockAdsHint") }}</div>
+          <div class="row-hint">{{ t("settings.blockAdsHint") }}</div>
         </div>
         <ToggleSwitch
           :model-value="store.settings.blockAds"
@@ -405,11 +404,11 @@ onMounted(() => {
     </div>
 
     <div class="section-title">{{ t("settings.dpiBypass") }}</div>
-    <div class="card mb-6 divide-y divide-line">
-      <div class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+    <div class="card group-card">
+      <div class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.tlsFragment") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.tlsFragmentHint") }}</div>
+          <div class="row-hint">{{ t("settings.tlsFragmentHint") }}</div>
         </div>
         <ToggleSwitch
           :model-value="store.settings.tlsFragment"
@@ -423,14 +422,14 @@ onMounted(() => {
             <span class="text-xs text-muted">{{ t("settings.presets") }}</span>
             <button
               type="button"
-              class="btn btn-quiet py-1 px-2.5 text-xs"
+              class="btn btn-quiet btn-sm"
               @click="setFragmentPreset('100-200', '10-20')"
             >
               {{ t("settings.presetStandard") }}
             </button>
             <button
               type="button"
-              class="btn btn-quiet py-1 px-2.5 text-xs"
+              class="btn btn-quiet btn-sm"
               @click="setFragmentPreset('10-30', '5-15')"
             >
               {{ t("settings.presetAggressive") }}
@@ -476,23 +475,23 @@ onMounted(() => {
           </div>
         </div>
       </Transition>
-      <label class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+      <label class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.tlsFingerprint") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.tlsFingerprintHint") }}</div>
+          <div class="row-hint">{{ t("settings.tlsFingerprintHint") }}</div>
         </div>
         <select
-          class="field w-48 px-2 text-xs"
+          class="field w-40 shrink-0 px-2 sm:w-48"
           :value="store.settings.tlsFingerprint || 'auto'"
           @change="save({ tlsFingerprint: ($event.target as HTMLSelectElement).value })"
         >
           <option v-for="fp in TLS_FINGERPRINTS" :key="fp.value" :value="fp.value">{{ t(fp.label) }}</option>
         </select>
       </label>
-      <div class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+      <div class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.tcpFastOpen") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.tcpFastOpenHint") }}</div>
+          <div class="row-hint">{{ t("settings.tcpFastOpenHint") }}</div>
         </div>
         <ToggleSwitch
           :model-value="store.settings.tcpFastOpen"
@@ -500,10 +499,10 @@ onMounted(() => {
           @update:model-value="(tcpFastOpen: boolean) => save({ tcpFastOpen })"
         />
       </div>
-      <div class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+      <div class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.allowInsecure") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.allowInsecureHint") }}</div>
+          <div class="row-hint">{{ t("settings.allowInsecureHint") }}</div>
         </div>
         <ToggleSwitch
           :model-value="store.settings.allowInsecure"
@@ -511,13 +510,13 @@ onMounted(() => {
           @update:model-value="(allowInsecure: boolean) => save({ allowInsecure })"
         />
       </div>
-      <label class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+      <label class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.wgMtu") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.wgMtuHint") }}</div>
+          <div class="row-hint">{{ t("settings.wgMtuHint") }}</div>
         </div>
         <select
-          class="field w-44 px-2 text-xs"
+          class="field w-40 shrink-0 px-2 sm:w-48"
           :value="store.settings.wgMtu || 1280"
           @change="save({ wgMtu: Number(($event.target as HTMLSelectElement).value) })"
         >
@@ -530,11 +529,11 @@ onMounted(() => {
 
     <template v-if="!store.isDesktop">
       <div class="section-title">{{ t("settings.perApp") }}</div>
-      <div class="card mb-6 divide-y divide-line">
-        <label class="flex items-center gap-3 px-4 py-3">
-          <span class="flex-1 font-medium">{{ t("settings.perAppMode") }}</span>
+      <div class="card group-card">
+        <label class="row">
+          <span class="min-w-0 flex-1 font-medium">{{ t("settings.perAppMode") }}</span>
           <select
-            class="field w-48 px-2"
+            class="field w-40 shrink-0 px-2 sm:w-48"
             :value="store.settings.perApp.mode"
             @change="savePerAppMode(($event.target as HTMLSelectElement).value)"
           >
@@ -553,20 +552,20 @@ onMounted(() => {
                 {{ t("settings.perAppSelected", { count: store.settings.perApp.packages.length }) }}
               </span>
             </span>
-            <AppIcon name="chevron" class="text-muted" />
+            <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
           </button>
         </Transition>
-        <div v-if="store.settings.stealth && canStealth" class="px-4 py-2.5 text-xs text-amber-500 bg-amber-500/10">
+        <div v-if="store.settings.stealth && canStealth" class="bg-warn-soft px-4 py-2.5 text-xs text-warn">
           {{ t("settings.perAppStealthWarning") }}
         </div>
       </div>
 
       <div v-if="store.snapshot?.features.stealth" class="section-title">{{ t("settings.stealth") }}</div>
-      <div v-if="store.snapshot?.features.stealth" class="card mb-6 divide-y divide-line">
-        <div class="flex items-center gap-3 px-4 py-3">
+      <div v-if="store.snapshot?.features.stealth" class="card group-card">
+        <div class="row">
           <div class="min-w-0 flex-1">
             <div class="font-medium">{{ t("settings.privilege") }}</div>
-            <div class="text-xs text-muted">{{ t(privilegeLabel) }}</div>
+            <div class="row-hint">{{ t(privilegeLabel) }}</div>
           </div>
           <button
             v-if="privilege?.shizukuAvailable && !privilege?.shizukuGranted"
@@ -579,10 +578,10 @@ onMounted(() => {
             <AppIcon name="refresh" :size="18" />
           </button>
         </div>
-        <div class="flex items-center gap-3 px-4 py-3">
-          <div class="flex-1">
+        <div class="row">
+          <div class="min-w-0 flex-1">
             <div class="font-medium">{{ t("settings.stealthEnable") }}</div>
-            <div class="text-xs text-muted">{{ canStealth ? t("settings.stealthHint") : t("settings.stealthNeedsRoot") }}</div>
+            <div class="row-hint">{{ canStealth ? t("settings.stealthHint") : t("settings.stealthNeedsRoot") }}</div>
           </div>
           <ToggleSwitch
             :model-value="store.settings.stealth"
@@ -592,10 +591,10 @@ onMounted(() => {
           />
         </div>
         <Transition name="pop">
-          <div v-if="store.settings.stealth && canStealth" class="flex items-center gap-3 px-4 py-3">
-            <div class="flex-1">
+          <div v-if="store.settings.stealth && canStealth" class="row">
+            <div class="min-w-0 flex-1">
               <div class="font-medium">{{ t("settings.stealthRootTun") }}</div>
-              <div class="text-xs text-muted">{{ t(stealthRootTunHint) }}</div>
+              <div class="row-hint">{{ t(stealthRootTunHint) }}</div>
             </div>
             <ToggleSwitch
               :model-value="store.settings.stealthRootTun"
@@ -608,7 +607,7 @@ onMounted(() => {
     </template>
 
     <div class="section-title">{{ t("settings.dns") }}</div>
-    <div class="card mb-6 divide-y divide-line">
+    <div class="card group-card">
       <label class="block px-4 py-3">
         <span class="mb-1.5 block font-medium">{{ t("settings.remoteDns") }}</span>
         <input
@@ -633,10 +632,10 @@ onMounted(() => {
         />
         <span class="mt-1.5 block text-xs text-muted">{{ t("settings.directDnsHint") }}</span>
       </label>
-      <div class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+      <div class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.directDnsFromNetwork") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.directDnsFromNetworkHint") }}</div>
+          <div class="row-hint">{{ t("settings.directDnsFromNetworkHint") }}</div>
         </div>
         <ToggleSwitch
           :model-value="store.settings.directDnsFromNetwork"
@@ -647,14 +646,14 @@ onMounted(() => {
     </div>
 
     <div class="section-title">{{ t("settings.delayTesting") }}</div>
-    <div class="card mb-6 divide-y divide-line">
-      <label class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+    <div class="card group-card">
+      <label class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.delayTestMode") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.delayTestModeHint") }}</div>
+          <div class="row-hint">{{ t("settings.delayTestModeHint") }}</div>
         </div>
         <select
-          class="field w-52 px-2 text-xs"
+          class="field w-40 shrink-0 px-2 sm:w-48"
           :value="store.settings.delayTestMode"
           @change="save({ delayTestMode: ($event.target as HTMLSelectElement).value as DelayTestMode })"
         >
@@ -678,14 +677,14 @@ onMounted(() => {
           <div class="mt-2.5 flex flex-wrap gap-2">
             <button
               type="button"
-              class="btn btn-quiet py-1 px-2.5 text-xs"
+              class="btn btn-quiet btn-sm"
               @click="setProbeUrlPreset('http://cp.cloudflare.com/generate_204')"
             >
               Cloudflare (HTTP)
             </button>
             <button
               type="button"
-              class="btn btn-quiet py-1 px-2.5 text-xs"
+              class="btn btn-quiet btn-sm"
               @click="setProbeUrlPreset('https://www.gstatic.com/generate_204')"
             >
               Google (HTTPS)
@@ -696,11 +695,11 @@ onMounted(() => {
     </div>
 
     <div class="section-title">{{ t("settings.subscriptions") }}</div>
-    <div class="card mb-6 divide-y divide-line">
-      <div class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+    <div class="card group-card">
+      <div class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.sendHwid") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.sendHwidHint") }}</div>
+          <div class="row-hint">{{ t("settings.sendHwidHint") }}</div>
         </div>
         <ToggleSwitch
           :model-value="store.settings.sendHwid"
@@ -717,13 +716,13 @@ onMounted(() => {
           <AppIcon name="copy" :size="18" />
         </button>
       </div>
-      <label class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+      <label class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.autoUpdate") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.autoUpdateHint") }}</div>
+          <div class="row-hint">{{ t("settings.autoUpdateHint") }}</div>
         </div>
         <select
-          class="field w-44 px-2 text-xs"
+          class="field w-40 shrink-0 px-2 sm:w-48"
           :value="store.settings.autoUpdateHours"
           @change="save({ autoUpdateHours: Number(($event.target as HTMLSelectElement).value) })"
         >
@@ -733,13 +732,13 @@ onMounted(() => {
           <option :value="24">{{ t("settings.autoUpdate24h") }}</option>
         </select>
       </label>
-      <label class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1">
+      <label class="row">
+        <div class="min-w-0 flex-1">
           <div class="font-medium">{{ t("settings.userAgent") }}</div>
-          <div class="text-xs text-muted">{{ t("settings.userAgentHint") }}</div>
+          <div class="row-hint">{{ t("settings.userAgentHint") }}</div>
         </div>
         <select
-          class="field w-44 px-2 text-xs"
+          class="field w-40 shrink-0 px-2 sm:w-48"
           :value="store.settings.userAgent || ''"
           @change="save({ userAgent: ($event.target as HTMLSelectElement).value })"
         >
@@ -749,70 +748,70 @@ onMounted(() => {
     </div>
 
     <div class="section-title">{{ t("tools.title") }}</div>
-    <div class="card mb-6 divide-y divide-line">
+    <div class="card group-card">
       <button
-        class="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-raised"
+        class="row-button"
         @click="showServiceCheck = true"
       >
-        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent">
+        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-raised text-muted">
           <AppIcon name="check" :size="18" />
         </span>
-        <span class="flex-1 min-w-0">
+        <span class="min-w-0 flex-1">
           <span class="block font-medium">{{ t("tools.serviceCheck") }}</span>
           <span class="block text-xs text-muted">{{ t("tools.serviceCheckHint") }}</span>
         </span>
-        <AppIcon name="chevron" class="text-muted" />
+        <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
       </button>
 
       <button
-        class="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-raised"
+        class="row-button"
         @click="showSpeedTest = true"
       >
-        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-cyan-500/15 text-cyan-400">
+        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-raised text-muted">
           <AppIcon name="gauge" :size="18" />
         </span>
-        <span class="flex-1 min-w-0">
+        <span class="min-w-0 flex-1">
           <span class="block font-medium">{{ t("tools.speedTest") }}</span>
           <span class="block text-xs text-muted">{{ t("tools.speedTestHint") }}</span>
         </span>
-        <AppIcon name="chevron" class="text-muted" />
+        <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
       </button>
 
       <button
-        class="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-raised"
+        class="row-button"
         @click="showDiagnostics = true"
       >
-        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-400">
+        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-raised text-muted">
           <AppIcon name="alert" :size="18" />
         </span>
-        <span class="flex-1 min-w-0">
+        <span class="min-w-0 flex-1">
           <span class="block font-medium">{{ t("tools.diagnostics") }}</span>
           <span class="block text-xs text-muted">{{ t("tools.diagnosticsHint") }}</span>
         </span>
-        <AppIcon name="chevron" class="text-muted" />
+        <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
       </button>
 
       <button
-        class="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-raised"
+        class="row-button"
         @click="showBackup = true"
       >
-        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-violet-500/15 text-violet-400">
+        <span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-raised text-muted">
           <AppIcon name="copy" :size="18" />
         </span>
-        <span class="flex-1 min-w-0">
+        <span class="min-w-0 flex-1">
           <span class="block font-medium">{{ t("tools.backup") }}</span>
           <span class="block text-xs text-muted">{{ t("tools.backupHint") }}</span>
         </span>
-        <AppIcon name="chevron" class="text-muted" />
+        <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
       </button>
     </div>
 
     <div class="section-title">{{ t("settings.app") }}</div>
-    <div class="card mb-6 divide-y divide-line">
-      <label class="flex items-center gap-3 px-4 py-3">
-        <span class="flex-1 font-medium">{{ t("settings.language") }}</span>
+    <div class="card group-card">
+      <label class="row">
+        <span class="min-w-0 flex-1 font-medium">{{ t("settings.language") }}</span>
         <select
-          class="field w-44 px-2"
+          class="field w-40 shrink-0 px-2 sm:w-48"
           :value="store.settings.locale ?? ''"
           @change="save({ locale: ($event.target as HTMLSelectElement).value || null })"
         >
@@ -820,18 +819,18 @@ onMounted(() => {
           <option v-for="locale in LOCALES" :key="locale" :value="locale">{{ LOCALE_NAMES[locale] }}</option>
         </select>
       </label>
-      <label class="flex items-center gap-3 px-4 py-3">
-        <span class="flex-1 font-medium">{{ t("settings.logLevel") }}</span>
+      <label class="row">
+        <span class="min-w-0 flex-1 font-medium">{{ t("settings.logLevel") }}</span>
         <select
-          class="field w-44 px-2"
+          class="field w-40 shrink-0 px-2 sm:w-48"
           :value="store.settings.logLevel"
           @change="save({ logLevel: ($event.target as HTMLSelectElement).value })"
         >
           <option v-for="level in LOG_LEVELS" :key="level" :value="level">{{ level }}</option>
         </select>
       </label>
-      <div class="flex items-center gap-3 px-4 py-3">
-        <span class="flex-1 font-medium">{{ t("settings.version") }}</span>
+      <div class="row">
+        <span class="min-w-0 flex-1 font-medium">{{ t("settings.version") }}</span>
         <span class="selectable font-mono text-sm text-muted">{{ store.snapshot.version }}</span>
       </div>
     </div>
