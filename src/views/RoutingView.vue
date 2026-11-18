@@ -55,30 +55,29 @@ function move(index: number, by: number) {
 </script>
 
 <template>
-  <div v-if="store.settings" class="px-4 py-5">
-    <h1 class="mb-4 text-xl font-semibold">{{ t("routing.title") }}</h1>
+  <div v-if="store.settings" class="page">
+    <header class="page-header">
+      <h1 class="page-title">{{ t("routing.title") }}</h1>
+    </header>
 
     <div class="section-title">{{ t("routing.preset") }}</div>
-    <div class="card mb-6 divide-y divide-line overflow-hidden" role="radiogroup" :aria-label="t('routing.preset')">
+    <div class="card group-card overflow-hidden" role="radiogroup" :aria-label="t('routing.preset')">
       <button
         v-for="preset in PRESETS"
         :key="preset"
         role="radio"
         :aria-checked="store.settings.routingPreset === preset"
-        class="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-raised"
+        class="row-button"
         @click="store.saveSettings({ routingPreset: preset })"
       >
-        <span
-          class="flex size-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors duration-200"
-          :class="store.settings.routingPreset === preset ? 'border-accent bg-accent text-accent-ink' : 'border-line'"
-        >
+        <span class="radio-mark" :class="{ 'is-on': store.settings.routingPreset === preset }">
           <Transition name="pop">
             <AppIcon v-if="store.settings.routingPreset === preset" name="check" :size="12" />
           </Transition>
         </span>
-        <span>
-          <span class="block font-medium">{{ t(`routing.${preset}`) }}</span>
-          <span class="block text-xs text-muted">{{ t(`routing.${preset}Hint`) }}</span>
+        <span class="min-w-0">
+          <span class="row-label">{{ t(`routing.${preset}`) }}</span>
+          <span class="row-hint">{{ t(`routing.${preset}Hint`) }}</span>
         </span>
       </button>
     </div>
@@ -86,58 +85,64 @@ function move(index: number, by: number) {
     <CorpNetworkCard v-if="store.snapshot?.corpAvailable" />
 
     <div class="section-title">{{ t("routing.rules") }}</div>
-    <div class="card mb-3 p-3">
-      <div class="flex gap-2">
-        <select v-model="kind" class="field w-24 shrink-0 px-2" :aria-label="t('routing.domain')">
+    <div class="card overflow-hidden">
+      <!-- A new rule: what, which, where to. -->
+      <div class="flex flex-wrap gap-2 p-3">
+        <select v-model="kind" class="field w-24 shrink-0 px-2" :aria-label="t('routing.kind')">
           <option value="domain">{{ t("routing.domain") }}</option>
           <option value="ip">{{ t("routing.ip") }}</option>
         </select>
         <input
           v-model="value"
-          class="field selectable min-w-0 font-mono text-xs"
+          class="field selectable min-w-0 flex-1 basis-40 font-mono text-xs"
           :placeholder="t(kind === 'domain' ? 'routing.valuePlaceholderDomain' : 'routing.valuePlaceholderIp')"
+          :aria-label="t(kind === 'domain' ? 'routing.valuePlaceholderDomain' : 'routing.valuePlaceholderIp')"
           spellcheck="false"
           autocapitalize="off"
           @keydown.enter="add"
         />
+        <div class="flex min-w-0 grow gap-2 sm:grow-0">
+          <select v-model="action" class="field min-w-0 flex-1 px-2 sm:w-32" :aria-label="t('routing.action')">
+            <option v-for="item in ACTIONS" :key="item" :value="item">{{ t(`routing.${item}`) }}</option>
+          </select>
+          <button class="btn btn-primary shrink-0" :disabled="!value.trim()" :title="t('routing.addRule')" @click="add">
+            <AppIcon name="plus" :size="18" /><span class="sm:hidden">{{ t("routing.addRule") }}</span><span class="max-sm:hidden">{{ t("common.add") }}</span>
+          </button>
+        </div>
       </div>
-      <div class="mt-2 flex gap-2">
-        <select v-model="action" class="field min-w-0 flex-1 px-2" :aria-label="t('routing.preset')">
-          <option v-for="item in ACTIONS" :key="item" :value="item">{{ t(`routing.${item}`) }}</option>
-        </select>
-        <button class="btn btn-primary shrink-0" :disabled="!value.trim()" @click="add">
-          <AppIcon name="plus" :size="18" />{{ t("routing.addRule") }}
-        </button>
-      </div>
-    </div>
 
-    <p v-if="rules.length === 0" class="px-1 text-sm text-muted">{{ t("routing.noRules") }}</p>
-    <template v-else>
-      <TransitionGroup tag="ul" name="list" class="card relative divide-y divide-line overflow-hidden">
-        <li v-for="(rule, index) in rules" :key="rule.id" class="flex items-center gap-2 bg-surface py-2 pr-1 pl-3">
+      <p v-if="rules.length === 0" class="border-t border-line px-4 py-3 text-sm text-muted">{{ t("routing.noRules") }}</p>
+      <TransitionGroup v-else tag="ul" name="list" class="relative divide-y divide-line border-t border-line">
+        <li v-for="(rule, index) in rules" :key="rule.id" class="group flex items-center gap-3 bg-surface py-2 pr-1 pl-4">
           <ToggleSwitch
             :model-value="rule.enabled"
             :label="rule.value"
             @update:model-value="(enabled: boolean) => toggle(rule, enabled)"
           />
-          <div class="min-w-0 flex-1 transition-opacity duration-200" :class="rule.enabled ? '' : 'opacity-50'">
-            <div class="selectable truncate font-mono text-xs">{{ rule.value }}</div>
-            <span class="mt-1 inline-block rounded-md px-1.5 py-0.5 text-[11px]" :class="ACTION_CLASS[rule.action]">
-              {{ t(`routing.${rule.action}`) }}
-            </span>
+          <div class="flex min-w-0 flex-1 items-center gap-2 transition-opacity duration-200" :class="rule.enabled ? '' : 'opacity-50'">
+            <span class="selectable min-w-0 truncate font-mono text-xs">{{ rule.value }}</span>
+            <span class="tag shrink-0" :class="ACTION_CLASS[rule.action]">{{ t(`routing.${rule.action}`) }}</span>
           </div>
-          <button class="icon-btn" :disabled="index === 0" aria-label="↑" @click="move(index, -1)">
-            <AppIcon name="up" :size="16" />
-          </button>
-          <button class="icon-btn" :disabled="index === rules.length - 1" aria-label="↓" @click="move(index, 1)">
-            <AppIcon name="down" :size="16" />
-          </button>
-          <button class="icon-btn" :aria-label="t('common.delete')" @click="remove(rule)">
-            <AppIcon name="trash" :size="16" />
-          </button>
+          <div class="row-actions flex shrink-0 items-center">
+            <button class="icon-btn" :disabled="index === 0" :aria-label="t('routing.moveUp')" :title="t('routing.moveUp')" @click="move(index, -1)">
+              <AppIcon name="up" :size="16" />
+            </button>
+            <button
+              class="icon-btn"
+              :disabled="index === rules.length - 1"
+              :aria-label="t('routing.moveDown')"
+              :title="t('routing.moveDown')"
+              @click="move(index, 1)"
+            >
+              <AppIcon name="down" :size="16" />
+            </button>
+            <button class="icon-btn" :aria-label="t('common.delete')" :title="t('common.delete')" @click="remove(rule)">
+              <AppIcon name="trash" :size="16" />
+            </button>
+          </div>
         </li>
       </TransitionGroup>
-      <p class="mt-2 px-1 text-xs text-muted">{{ t("routing.rulesHint") }}</p>
-    </template>
+    </div>
+    <p v-if="rules.length" class="mt-2 px-1 text-xs text-muted">{{ t("routing.rulesHint") }}</p>
   </div>
 </template>

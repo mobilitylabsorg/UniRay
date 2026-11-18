@@ -128,6 +128,10 @@ const en: typeof ru = {
     proxy: "Through VPN",
     direct: "Directly",
     block: "Block",
+    kind: "Rule type",
+    action: "Action",
+    moveUp: "Move up",
+    moveDown: "Move down",
   },
   corp: {
     title: "Corporate network",
@@ -153,6 +157,7 @@ const en: typeof ru = {
     noDomains: "The server gave DNS ({dns}) but not the company's domains. Add them under your own domains, for example example.com: names in them resolve through the corporate DNS, the rest as usual",
     state: { connecting: "connecting", up: "connected", down: "failed" },
     authFailed: "The server did not accept the username or password",
+    options: "Connection options",
   },
   logs: {
     title: "Logs",

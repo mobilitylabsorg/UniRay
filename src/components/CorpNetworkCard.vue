@@ -122,6 +122,26 @@ const missingDomains = computed(() => {
 });
 
 const STATE_CLASS = { connecting: "bg-raised text-muted", up: "bg-accent-soft text-accent", down: "bg-danger-soft text-danger" } as const;
+
+/** The options stay folded until something there needs attention. */
+const needsAttention = computed(() => {
+  const saved = corp.value;
+  if (!saved) return false;
+  const noPassword = saved.info?.needsCredentials === true && !saved.hasPassword;
+  return noPassword || status.value?.state === "down" || missingDomains.value !== null;
+});
+const expanded = ref(needsAttention.value);
+watch(needsAttention, (attention) => {
+  if (attention) expanded.value = true;
+});
+
+/** What the options say in short, next to their heading. */
+const viaLabel = computed(() => {
+  const saved = corp.value?.via;
+  if (!saved || saved.kind === "direct") return t("corp.viaDirect");
+  if (saved.kind === "main") return t("corp.viaMain");
+  return store.servers.find((server) => server.id === saved.id)?.name ?? t("corp.viaMain");
+});
 </script>
 
 <template>
@@ -135,92 +155,111 @@ const STATE_CLASS = { connecting: "bg-raised text-muted", up: "bg-accent-soft te
     @change="pick"
   />
 
-  <div v-if="!corp" class="card mb-6 p-4">
+  <div v-if="!corp" class="card mb-7 p-4">
     <p class="mb-3 text-sm text-muted">{{ t("corp.intro") }}</p>
-    <button class="btn btn-primary" :disabled="importing" @click="fileInput?.click()">
+    <button class="btn btn-quiet" :disabled="importing" @click="fileInput?.click()">
       <AppIcon name="file" :size="18" />{{ t("corp.import") }}
     </button>
     <p class="mt-2 text-xs text-muted">{{ t("corp.importHint") }}</p>
   </div>
 
-  <div v-else class="card mb-6 divide-y divide-line">
-    <div class="flex items-center gap-3 px-4 py-3">
+  <div v-else class="card group-card overflow-hidden">
+    <div class="row pr-2">
       <ToggleSwitch :model-value="corp.enabled" :label="corp.name" @update:model-value="(on: boolean) => save(on)" />
       <div class="min-w-0 flex-1">
         <div class="truncate font-medium">{{ corp.name }}</div>
-        <div v-if="corp.info" class="selectable truncate font-mono text-xs text-muted">
-          {{ corp.info.host }}:{{ corp.info.port }} · {{ corp.info.proto.toUpperCase() }}
+        <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+          <span v-if="corp.info" class="selectable truncate font-mono">
+            {{ corp.info.host }}:{{ corp.info.port }} · {{ corp.info.proto.toUpperCase() }}
+          </span>
+          <span v-if="status" class="tag shrink-0" :class="STATE_CLASS[status.state]">
+            {{ t(`corp.state.${status.state}`) }}<template v-if="status.state === 'up' && status.address"> · {{ status.address }}</template>
+          </span>
         </div>
-        <span v-if="status" class="mt-1 inline-block rounded-md px-1.5 py-0.5 text-[11px]" :class="STATE_CLASS[status.state]">
-          {{ t(`corp.state.${status.state}`) }}<template v-if="status.state === 'up' && status.address"> · {{ status.address }}</template>
-        </span>
       </div>
       <button class="icon-btn" :aria-label="t('corp.replace')" :title="t('corp.replace')" @click="fileInput?.click()">
         <AppIcon name="refresh" :size="16" />
       </button>
-      <button class="icon-btn" :aria-label="t('common.delete')" @click="remove">
+      <button class="icon-btn" :aria-label="t('common.delete')" :title="t('common.delete')" @click="remove">
         <AppIcon name="trash" :size="16" />
       </button>
     </div>
-    <p v-if="status?.state === 'down' && status.error" class="selectable px-4 py-2 text-xs text-danger">
+    <p v-if="status?.state === 'down' && status.error" class="selectable bg-danger-soft px-4 py-2 text-xs text-danger">
       {{ status.error.includes("AUTH_FAILED") ? t("corp.authFailed") : status.error }}
     </p>
 
-    <div v-if="corp.info?.needsCredentials" class="grid gap-2 px-4 py-3">
-      <input v-model="username" class="field" :placeholder="t('corp.username')" autocomplete="username" autocapitalize="off" spellcheck="false" />
-      <input
-        v-model="password"
-        class="field"
-        type="password"
-        :placeholder="corp.hasPassword ? t('corp.passwordSaved') : t('corp.password')"
-        autocomplete="current-password"
-      />
-    </div>
+    <button class="row-button py-2.5" :aria-expanded="expanded" @click="expanded = !expanded">
+      <span class="flex-1 text-sm font-medium">{{ t("corp.options") }}</span>
+      <span class="min-w-0 truncate text-xs text-muted">{{ viaLabel }}</span>
+      <AppIcon name="chevron" :size="16" class="shrink-0 text-muted transition-transform duration-200" :class="expanded ? 'rotate-90' : ''" />
+    </button>
 
-    <label class="block px-4 py-3">
-      <span class="mb-1 block text-sm font-medium">{{ t("corp.via") }}</span>
-      <select v-model="via" class="field px-2">
-        <option value="direct">{{ t("corp.viaDirect") }}</option>
-        <option value="main">{{ t("corp.viaMain") }}</option>
-        <option v-for="server in fronts" :key="server.id" :value="`server:${server.id}`">{{ server.name }}</option>
-      </select>
-      <span class="mt-1 block text-xs text-muted">{{ t("corp.viaHint") }}</span>
-    </label>
+    <template v-if="expanded">
+      <div v-if="corp.info?.needsCredentials" class="grid gap-2 px-4 py-3 sm:grid-cols-2">
+        <input
+          v-model="username"
+          class="field"
+          :placeholder="t('corp.username')"
+          :aria-label="t('corp.username')"
+          autocomplete="username"
+          autocapitalize="off"
+          spellcheck="false"
+        />
+        <input
+          v-model="password"
+          class="field"
+          type="password"
+          :placeholder="corp.hasPassword ? t('corp.passwordSaved') : t('corp.password')"
+          :aria-label="t('corp.password')"
+          autocomplete="current-password"
+        />
+      </div>
 
-    <div class="px-4 py-3">
-      <div class="flex items-center gap-3">
-        <div class="min-w-0 flex-1">
-          <div class="text-sm font-medium">{{ t("corp.usePushed") }}</div>
-          <div class="text-xs text-muted">{{ t("corp.usePushedHint") }}</div>
+      <label class="block px-4 py-3">
+        <span class="mb-1.5 block text-sm font-medium">{{ t("corp.via") }}</span>
+        <select v-model="via" class="field px-2">
+          <option value="direct">{{ t("corp.viaDirect") }}</option>
+          <option value="main">{{ t("corp.viaMain") }}</option>
+          <option v-for="server in fronts" :key="server.id" :value="`server:${server.id}`">{{ server.name }}</option>
+        </select>
+        <span class="row-hint mt-1.5">{{ t("corp.viaHint") }}</span>
+      </label>
+
+      <div class="px-4 py-3">
+        <div class="flex items-center gap-3">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium">{{ t("corp.usePushed") }}</div>
+            <div class="row-hint">{{ t("corp.usePushedHint") }}</div>
+          </div>
+          <ToggleSwitch v-model="usePushed" :label="t('corp.usePushed')" />
         </div>
-        <ToggleSwitch v-model="usePushed" :label="t('corp.usePushed')" />
+        <div v-if="usePushed && learned.length" class="mt-2 flex flex-wrap gap-1">
+          <span v-for="item in learned" :key="item" class="selectable tag bg-raised font-mono">{{ item }}</span>
+        </div>
+        <p v-else-if="usePushed" class="mt-2 text-xs text-muted">{{ t("corp.nothingPushed") }}</p>
       </div>
-      <div v-if="usePushed && learned.length" class="mt-2 flex flex-wrap gap-1">
-        <span v-for="item in learned" :key="item" class="selectable rounded-md bg-raised px-1.5 py-0.5 font-mono text-[11px]">{{ item }}</span>
-      </div>
-      <p v-else-if="usePushed" class="mt-2 text-xs text-muted">{{ t("corp.nothingPushed") }}</p>
-    </div>
 
-    <div class="grid gap-3 px-4 py-3">
-      <label>
-        <span class="mb-1 block text-sm font-medium">{{ t("corp.routes") }}</span>
-        <textarea v-model="routes" rows="2" class="field selectable font-mono text-xs" placeholder="192.168.254.0/24" spellcheck="false" />
-      </label>
-      <p v-if="missingDomains" class="rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">
-        {{ t("corp.noDomains", { dns: missingDomains }) }}
-      </p>
-      <label>
-        <span class="mb-1 block text-sm font-medium">{{ t("corp.domains") }}</span>
-        <textarea v-model="domains" rows="2" class="field selectable font-mono text-xs" placeholder="corp.example" spellcheck="false" />
-      </label>
-      <label>
-        <span class="mb-1 block text-sm font-medium">{{ t("corp.dns") }}</span>
-        <textarea v-model="dns" rows="1" class="field selectable font-mono text-xs" placeholder="10.0.0.53" spellcheck="false" />
-        <span class="mt-1 block text-xs text-muted">{{ t("corp.dnsHint") }}</span>
-      </label>
-      <button class="btn btn-primary justify-self-start" :disabled="!dirty || saving" @click="save()">
-        <AppIcon name="check" :size="18" />{{ t("common.save") }}
-      </button>
-    </div>
+      <div class="grid gap-3 px-4 py-3">
+        <label>
+          <span class="mb-1.5 block text-sm font-medium">{{ t("corp.routes") }}</span>
+          <textarea v-model="routes" rows="2" class="field selectable h-auto py-2 font-mono text-xs" placeholder="192.168.254.0/24" spellcheck="false" />
+        </label>
+        <p v-if="missingDomains" class="rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">
+          {{ t("corp.noDomains", { dns: missingDomains }) }}
+        </p>
+        <label>
+          <span class="mb-1.5 block text-sm font-medium">{{ t("corp.domains") }}</span>
+          <textarea v-model="domains" rows="2" class="field selectable h-auto py-2 font-mono text-xs" placeholder="corp.example" spellcheck="false" />
+        </label>
+        <label>
+          <span class="mb-1.5 block text-sm font-medium">{{ t("corp.dns") }}</span>
+          <textarea v-model="dns" rows="1" class="field selectable h-auto py-2 font-mono text-xs" placeholder="10.0.0.53" spellcheck="false" />
+          <span class="row-hint mt-1.5">{{ t("corp.dnsHint") }}</span>
+        </label>
+        <button class="btn btn-primary justify-self-start" :disabled="!dirty || saving" @click="save()">
+          <AppIcon name="check" :size="18" />{{ t("common.save") }}
+        </button>
+      </div>
+    </template>
   </div>
 </template>
