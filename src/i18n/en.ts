@@ -2,6 +2,7 @@ import type ru from "./ru";
 
 const en: typeof ru = {
   nav: {
+    label: "Sections",
     home: "Home",
     servers: "Servers",
     routing: "Routing",

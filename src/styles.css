@@ -14,7 +14,9 @@
   --color-danger: #c93a3a;
   --color-danger-soft: #fbe7e7;
   --color-warn: #b46a00;
+  --color-warn-soft: #fbf0dc;
   --color-good: #0f8f6f;
+  --color-good-soft: #dff3ec;
 
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
   --font-mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
@@ -34,7 +36,9 @@
     --color-danger: #f07070;
     --color-danger-soft: #3a1c1c;
     --color-warn: #e5a23c;
+    --color-warn-soft: #3a2c14;
     --color-good: #2bc79c;
+    --color-good-soft: #12332a;
   }
 }
 
@@ -76,6 +80,14 @@ button:disabled {
 :focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
+}
+
+/* The ring is for the keyboard. Some engines (WebKitGTK among them) keep
+   :focus-visible on a link or button after a click, which leaves a ring stuck
+   on the tab just clicked; while the pointer is in use (see
+   lib/inputModality.ts) only text fields show where the focus is. */
+html[data-pointer] :focus-visible:not(input, textarea, select) {
+  outline: none;
 }
 
 /* Android TV: read from across the room and steered with a D-pad. Every size
@@ -120,9 +132,94 @@ html.tv {
     @apply h-10 w-full rounded-xl border border-line bg-surface px-3 text-sm text-ink transition-colors outline-none placeholder:text-muted focus:border-accent;
   }
 
+  .btn-sm {
+    @apply h-8 rounded-lg px-3 text-xs;
+  }
+
+  /* A button that is only text until hovered: secondary actions. */
+  .btn-ghost {
+    @apply text-muted hover:bg-raised hover:text-ink;
+  }
+
   .section-title {
     @apply px-1 pb-2 text-xs font-semibold tracking-wide text-muted uppercase;
   }
+
+  /* --- Page layout: one column, centered; wider screens get more air. --- */
+
+  .page {
+    @apply mx-auto w-full max-w-2xl px-4 pt-5 pb-8 md:px-8 md:pt-8;
+  }
+
+  .page-header {
+    @apply mb-5 flex min-h-10 items-center gap-2;
+  }
+
+  .page-title {
+    @apply min-w-0 flex-1 truncate text-xl font-semibold tracking-tight md:text-2xl;
+  }
+
+  /* A group of rows: settings, list items. */
+  .group-card {
+    @apply mb-7 divide-y divide-line;
+  }
+
+  /* One row of a group: a label with its hint, the control on the right. */
+  .row {
+    @apply flex items-center gap-3 px-4 py-3;
+  }
+
+  .row-label {
+    @apply block font-medium;
+  }
+
+  .row-hint {
+    @apply block text-xs leading-snug text-muted;
+  }
+
+  /* A row that is a button (opens something, picks something). */
+  .row-button {
+    @apply flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-raised;
+  }
+
+  /* A round radio mark for lists of choices. */
+  .radio-mark {
+    @apply flex size-5 shrink-0 items-center justify-center rounded-full border-2 border-line transition-colors duration-200;
+  }
+
+  .radio-mark.is-on {
+    @apply border-accent bg-accent text-accent-ink;
+  }
+
+  /* A small rounded label: a state, an action, a learned value. */
+  .tag {
+    @apply inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] leading-4;
+  }
+}
+
+/* Row actions (share, delete) that would repeat on every row of a long list:
+   with a mouse they show for the row under it or holding the focus; touch
+   screens and TVs always show them. */
+@media (hover: hover) and (pointer: fine) {
+  .row-actions {
+    opacity: 0;
+    transition: opacity 150ms var(--ease-out);
+  }
+  .group:hover .row-actions,
+  .group:focus-within .row-actions {
+    opacity: 1;
+  }
+}
+.tv .row-actions {
+  opacity: 1;
+}
+
+/* Horizontal chip rows scroll without a bar. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* --- Motion ----------------------------------------------------------------

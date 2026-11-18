@@ -1,5 +1,6 @@
 export default {
   nav: {
+    label: "Разделы",
     home: "Главная",
     servers: "Серверы",
     routing: "Маршруты",

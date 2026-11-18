@@ -5,6 +5,7 @@ import BottomNav from "./components/BottomNav.vue";
 import ToastStack from "./components/ToastStack.vue";
 import { events, toCmdError } from "./lib/api";
 import { installBack } from "./lib/backStack";
+import { installInputModality } from "./lib/inputModality";
 import { focusFirst, installSpatialNav } from "./lib/spatialNav";
 import { followSystemColors } from "./lib/theme";
 import { router } from "./router";
@@ -13,6 +14,7 @@ import { useAppStore } from "./stores/app";
 const store = useAppStore();
 
 installBack(router);
+installInputModality();
 
 // On a TV: the 10-foot layout (the `tv` class on <html>, see styles.css) and
 // D-pad navigation, with the focus on each page's main control.
@@ -63,13 +65,16 @@ onMounted(async () => {
 </script>
 
 <template>
-  <!-- On a TV the tabs are a rail on the left, the content wider; the margins
-       keep everything inside a TV's overscan. -->
+  <!-- A phone or a narrow window: the tabs at the bottom. A wide desktop
+       window: a sidebar on the left, the page centered in the rest. A TV:
+       the tabs are a rail on the left, the margins keep everything inside
+       its overscan. -->
   <div
-    class="mx-auto flex h-full"
-    :class="store.isTv ? 'max-w-6xl gap-6 px-[4vw] py-[4vh]' : 'max-w-2xl flex-col'"
+    class="flex h-full"
+    :class="store.isTv ? 'mx-auto max-w-6xl gap-6 px-[4vw] py-[4vh]' : 'flex-col md:flex-row'"
   >
-    <BottomNav v-if="store.isTv" vertical />
+    <BottomNav v-if="store.isTv" variant="rail" />
+    <BottomNav v-else variant="sidebar" class="max-md:hidden" />
     <main class="min-h-0 flex-1 overflow-y-auto pt-[env(safe-area-inset-top)]">
       <RouterView v-if="store.snapshot" v-slot="{ Component }">
         <Transition name="page" mode="out-in" @after-enter="focusPage">
@@ -77,7 +82,7 @@ onMounted(async () => {
         </Transition>
       </RouterView>
     </main>
-    <BottomNav v-if="!store.isTv" />
+    <BottomNav v-if="!store.isTv" class="md:hidden" />
     <ToastStack />
   </div>
 </template>

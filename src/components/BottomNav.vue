@@ -1,10 +1,17 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 
+import { useAppStore } from "../stores/app";
 import AppIcon, { type IconName } from "./AppIcon.vue";
 
-defineProps<{ vertical?: boolean }>();
+/**
+ * bar: the tab bar at the bottom of a phone or a narrow window.
+ * sidebar: the column on the left of a wide desktop window.
+ * rail: the TV's tabs on the left, one per row, in the 10-foot layout.
+ */
+withDefaults(defineProps<{ variant?: "bar" | "sidebar" | "rail" }>(), { variant: "bar" });
 const { t } = useI18n();
+const store = useAppStore();
 
 const TABS: { to: string; icon: IconName; label: string }[] = [
   { to: "/", icon: "power", label: "nav.home" },
@@ -16,24 +23,43 @@ const TABS: { to: string; icon: IconName; label: string }[] = [
 </script>
 
 <template>
-  <!-- vertical: the TV's rail on the left, one tab per row. -->
   <nav
-    :data-nav-rail="vertical || undefined"
-    class="flex shrink-0 bg-surface"
-    :class="vertical ? 'w-52 flex-col gap-1 self-start rounded-3xl p-2' : 'border-t border-line pb-[env(safe-area-inset-bottom)]'"
+    :data-nav-rail="variant === 'rail' || undefined"
+    :aria-label="t('nav.label')"
+    class="flex shrink-0"
+    :class="{
+      'border-t border-line bg-surface pb-[env(safe-area-inset-bottom)]': variant === 'bar',
+      'w-56 flex-col gap-0.5 border-r border-line px-3 pt-[max(1.25rem,env(safe-area-inset-top))] pb-4': variant === 'sidebar',
+      'w-52 flex-col gap-1 self-start rounded-3xl bg-surface p-2': variant === 'rail',
+    }"
   >
+    <div v-if="variant === 'sidebar'" class="mb-4 px-3 text-sm font-semibold tracking-tight">UniRay</div>
     <RouterLink
       v-for="tab in TABS"
       :key="tab.to"
       :to="tab.to"
       class="group flex items-center text-muted transition-colors duration-200 hover:text-ink"
-      :class="vertical ? 'gap-3 rounded-2xl px-3 py-2.5 text-sm' : 'flex-1 flex-col gap-1 py-2 text-[11px]'"
+      :class="
+        variant === 'bar'
+          ? 'flex-1 flex-col gap-0.5 rounded-xl py-2 text-[11px] font-medium'
+          : variant === 'sidebar'
+            ? 'gap-3 rounded-xl px-3 py-2 text-sm font-medium hover:bg-raised [&.is-active]:bg-accent-soft [&.is-active]:hover:bg-accent-soft'
+            : 'gap-3 rounded-2xl px-3 py-2.5 text-sm'
+      "
       exact-active-class="is-active !text-accent"
     >
       <span
-        class="flex h-7 w-12 items-center justify-center rounded-full transition-[background-color,transform] duration-300 ease-[var(--ease-out)] group-active:scale-90 group-[.is-active]:bg-accent-soft"
+        class="relative flex items-center justify-center transition-[background-color,transform] duration-300 ease-[var(--ease-out)] group-active:scale-90"
+        :class="variant === 'sidebar' ? '' : 'h-7 w-12 rounded-full group-[.is-active]:bg-accent-soft'"
       >
-        <AppIcon :name="tab.icon" class="transition-transform duration-300 group-[.is-active]:scale-110" />
+        <AppIcon :name="tab.icon" :size="variant === 'sidebar' ? 18 : 20" />
+        <!-- The home tab says whether the VPN is on from every page. -->
+        <span
+          v-if="tab.to === '/' && store.status === 'connected'"
+          class="absolute size-1.5 rounded-full bg-accent"
+          :class="variant === 'sidebar' ? '-top-0.5 -right-1' : 'top-0.5 right-3'"
+          aria-hidden="true"
+        />
       </span>
       {{ t(tab.label) }}
     </RouterLink>
