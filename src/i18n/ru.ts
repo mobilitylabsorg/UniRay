@@ -48,6 +48,8 @@ export default {
     justNow: "только что",
     minutesAgo: "{n} мин назад",
     latency: "{ms} мс",
+    exitVia: "через {name}",
+    exitIp: "IP {ip}",
   },
   servers: {
     title: "Серверы",

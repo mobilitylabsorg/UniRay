@@ -50,6 +50,8 @@ const en: typeof ru = {
     justNow: "just now",
     minutesAgo: "{n} min ago",
     latency: "{ms} ms",
+    exitVia: "via {name}",
+    exitIp: "IP {ip}",
   },
   servers: {
     title: "Servers",

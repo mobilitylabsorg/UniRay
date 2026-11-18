@@ -6,7 +6,7 @@ import AppIcon from "../components/AppIcon.vue";
 import ServiceCheckModal from "../components/ServiceCheckModal.vue";
 import SpeedTestModal from "../components/SpeedTestModal.vue";
 import { api, type Mode } from "../lib/api";
-import { formatBytes, formatDuration, formatSpeed } from "../lib/format";
+import { formatBytes, formatDuration, formatSpeed, serverMeta } from "../lib/format";
 import { flagOf, withFlag } from "../lib/flag";
 import { useAppStore } from "../stores/app";
 
@@ -37,13 +37,20 @@ const server = computed(() => {
 const error = computed(() => (store.connection?.error ? store.describe(store.connection.error) : null));
 
 const checking = ref(false);
-/** The connected server, flagged with the exit country when it has no flag. */
-const exitName = computed(() => {
-  // A balancer group's pick, else the connected server itself.
-  const name = check.value?.server ?? server.value?.name;
-  return name ? withFlag(name, check.value?.country) : flagOf(check.value?.country);
-});
 const check = computed(() => store.connection?.check ?? null);
+/**
+ * Where the traffic leaves: the server a balancer group picked when that is
+ * not the one shown above, else the exit address with its country's flag.
+ */
+const exit = computed(() => {
+  const result = check.value;
+  if (!result) return "";
+  if (result.server && result.server !== server.value?.name) {
+    return t("home.exitVia", { name: withFlag(result.server, result.country) });
+  }
+  if (result.ip) return `${flagOf(result.country)} ${t("home.exitIp", { ip: result.ip })}`.trim();
+  return flagOf(result.country);
+});
 const checkedAgo = computed(() => {
   if (!check.value) return "";
   const minutes = Math.floor((now.value / 1000 - check.value.at) / 60);
@@ -57,6 +64,11 @@ async function runCheck() {
   checking.value = false;
 }
 
+const corp = computed(() => (connected.value ? (store.connection?.corp ?? null) : null));
+const CORP_DOT = { connecting: "bg-muted animate-pulse", up: "bg-good", down: "bg-danger" } as const;
+
+const showMode = computed(() => store.tunSupported && store.settings !== null);
+
 const MODES: { value: Mode; label: string }[] = [
   { value: "proxy", label: "home.modeProxy" },
   { value: "tun", label: "home.modeTun" },
@@ -64,13 +76,17 @@ const MODES: { value: Mode; label: string }[] = [
 </script>
 
 <template>
-  <div class="flex min-h-full flex-col items-center gap-6 px-5 py-8">
-    <div class="flex flex-1 flex-col items-center justify-center gap-6">
+  <!-- One column on a phone: the switch, then the details under it. Two on a
+       wide window: the switch on the left, the details on the right. -->
+  <div
+    class="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-8 px-4 py-6 md:px-8 lg:flex-row lg:items-center lg:gap-14 lg:py-10"
+  >
+    <section class="flex flex-1 flex-col items-center justify-center gap-5 lg:basis-0">
       <button
-        class="relative flex size-44 items-center justify-center rounded-full border-4 transition-[color,background-color,border-color,box-shadow,transform,opacity] duration-300 active:scale-95 disabled:opacity-60 disabled:active:scale-100"
+        class="relative flex size-36 items-center justify-center rounded-full border-2 transition-[color,background-color,border-color,box-shadow,transform,opacity] duration-300 active:scale-95 disabled:opacity-60 disabled:active:scale-100 lg:size-44 [@media(max-height:760px)]:size-32"
         :class="
           connected
-            ? 'border-accent bg-accent text-accent-ink shadow-[0_0_60px_-10px_var(--color-accent)]'
+            ? 'border-accent bg-accent text-accent-ink shadow-[0_8px_40px_-12px_var(--color-accent)]'
             : 'border-line bg-surface text-muted hover:border-accent hover:text-accent'
         "
         :disabled="busy || !server"
@@ -78,166 +94,156 @@ const MODES: { value: Mode; label: string }[] = [
         data-autofocus
         @click="store.toggleConnection()"
       >
-        <span v-if="connected" class="halo pointer-events-none absolute inset-[-4px] rounded-full border-2 border-accent" />
+        <span v-if="connected" class="halo pointer-events-none absolute inset-[-2px] rounded-full border border-accent" />
         <Transition name="fade">
-          <span v-if="busy" class="absolute inset-[-4px] animate-spin rounded-full border-4 border-transparent border-t-accent" />
+          <span v-if="busy" class="absolute inset-[-2px] animate-spin rounded-full border-2 border-transparent border-t-accent" />
         </Transition>
-        <AppIcon name="power" :size="64" class="transition-transform duration-300" :class="connected ? 'scale-110' : ''" />
+        <AppIcon name="power" :size="56" class="transition-transform duration-300" :class="connected ? 'scale-105' : ''" />
       </button>
 
-      <div class="text-center">
+      <div class="text-center" aria-live="polite">
         <Transition name="fade" mode="out-in">
-          <div :key="store.status" class="text-xl font-semibold" :class="connected ? 'text-accent' : ''">
+          <div :key="store.status" class="text-xl font-semibold tracking-tight" :class="connected ? 'text-accent' : ''">
             {{ t(`status.${store.status}`) }}
           </div>
         </Transition>
-        <div class="mt-1 h-5 font-mono text-sm text-muted tabular-nums">
+        <div class="mt-0.5 h-5 text-sm text-muted tabular-nums">
           <Transition name="fade">
             <span v-if="uptime">{{ uptime }}</span>
           </Transition>
         </div>
       </div>
 
+      <!-- The server: what the switch connects to, and the way to change it. -->
+      <RouterLink
+        to="/servers"
+        class="flex w-full max-w-sm items-center gap-3 rounded-2xl border border-line bg-surface px-4 py-3 transition-colors hover:border-accent"
+      >
+        <div v-if="server" class="min-w-0 flex-1">
+          <div class="truncate font-medium">{{ server.name }}</div>
+          <div class="truncate text-xs text-muted">{{ serverMeta(server) }}</div>
+        </div>
+        <div v-else class="min-w-0 flex-1">
+          <div class="font-medium">{{ t("home.noServer") }}</div>
+          <div class="text-xs text-muted">{{ t("home.chooseServer") }}</div>
+        </div>
+        <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
+      </RouterLink>
+
       <Transition name="pop">
         <p
           v-if="error"
-          class="selectable flex max-w-sm items-start gap-2 rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger"
+          class="selectable flex w-full max-w-sm items-start gap-2 rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger"
           role="alert"
         >
           <AppIcon name="alert" :size="18" class="mt-0.5 shrink-0" />
           <span class="min-w-0 break-words">{{ error }}</span>
         </p>
       </Transition>
-    </div>
+    </section>
 
-    <div class="rise flex w-full max-w-sm flex-col gap-3">
-      <RouterLink to="/servers" class="card flex items-center gap-3 px-4 py-3 transition-colors hover:border-accent">
-        <AppIcon name="server" class="shrink-0 text-muted" />
-        <div v-if="server" class="min-w-0 flex-1">
-          <div class="truncate font-medium">{{ server.name }}</div>
-          <div class="truncate text-xs text-muted">
-            {{ server.protocol }} · {{ server.transport }} · {{ server.security }}
+    <section class="rise mx-auto flex w-full max-w-sm flex-col gap-3 lg:mx-0 lg:max-w-md lg:flex-1 lg:basis-0">
+      <!-- The details of the connection and the mode, in one group. -->
+      <div class="card divide-y divide-line overflow-hidden">
+        <div class="grid grid-cols-2 divide-x divide-line transition-opacity duration-300" :class="connected ? '' : 'opacity-60'">
+          <div class="px-4 py-3">
+            <div class="flex items-center gap-1 text-xs text-muted">
+              <AppIcon name="down" :size="14" />{{ t("home.download") }}
+            </div>
+            <div class="mt-0.5 text-lg font-semibold tracking-tight tabular-nums">{{ formatSpeed(store.traffic.downSpeed) }}</div>
+            <div class="text-xs text-muted tabular-nums">{{ t("home.totalDown") }} {{ formatBytes(store.traffic.down) }}</div>
+          </div>
+          <div class="px-4 py-3">
+            <div class="flex items-center gap-1 text-xs text-muted">
+              <AppIcon name="up" :size="14" />{{ t("home.upload") }}
+            </div>
+            <div class="mt-0.5 text-lg font-semibold tracking-tight tabular-nums">{{ formatSpeed(store.traffic.upSpeed) }}</div>
+            <div class="text-xs text-muted tabular-nums">{{ t("home.totalUp") }} {{ formatBytes(store.traffic.up) }}</div>
           </div>
         </div>
-        <div v-else class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("home.noServer") }}</div>
-          <div class="text-xs text-muted">{{ t("home.chooseServer") }}</div>
-        </div>
-        <AppIcon name="chevron" class="shrink-0 text-muted" />
-      </RouterLink>
 
-      <div class="grid grid-cols-2 gap-3">
-        <div class="card px-4 py-3">
-          <div class="flex items-center gap-1.5 text-xs text-muted">
-            <AppIcon name="down" :size="14" />{{ t("home.download") }}
-          </div>
-          <div class="mt-1 font-mono text-lg tabular-nums">{{ formatSpeed(store.traffic.downSpeed) }}</div>
-          <div class="text-xs text-muted">{{ t("home.totalDown") }} {{ formatBytes(store.traffic.down) }}</div>
-        </div>
-        <div class="card px-4 py-3">
-          <div class="flex items-center gap-1.5 text-xs text-muted">
-            <AppIcon name="up" :size="14" />{{ t("home.upload") }}
-          </div>
-          <div class="mt-1 font-mono text-lg tabular-nums">{{ formatSpeed(store.traffic.upSpeed) }}</div>
-          <div class="text-xs text-muted">{{ t("home.totalUp") }} {{ formatBytes(store.traffic.up) }}</div>
-        </div>
-      </div>
-
-      <Transition name="pop">
-        <div v-if="connected" class="card px-4 py-3">
-          <Transition name="fade" mode="out-in">
-            <div v-if="check" :key="check.at">
-              <div class="flex items-center gap-1.5 font-medium" :class="check.ok ? 'text-good' : 'text-danger'">
-                <AppIcon :name="check.ok ? 'check' : 'alert'" :size="16" class="shrink-0" />
-                <span>{{ check.ok ? t("home.checkOk") : t("home.checkFailed") }}</span>
-                <template v-if="check.ok && check.latencyMs !== null">
-                  <span aria-hidden="true">·</span>
-                  <span class="tabular-nums">{{ t("home.latency", { ms: check.latencyMs }) }}</span>
-                </template>
-                <span class="ml-auto shrink-0 text-xs font-normal text-muted">{{ checkedAgo }}</span>
+        <template v-if="connected">
+          <div class="flex items-center gap-3 py-2.5 pr-2 pl-4">
+            <Transition name="fade" mode="out-in">
+              <div v-if="check" :key="check.at" class="min-w-0 flex-1">
+                <div class="flex items-center gap-1.5 text-sm font-medium" :class="check.ok ? 'text-good' : 'text-danger'">
+                  <AppIcon :name="check.ok ? 'check' : 'alert'" :size="16" class="shrink-0" />
+                  <span class="shrink-0">
+                    {{ check.ok ? t("home.checkOk") : t("home.checkFailed") }}
+                    <template v-if="check.ok && check.latencyMs !== null"> · {{ t("home.latency", { ms: check.latencyMs }) }}</template>
+                  </span>
+                  <span class="ml-auto min-w-0 truncate pl-2 text-xs font-normal text-muted">{{ checkedAgo }}</span>
+                </div>
+                <div v-if="check.ok ? exit : check.error" class="truncate pl-[1.375rem] text-xs text-muted">
+                  <template v-if="check.ok">{{ exit }}</template>
+                  <span v-else class="selectable">{{ check.error }}</span>
+                </div>
               </div>
-              <div class="mt-1 truncate text-sm text-muted">
-                <template v-if="check.ok">{{ exitName }}</template>
-                <span v-else class="selectable">{{ check.error }}</span>
+              <div v-else class="min-w-0 flex-1 text-sm text-muted">{{ t("home.checking") }}</div>
+            </Transition>
+            <button
+              class="icon-btn"
+              :disabled="checking"
+              :aria-label="t('home.check')"
+              :title="t('home.check')"
+              @click="runCheck"
+            >
+              <AppIcon name="refresh" :size="18" :class="checking ? 'animate-spin' : ''" />
+            </button>
+          </div>
+
+          <RouterLink v-if="corp" to="/routing" class="row-button py-2.5 pr-3">
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2 text-sm font-medium">
+                <span class="size-2 shrink-0 rounded-full" :class="CORP_DOT[corp.state]" aria-hidden="true" />
+                <span class="truncate">{{ t("corp.title") }}</span>
+              </div>
+              <div class="truncate pl-4 text-xs text-muted">
+                {{ t(`corp.state.${corp.state}`) }}<template v-if="corp.address"> · {{ corp.address }}</template>
               </div>
             </div>
-            <div v-else class="text-sm text-muted">{{ t("home.checking") }}</div>
-          </Transition>
-          <button class="btn btn-quiet mt-3 w-full" :disabled="checking" @click="runCheck">
-            <AppIcon name="refresh" :size="16" :class="checking ? 'animate-spin' : ''" />
-            {{ checking ? t("home.checking") : t("home.check") }}
-          </button>
+            <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
+          </RouterLink>
+        </template>
+
+        <div v-if="showMode && store.settings" class="flex items-center gap-3 px-4 py-3">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium">{{ t("home.mode") }}</div>
+            <div class="truncate text-xs text-muted">
+              <template v-if="store.settings.mode === 'tun'">{{ t("home.tunPasswordHint") }}</template>
+              <template v-else>
+                <span class="selectable tabular-nums">127.0.0.1:{{ store.settings.mixedPort }}</span>
+                <template v-if="store.settings.proxyAuth"> · {{ t("settings.proxyAuth").toLowerCase() }}</template>
+              </template>
+            </div>
+          </div>
+          <div class="flex shrink-0 rounded-xl bg-raised p-0.5" role="radiogroup" :aria-label="t('home.mode')">
+            <button
+              v-for="mode in MODES"
+              :key="mode.value"
+              role="radio"
+              :aria-checked="store.settings.mode === mode.value"
+              class="h-8 rounded-[10px] px-3 text-xs font-medium whitespace-nowrap transition-[color,background-color,box-shadow] duration-200 disabled:opacity-50"
+              :class="store.settings.mode === mode.value ? 'bg-surface text-ink shadow-sm' : 'text-muted hover:text-ink'"
+              :disabled="busy"
+              @click="store.saveSettings({ mode: mode.value })"
+            >
+              {{ t(mode.label) }}
+            </button>
+          </div>
         </div>
-      </Transition>
-
-      <Transition name="pop">
-        <RouterLink
-          v-if="connected && store.connection?.corp"
-          to="/routing"
-          class="card flex items-center gap-2 px-4 py-3 text-sm"
-        >
-          <AppIcon
-            :name="store.connection.corp.state === 'down' ? 'alert' : 'route'"
-            :size="16"
-            class="shrink-0"
-            :class="{ 'text-good': store.connection.corp.state === 'up', 'text-danger': store.connection.corp.state === 'down', 'text-muted': store.connection.corp.state === 'connecting' }"
-          />
-          <span class="font-medium">{{ t("corp.title") }}</span>
-          <span class="ml-auto min-w-0 truncate text-muted">
-            {{ t(`corp.state.${store.connection.corp.state}`) }}<template v-if="store.connection.corp.address"> · {{ store.connection.corp.address }}</template>
-          </span>
-        </RouterLink>
-      </Transition>
-
-      <div class="grid grid-cols-2 gap-3">
-        <button
-          type="button"
-          class="card flex items-center justify-center gap-2 px-3 py-2.5 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-ink active:scale-98"
-          @click="showServiceCheck = true"
-        >
-          <AppIcon name="check" :size="16" class="text-accent" />
-          <span>{{ t("tools.serviceCheck") }}</span>
-        </button>
-        <button
-          type="button"
-          class="card flex items-center justify-center gap-2 px-3 py-2.5 text-xs font-medium text-muted transition-colors hover:border-accent hover:text-ink active:scale-98"
-          @click="showSpeedTest = true"
-        >
-          <AppIcon name="gauge" :size="16" class="text-cyan-400" />
-          <span>{{ t("tools.speedTest") }}</span>
-        </button>
       </div>
 
-      <template v-if="store.tunSupported && store.settings">
-        <div class="card relative flex p-1" role="radiogroup" :aria-label="t('home.mode')">
-          <span
-            aria-hidden="true"
-            class="absolute inset-y-1 left-1 w-[calc(50%-0.25rem)] rounded-xl bg-accent-soft transition-transform duration-300 ease-[var(--ease-out)]"
-            :class="store.settings.mode === 'tun' ? 'translate-x-full' : ''"
-          />
-          <button
-            v-for="mode in MODES"
-            :key="mode.value"
-            role="radio"
-            :aria-checked="store.settings.mode === mode.value"
-            class="relative h-9 flex-1 rounded-xl text-sm font-medium transition-colors duration-300 disabled:opacity-50"
-            :class="store.settings.mode === mode.value ? 'text-accent' : 'text-muted hover:text-ink'"
-            :disabled="busy"
-            @click="store.saveSettings({ mode: mode.value })"
-          >
-            {{ t(mode.label) }}
-          </button>
-        </div>
-        <p class="px-1 text-center text-xs text-muted">
-          <template v-if="store.settings.mode === 'tun'">{{ t("home.tunPasswordHint") }}</template>
-          <template v-else>
-            {{ t("home.localProxy") }}:
-            <span class="selectable font-mono">127.0.0.1:{{ store.settings.mixedPort }}</span>
-            <template v-if="store.settings.proxyAuth"> · {{ t("settings.proxyAuth").toLowerCase() }}</template>
-          </template>
-        </p>
-      </template>
-    </div>
+      <!-- Tools: there when needed, quiet otherwise. -->
+      <div class="flex flex-wrap justify-center gap-1">
+        <button type="button" class="btn btn-sm btn-ghost" @click="showServiceCheck = true">
+          <AppIcon name="check" :size="15" />{{ t("tools.serviceCheck") }}
+        </button>
+        <button type="button" class="btn btn-sm btn-ghost" @click="showSpeedTest = true">
+          <AppIcon name="gauge" :size="15" />{{ t("tools.speedTest") }}
+        </button>
+      </div>
+    </section>
 
     <Transition name="sheet">
       <ServiceCheckModal v-if="showServiceCheck" @close="showServiceCheck = false" />
