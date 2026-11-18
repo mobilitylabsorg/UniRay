@@ -376,12 +376,12 @@ async function confirm() {
       <div v-else class="section-title">{{ t("servers.manual") }}</div>
 
       <TransitionGroup tag="ul" name="list" class="card relative divide-y divide-line overflow-hidden" role="radiogroup">
-        <li v-for="server in group.servers" :key="server.id" class="group flex items-center bg-surface">
+        <li v-for="server in group.servers" :key="server.id" class="group flex items-center bg-surface transition-colors hover:bg-raised">
           <button
             role="radio"
             :aria-checked="server.id === selectedId"
             :data-autofocus="server.id === selectedId || undefined"
-            class="flex min-w-0 flex-1 items-center gap-3 py-3 pr-2 pl-4 text-left transition-colors hover:bg-raised"
+            class="flex min-w-0 flex-1 items-center gap-3 py-3 pr-2 pl-4 text-left"
             @click="select(server)"
           >
             <span class="radio-mark" :class="{ 'is-on': server.id === selectedId }">
