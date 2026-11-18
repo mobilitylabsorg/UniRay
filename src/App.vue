@@ -39,15 +39,14 @@ watch(
   },
 );
 
-// The servers are a tab of their own on a narrow window and part of the
-// connection screen on a wide one: a window resized across the line keeps
-// showing them.
+// The servers are a tab of their own on a TV and part of the connection
+// screen elsewhere (known once the state has arrived).
 watch(
-  [() => store.wide, () => router.currentRoute.value.fullPath],
-  ([wide]) => {
+  [() => store.isTv, () => router.currentRoute.value.fullPath],
+  ([tv]) => {
     const route = router.currentRoute.value;
-    if (wide && route.name === "servers") void router.replace({ name: "connect", hash: "#servers" });
-    else if (!wide && route.name === "connect" && route.hash === "#servers") void router.replace({ name: "servers" });
+    if (!tv && route.name === "servers") void router.replace({ name: "connect", hash: "#servers" });
+    else if (tv && route.name === "connect" && route.hash === "#servers") void router.replace({ name: "servers" });
   },
 );
 
@@ -87,7 +86,7 @@ onMounted(async () => {
   >
     <BottomNav v-if="store.isTv" variant="rail" />
     <BottomNav v-else variant="sidebar" class="max-nav:hidden" />
-    <main class="min-h-0 flex-1 overflow-y-auto pt-[env(safe-area-inset-top)]">
+    <main class="min-h-0 flex-1 overflow-y-auto pt-[env(safe-area-inset-top)] [container-type:size]">
       <RouterView v-if="store.snapshot" v-slot="{ Component }">
         <Transition name="page" mode="out-in" @after-enter="focusPage">
           <component :is="Component" />

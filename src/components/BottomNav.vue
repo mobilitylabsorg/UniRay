@@ -16,15 +16,15 @@ const props = withDefaults(defineProps<{ variant?: "bar" | "sidebar" | "rail" }>
 const { t } = useI18n();
 const store = useAppStore();
 
-const TABS: { to: string; icon: IconName; label: string; narrow?: boolean }[] = [
+const TABS: { to: string; icon: IconName; label: string; tvOnly?: boolean }[] = [
   { to: "/", icon: "power", label: "nav.connection" },
-  // The sidebar's connection screen has the list next to the switch.
-  { to: "/servers", icon: "server", label: "nav.servers", narrow: true },
+  // Elsewhere the list is on the connection screen.
+  { to: "/servers", icon: "server", label: "nav.servers", tvOnly: true },
   { to: "/routing", icon: "route", label: "nav.routing" },
   { to: "/logs", icon: "logs", label: "nav.logs" },
   { to: "/settings", icon: "settings", label: "nav.settings" },
 ];
-const tabs = computed(() => TABS.filter((tab) => !tab.narrow || props.variant !== "sidebar"));
+const tabs = computed(() => TABS.filter((tab) => !tab.tvOnly || props.variant === "rail"));
 </script>
 
 <template>

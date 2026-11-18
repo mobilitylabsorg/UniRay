@@ -18,12 +18,24 @@ import TrafficChart from "./TrafficChart.vue";
 /**
  * The connection: the switch with the speed around it, the server it uses,
  * the traffic of the last minute, the check, the corporate network, the mode
- * and the two tools. The left pane of the wide connection screen, or the
- * whole screen on a phone, a narrow window or a TV.
+ * and the two tools. The left pane of a wide window; the top of the page on
+ * a phone or a narrow window, over the server list; the whole screen on a TV.
  */
 const store = useAppStore();
 const { t } = useI18n();
-const full = computed(() => !store.wide);
+/** A TV: the connection alone, the switch in the middle, nothing to scroll. */
+const full = computed(() => store.isTv);
+const layout = computed(() => (store.wide ? "side" : full.value ? "full" : "phone"));
+
+/** On a phone the server under the switch leads down to the list. */
+function showList() {
+  document.getElementById("server-list")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+const current = computed(() => {
+  if (layout.value === "full") return { tag: RouterLink, attrs: { to: "/servers" } };
+  if (layout.value === "phone") return { tag: "button", attrs: { type: "button", onClick: showList } };
+  return { tag: "div", attrs: {} };
+});
 
 const showServiceCheck = ref(false);
 const showSpeedTest = ref(false);
@@ -78,9 +90,10 @@ const MODES: { value: Mode; label: string }[] = [
 </script>
 
 <template>
-  <!-- side: the left pane of a wide window. full: the whole screen on a phone,
-       a narrow window or a TV, with the switch in the middle of it. -->
-  <section class="pane" :class="[full ? 'full' : 'side', { on: connected }]">
+  <!-- side: the left pane of a wide window. phone: the top of a phone's page,
+       the switch in the middle of the screen while scrolled to the top.
+       full: a TV's whole screen, the switch in the middle of it. -->
+  <section class="pane" :class="[layout, { on: connected }]">
     <div v-if="full" class="top">
       <template v-if="connected">
         <TrafficChart />
@@ -127,14 +140,15 @@ const MODES: { value: Mode; label: string }[] = [
           <span class="tabular-nums text-muted">{{ uptime ?? " " }}</span>
         </div>
 
-        <!-- On its own screen the server is the way to the list. -->
-        <component :is="full ? RouterLink : 'div'" v-bind="full ? { to: '/servers' } : {}" class="current" :title="server?.name">
+        <!-- Without the list beside it the server is the way to the list: a
+             link to the servers tab on a TV, down the page on a phone. -->
+        <component :is="current.tag" v-bind="current.attrs" class="current" :title="server?.name">
           <template v-if="server && name">
             <ServerAvatar :name="name" />
             <div class="min-w-0">
               <div class="current-title">
                 <ServerTitle :name="name" />
-                <AppIcon v-if="full" name="chevron" :size="16" class="shrink-0 text-muted" />
+                <AppIcon v-if="layout !== 'side'" name="chevron" :size="16" class="shrink-0 text-muted" :class="{ 'rotate-90': layout === 'phone' }" />
               </div>
               <div class="current-sub truncate text-muted">{{ subtitle }}</div>
             </div>
@@ -336,11 +350,13 @@ const MODES: { value: Mode; label: string }[] = [
   border-radius: 0.75rem;
   text-align: left;
 }
-a.current {
+a.current,
+button.current {
   padding: 0.25rem 0.5rem;
   transition: background-color 0.15s;
 }
-a.current:hover {
+a.current:hover,
+button.current:hover {
   background: var(--color-raised);
 }
 .current-title {
@@ -505,9 +521,40 @@ a.current:hover {
   }
 }
 
-/* --- full: the screen of a phone, a narrow window or a TV. The switch sits in
-   the middle: the traffic above it, everything else under it, each half as
-   tall as the other while both fit. Only a very short window scrolls. */
+/* --- phone: a phone or a narrow window, one page with the list under the
+   connection. Scrolled to the top, the switch is in the middle of what is
+   visible: <main> is a size container (App.vue), and the space above the
+   switch is half its height less half the switch. */
+.phone {
+  --dial: 11.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: max(1rem, calc(50cqh - var(--dial) / 2)) 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--color-line);
+}
+.phone > *,
+.phone .rest > * {
+  width: 100%;
+  max-width: 32rem;
+  margin-inline: auto;
+}
+.phone .bottom,
+.phone .rest {
+  display: contents;
+}
+.phone .dial {
+  width: var(--dial);
+  height: var(--dial);
+}
+/* The switch, state and server read as one group. */
+.phone .info {
+  margin-top: -0.375rem;
+}
+
+/* --- full: a TV's screen, nothing to scroll. The switch sits in the middle:
+   the traffic above it, everything else under it, each half as tall as the
+   other while both fit. */
 .full {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -549,7 +596,7 @@ a.current:hover {
   margin-top: auto;
 }
 
-/* A short screen (the default desktop window, small phones, a TV): smaller
+/* A short screen: smaller
    switch, chart and lines rather than a page that scrolls. */
 @media (max-height: 780px) {
   .full {
@@ -588,7 +635,7 @@ a.current:hover {
   }
 }
 
-/* A small phone: the chart's legend goes, the rest gets smaller still. */
+/* Shorter still: the chart's legend goes, the rest gets smaller. */
 @media (max-height: 660px) {
   .full {
     --chart-height: 2.5rem;
@@ -621,7 +668,7 @@ a.current:hover {
   }
 }
 
-/* Landscape and short: a TV, a phone on its side, a wide but low window. The
+/* Landscape and short, as TVs are. The
    switch and its state on the left, in the middle of the height; the
    traffic and the rest on the right. */
 @media (orientation: landscape) and (max-height: 600px) {

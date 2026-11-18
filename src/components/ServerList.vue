@@ -19,7 +19,7 @@ import ShareDialog from "./ShareDialog.vue";
  * protocol filters, the fastest one after a ping test, and what can be done
  * with each. The right pane of the connection screen, or its lower part.
  */
-defineProps<{ /** The servers tab of a narrow window or a TV, not a pane. */ standalone?: boolean }>();
+defineProps<{ /** The servers tab of a TV, not part of the connection screen. */ standalone?: boolean }>();
 const store = useAppStore();
 const { t, locale } = useI18n();
 
@@ -443,6 +443,8 @@ async function confirm() {
 .list {
   /* rem, not the body's 15px, so that a TV scales the text too. */
   font-size: 0.9375rem;
+  /* Scrolled to, the list starts under a phone's mini bar. */
+  scroll-margin-top: 3.625rem;
   container-type: inline-size;
   padding: 1.5rem 1rem 1.75rem;
 }

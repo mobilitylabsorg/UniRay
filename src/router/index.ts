@@ -11,8 +11,8 @@ export const router = createRouter({
       path: "/servers",
       name: "servers",
       component: () => import("../views/ServersView.vue"),
-      // A wide window has the list on the connection screen.
-      beforeEnter: () => (useAppStore().wide ? { name: "connect", hash: "#servers" } : true),
+      // A tab of its own on a TV only; elsewhere the list is on the connection screen.
+      beforeEnter: () => (useAppStore().isTv ? true : { name: "connect", hash: "#servers" }),
     },
     { path: "/routing", name: "routing", component: () => import("../views/RoutingView.vue") },
     { path: "/logs", name: "logs", component: () => import("../views/LogsView.vue") },
