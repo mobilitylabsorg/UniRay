@@ -35,7 +35,7 @@ watch(
 watch(
   () => store.pendingImport,
   (url) => {
-    if (url) void router.push({ name: "servers" });
+    if (url) void router.push({ name: "connect", hash: "#servers" });
   },
 );
 
@@ -71,10 +71,10 @@ onMounted(async () => {
        its overscan. -->
   <div
     class="flex h-full"
-    :class="store.isTv ? 'mx-auto max-w-6xl gap-6 px-[4vw] py-[4vh]' : 'flex-col md:flex-row'"
+    :class="store.isTv ? 'mx-auto max-w-6xl gap-6 px-[4vw] py-[4vh]' : 'flex-col nav:flex-row'"
   >
     <BottomNav v-if="store.isTv" variant="rail" />
-    <BottomNav v-else variant="sidebar" class="max-md:hidden" />
+    <BottomNav v-else variant="sidebar" class="max-nav:hidden" />
     <main class="min-h-0 flex-1 overflow-y-auto pt-[env(safe-area-inset-top)]">
       <RouterView v-if="store.snapshot" v-slot="{ Component }">
         <Transition name="page" mode="out-in" @after-enter="focusPage">
@@ -82,7 +82,7 @@ onMounted(async () => {
         </Transition>
       </RouterView>
     </main>
-    <BottomNav v-if="!store.isTv" class="md:hidden" />
+    <BottomNav v-if="!store.isTv" class="nav:hidden" />
     <ToastStack />
   </div>
 </template>

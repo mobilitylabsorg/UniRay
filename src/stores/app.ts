@@ -15,6 +15,8 @@ import {
 } from "../lib/api";
 
 const MAX_LOG_LINES = 2000;
+/** Seconds of speed the traffic chart shows. */
+const HISTORY_SECONDS = 60;
 const TOAST_MS = 4000;
 
 export interface Toast {
@@ -29,6 +31,10 @@ export const useAppStore = defineStore("app", () => {
   // The backend owns the state and sends it whole on every change.
   const snapshot = shallowRef<Snapshot | null>(null);
   const traffic = ref<Traffic>(NO_TRAFFIC);
+  /** The last minute of speeds, one a second, for the chart; kept here so it
+   * survives going to another page, started over with each connection. */
+  const history = shallowRef<{ down: number[]; up: number[] }>({ down: [], up: [] });
+  let historyOf: number | null = null;
   const logs = ref<LogLine[]>([]);
   const toasts = ref<Toast[]>([]);
   let nextToast = 1;
@@ -61,12 +67,23 @@ export const useAppStore = defineStore("app", () => {
     if (next.connection.status !== "connected") {
       traffic.value = NO_TRAFFIC;
     }
+    const since = next.connection.status === "connected" ? next.connection.since : null;
+    if (since !== historyOf) {
+      historyOf = since;
+      history.value = { down: [], up: [] };
+    }
   }
 
   async function init() {
     await events.state(apply);
     await events.traffic((next) => {
       traffic.value = next;
+      if (status.value !== "connected") return;
+      const { down, up } = history.value;
+      history.value = {
+        down: [...down.slice(1 - HISTORY_SECONDS), next.downSpeed],
+        up: [...up.slice(1 - HISTORY_SECONDS), next.upSpeed],
+      };
     });
     await events.log((line) => {
       logs.value.push(line);
@@ -156,6 +173,7 @@ export const useAppStore = defineStore("app", () => {
     tunSupported,
     selectedServer,
     traffic,
+    history,
     logs,
     toasts,
     pendingImport,

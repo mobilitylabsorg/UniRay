@@ -44,18 +44,3 @@ export function formatDateTime(unixSeconds: number, locale: string): string {
 export function formatClock(unixMillis: number): string {
   return new Date(unixMillis).toLocaleTimeString(undefined, { hour12: false });
 }
-
-/**
- * What a server is, in a few words: its protocol, transport and security
- * without repeats or "none" (`hysteria · hysteria · tls` reads `hysteria · tls`).
- */
-export function serverMeta(server: { protocol: string; transport: string; security: string }): string {
-  const parts: string[] = [];
-  for (const part of [server.protocol, server.transport, server.security]) {
-    const value = part.trim();
-    if (value && value.toLowerCase() !== "none" && !parts.some((seen) => seen.toLowerCase() === value.toLowerCase())) {
-      parts.push(value);
-    }
-  }
-  return parts.join(" · ");
-}
