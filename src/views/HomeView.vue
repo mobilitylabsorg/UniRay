@@ -114,20 +114,17 @@ const MODES: { value: Mode; label: string }[] = [
         </div>
       </div>
 
-      <!-- The server: what the switch connects to, and the way to change it. -->
+      <!-- The server: what the switch connects to, and the way to change it;
+           a line of text, set apart from the status. -->
       <RouterLink
         to="/servers"
-        class="flex w-full max-w-sm items-center gap-3 rounded-2xl border border-line bg-surface px-4 py-3 transition-colors hover:border-accent"
+        class="group mt-3 flex max-w-full flex-col items-center rounded-xl px-3 py-1.5 text-center transition-colors"
       >
-        <div v-if="server" class="min-w-0 flex-1">
-          <div class="truncate font-medium">{{ server.name }}</div>
-          <div class="truncate text-xs text-muted">{{ serverMeta(server) }}</div>
-        </div>
-        <div v-else class="min-w-0 flex-1">
-          <div class="font-medium">{{ t("home.noServer") }}</div>
-          <div class="text-xs text-muted">{{ t("home.chooseServer") }}</div>
-        </div>
-        <AppIcon name="chevron" :size="18" class="shrink-0 text-muted" />
+        <span class="flex max-w-full items-center gap-1 font-medium transition-colors group-hover:text-accent">
+          <span class="truncate">{{ server ? server.name : t("home.noServer") }}</span>
+          <AppIcon name="chevron" :size="16" class="shrink-0 text-muted transition-colors group-hover:text-accent" />
+        </span>
+        <span class="max-w-full truncate text-xs text-muted">{{ server ? serverMeta(server) : t("home.chooseServer") }}</span>
       </RouterLink>
 
       <Transition name="pop">
@@ -210,7 +207,7 @@ const MODES: { value: Mode; label: string }[] = [
           <div class="min-w-0 flex-1">
             <div class="text-sm font-medium">{{ t("home.mode") }}</div>
             <div class="truncate text-xs text-muted">
-              <template v-if="store.settings.mode === 'tun'">{{ t("home.tunPasswordHint") }}</template>
+              <template v-if="store.settings.mode === 'tun'">{{ t("home.tunAdminHint") }}</template>
               <template v-else>
                 <span class="selectable tabular-nums">127.0.0.1:{{ store.settings.mixedPort }}</span>
                 <template v-if="store.settings.proxyAuth"> · {{ t("settings.proxyAuth").toLowerCase() }}</template>

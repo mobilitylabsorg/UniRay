@@ -41,6 +41,7 @@ export default {
     modeTun: "TUN",
     localProxy: "Локальный прокси",
     tunPasswordHint: "Для TUN-режима система запросит права администратора",
+    tunAdminHint: "Нужны права администратора",
     check: "Проверить подключение",
     checking: "Проверка…",
     checkOk: "Работает",

@@ -43,6 +43,7 @@ const en: typeof ru = {
     modeTun: "TUN",
     localProxy: "Local proxy",
     tunPasswordHint: "TUN mode will ask for administrator rights",
+    tunAdminHint: "Needs administrator rights",
     check: "Check connection",
     checking: "Checking…",
     checkOk: "Working",
