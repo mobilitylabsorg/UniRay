@@ -111,6 +111,16 @@ const learned = computed(() => {
   return [...pushed.routes, ...pushed.domains.map((domain) => `*.${domain}`), ...pushed.dns.map((server) => `DNS ${server}`)];
 });
 
+/** DNS servers known, but no domain to send to them: nothing would. */
+const missingDomains = computed(() => {
+  const saved = corp.value;
+  if (!saved) return null;
+  const pushed = saved.usePushed ? saved.learned : null;
+  const servers = [...saved.dns, ...(pushed?.dns ?? [])];
+  const anyDomain = saved.domains.length > 0 || (pushed?.domains.length ?? 0) > 0;
+  return servers.length > 0 && !anyDomain ? servers.join(", ") : null;
+});
+
 const STATE_CLASS = { connecting: "bg-raised text-muted", up: "bg-accent-soft text-accent", down: "bg-danger-soft text-danger" } as const;
 </script>
 
@@ -196,6 +206,9 @@ const STATE_CLASS = { connecting: "bg-raised text-muted", up: "bg-accent-soft te
         <span class="mb-1 block text-sm font-medium">{{ t("corp.routes") }}</span>
         <textarea v-model="routes" rows="2" class="field selectable font-mono text-xs" placeholder="192.168.254.0/24" spellcheck="false" />
       </label>
+      <p v-if="missingDomains" class="rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">
+        {{ t("corp.noDomains", { dns: missingDomains }) }}
+      </p>
       <label>
         <span class="mb-1 block text-sm font-medium">{{ t("corp.domains") }}</span>
         <textarea v-model="domains" rows="2" class="field selectable font-mono text-xs" placeholder="corp.example" spellcheck="false" />

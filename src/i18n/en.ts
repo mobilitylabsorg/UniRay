@@ -146,6 +146,7 @@ const en: typeof ru = {
     domains: "Own domains",
     dns: "Corporate DNS",
     dnsHint: "Answers for the domains above; its queries go through the corporate tunnel",
+    noDomains: "The server gave DNS ({dns}) but not the company's domains. Add them under your own domains, for example example.com: names in them resolve through the corporate DNS, the rest as usual",
     state: { connecting: "connecting", up: "connected", down: "failed" },
     authFailed: "The server did not accept the username or password",
   },
