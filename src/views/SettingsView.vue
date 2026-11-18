@@ -281,7 +281,7 @@ const proxyAddress = computed(() => `socks5://127.0.0.1:${store.settings?.mixedP
 
     <div class="lg:flex lg:items-start lg:gap-10">
       <!-- A wide window: the sections listed on the left, the current one marked. -->
-      <nav class="sticky top-6 hidden w-48 shrink-0 flex-col gap-0.5 lg:flex" :aria-label="t('settings.sections')">
+      <nav v-if="!store.isTv" class="sticky top-6 hidden w-48 shrink-0 flex-col gap-0.5 lg:flex" :aria-label="t('settings.sections')">
         <button
           v-for="section in sections"
           :key="section.id"
