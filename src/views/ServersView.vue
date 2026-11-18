@@ -8,7 +8,7 @@ import ImportDialog from "../components/ImportDialog.vue";
 import ModalSheet from "../components/ModalSheet.vue";
 import ShareDialog from "../components/ShareDialog.vue";
 import { api, type Server, type Subscription } from "../lib/api";
-import { formatBytes, formatDate, formatDateTime } from "../lib/format";
+import { formatBytes, formatDate, formatDateTime, serverMeta } from "../lib/format";
 import { useAppStore } from "../stores/app";
 
 const store = useAppStore();
@@ -52,6 +52,16 @@ const PROTOCOL_CHIPS = [
   { id: "hysteria", label: "servers.filterHysteria" },
 ];
 const activeFilter = ref("all");
+/** Only the protocols there are servers of; no row at all for just one. */
+const chips = computed(() => {
+  const present = PROTOCOL_CHIPS.filter(
+    (chip) => chip.id === "all" || store.servers.some((server) => server.protocol.toLowerCase().includes(chip.id)),
+  );
+  return present.length > 2 ? present : [];
+});
+watch(chips, (next) => {
+  if (!next.some((chip) => chip.id === activeFilter.value)) activeFilter.value = "all";
+});
 
 function sortServers(list: Server[]): Server[] {
   let filtered = list;
@@ -144,6 +154,29 @@ function select(server: Server) {
   return store.run(() => api.selectServer(server.id));
 }
 
+/** How much of the traffic limit is used, 0..1; null when unlimited. */
+function usedShare(subscription: Subscription): number | null {
+  const info = subscription.userInfo;
+  if (!info || info.total <= 0) return null;
+  return Math.min(1, (info.upload + info.download) / info.total);
+}
+
+/** The subscription's facts in one line: traffic, expiry, last update, HWID. */
+function subscriptionMeta(subscription: Subscription): { text: string; danger?: boolean }[] {
+  const parts: { text: string; danger?: boolean }[] = [];
+  const used = usage(subscription);
+  if (used) parts.push({ text: used });
+  const ends = expiry(subscription);
+  if (ends) parts.push({ text: ends.text, danger: ends.expired });
+  parts.push({
+    text: subscription.updatedAt
+      ? t("servers.updated", { date: formatDateTime(subscription.updatedAt, locale.value) })
+      : t("servers.never"),
+  });
+  if (subscription.hwidActive) parts.push({ text: t("servers.hwidActive") });
+  return parts;
+}
+
 async function update(subscription: Subscription) {
   updating.value.add(subscription.id);
   await store.run(() => api.updateSubscription(subscription.id));
@@ -193,19 +226,19 @@ async function confirm() {
 </script>
 
 <template>
-  <div class="px-4 py-5">
-    <header class="mb-4 flex items-center gap-2">
-      <h1 class="flex-1 text-xl font-semibold">{{ t("servers.title") }}</h1>
+  <div class="page md:max-w-3xl">
+    <header class="page-header">
+      <h1 class="page-title">{{ t("servers.title") }}</h1>
       <button
         v-if="store.subscriptions.length > 1"
-        class="btn btn-quiet px-2.5"
+        class="btn btn-quiet px-3"
         :disabled="updatingAll"
         :aria-label="t('servers.updateAll')"
         :title="t('servers.updateAll')"
         @click="updateAll"
       >
         <AppIcon name="refresh" :size="18" :class="updatingAll ? 'animate-spin' : ''" />
-        <span class="max-[480px]:hidden">{{ t("servers.updateAll") }}</span>
+        <span class="max-[520px]:hidden">{{ t("servers.updateAll") }}</span>
       </button>
       <button
         class="btn btn-quiet px-3"
@@ -222,92 +255,72 @@ async function confirm() {
       </button>
     </header>
 
-    <!-- Fastest Server Highlight Banner -->
-    <Transition name="pop">
-      <div
-        v-if="fastestServer"
-        class="card mb-4 flex items-center justify-between gap-3 border border-good/20 bg-good-soft px-3.5 py-2.5"
-      >
-        <div class="min-w-0 flex-1 flex items-center gap-2.5">
-          <span class="flex size-7 shrink-0 items-center justify-center rounded-lg bg-good/20 text-good">
-            <AppIcon name="rocket" :size="16" />
-          </span>
-          <div class="min-w-0 flex-1">
-            <div class="truncate text-xs font-semibold text-good">
-              {{ fastestServer.name }}
-            </div>
-            <div class="text-[11px] text-muted">
-              {{ t("servers.fastestAvailable", { name: fastestServer.name, delay: fastestServer.delayMs }) }}
-            </div>
-          </div>
-        </div>
-        <button
-          v-if="fastestServer.id !== selectedId"
-          class="btn btn-primary shrink-0 py-1 px-3 text-xs font-medium"
-          @click="selectFastest"
-        >
-          {{ t("servers.select") }}
-        </button>
-        <span v-else class="shrink-0 flex items-center gap-1 text-xs font-medium text-good">
-          <AppIcon name="check" :size="14" />
-          {{ t("servers.fastestActive", { delay: fastestServer.delayMs }) }}
-        </span>
-      </div>
-    </Transition>
-
-    <!-- Search & Sort Controls (when there are servers) -->
-    <div v-if="store.servers.length > 3" class="mb-4 flex items-center gap-2">
+    <!-- Finding a server: search and order, the protocols there are. -->
+    <div v-if="store.servers.length > 3" class="mb-3 flex items-center gap-2">
       <div class="relative min-w-0 flex-1">
-        <AppIcon name="search" :size="16" class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+        <AppIcon name="search" :size="16" class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted" />
         <input
           v-model="searchQuery"
-          class="field w-full pl-9 pr-8 text-xs h-9"
+          class="field pr-9 pl-9"
           :placeholder="t('servers.searchPlaceholder')"
+          :aria-label="t('servers.searchPlaceholder')"
           spellcheck="false"
           autocapitalize="off"
         />
         <button
           v-if="searchQuery"
-          class="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-ink transition-colors"
+          class="absolute top-1/2 right-1 flex size-8 -translate-y-1/2 items-center justify-center rounded-lg text-muted transition-colors hover:text-ink"
+          :aria-label="t('common.clear')"
           @click="searchQuery = ''"
         >
           <AppIcon name="close" :size="14" />
         </button>
       </div>
-      <div class="relative shrink-0">
-        <select
-          v-model="sortBy"
-          class="field h-9 text-xs font-medium pr-7 pl-2.5 cursor-pointer"
-          :aria-label="t('servers.sort')"
-        >
-          <option value="default">{{ t("servers.sortDefault") }}</option>
-          <option value="ping">{{ t("servers.sortPing") }}</option>
-          <option value="name">{{ t("servers.sortName") }}</option>
-        </select>
-      </div>
+      <select v-model="sortBy" class="field w-auto shrink-0 pr-8 pl-3" :aria-label="t('servers.sort')">
+        <option value="default">{{ t("servers.sortDefault") }}</option>
+        <option value="ping">{{ t("servers.sortPing") }}</option>
+        <option value="name">{{ t("servers.sortName") }}</option>
+      </select>
     </div>
 
-    <!-- Protocol Filter Chips -->
-    <div v-if="store.servers.length > 0" class="mb-4 flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+    <div v-if="chips.length" class="no-scrollbar -mx-1 mb-3 flex items-center gap-1 overflow-x-auto px-1 py-0.5" role="radiogroup">
       <button
-        v-for="chip in PROTOCOL_CHIPS"
+        v-for="chip in chips"
         :key="chip.id"
         type="button"
-        class="shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors duration-200"
-        :class="activeFilter === chip.id ? 'bg-accent text-accent-ink font-semibold shadow-sm' : 'bg-surface text-muted hover:text-ink hover:bg-raised border border-line'"
+        role="radio"
+        :aria-checked="activeFilter === chip.id"
+        class="h-7 shrink-0 rounded-full px-3 text-xs font-medium transition-colors duration-200"
+        :class="activeFilter === chip.id ? 'bg-accent-soft text-accent' : 'text-muted hover:bg-raised hover:text-ink'"
         @click="activeFilter = chip.id"
       >
         {{ t(chip.label) }}
       </button>
     </div>
 
+    <!-- The fastest server after a ping test, one click away. -->
+    <Transition name="pop">
+      <div v-if="fastestServer" class="mb-6 flex min-h-11 items-center gap-3 rounded-xl bg-raised py-1.5 pr-1.5 pl-3 text-sm">
+        <AppIcon name="rocket" :size="16" class="shrink-0 text-good" />
+        <div class="min-w-0 flex-1 truncate">
+          <template v-if="fastestServer.id !== selectedId">
+            {{ t("servers.fastestAvailable", { name: fastestServer.name, delay: fastestServer.delayMs }) }}
+          </template>
+          <span v-else class="text-good">{{ t("servers.fastestActive", { delay: fastestServer.delayMs }) }}</span>
+        </div>
+        <button v-if="fastestServer.id !== selectedId" class="btn btn-sm btn-primary shrink-0" @click="selectFastest">
+          {{ t("servers.select") }}
+        </button>
+      </div>
+    </Transition>
+
     <div v-if="groups.length === 0" class="card rise flex flex-col items-center gap-2 px-6 py-12 text-center">
-      <AppIcon name="server" :size="36" class="text-muted" />
+      <AppIcon name="server" :size="32" class="text-muted" />
       <div class="font-medium">{{ t("servers.empty") }}</div>
-      <p class="text-sm text-muted">{{ t("servers.emptyHint") }}</p>
+      <p class="max-w-sm text-sm text-muted">{{ t("servers.emptyHint") }}</p>
     </div>
 
-    <section v-for="group in groups" :key="group.subscription?.id ?? 'manual'" class="mb-5">
+    <section v-for="group in groups" :key="group.subscription?.id ?? 'manual'" class="mb-7">
       <div v-if="group.subscription" class="mb-2 px-1">
         <div class="flex items-center gap-1">
           <h2 class="min-w-0 flex-1 truncate font-semibold">{{ group.subscription.name }}</h2>
@@ -338,25 +351,24 @@ async function confirm() {
             <AppIcon name="trash" :size="18" />
           </button>
         </div>
-        <div class="flex flex-wrap gap-x-3 text-xs text-muted">
-          <span v-if="usage(group.subscription)">{{ usage(group.subscription) }}</span>
-          <span v-if="expiry(group.subscription)" :class="expiry(group.subscription)!.expired ? 'text-danger' : ''">
-            {{ expiry(group.subscription)!.text }}
-          </span>
-          <span>
-            {{
-              group.subscription.updatedAt
-                ? t("servers.updated", { date: formatDateTime(group.subscription.updatedAt, locale) })
-                : t("servers.never")
-            }}
-          </span>
+        <div class="flex flex-wrap gap-x-1.5 text-xs text-muted">
+          <template v-for="(part, index) in subscriptionMeta(group.subscription)" :key="index">
+            <span v-if="index > 0" aria-hidden="true">·</span>
+            <span :class="part.danger ? 'text-danger' : ''">{{ part.text }}</span>
+          </template>
         </div>
-        <p v-if="group.subscription.hwidActive" class="mt-0.5 text-xs text-muted">{{ t("servers.hwidActive") }}</p>
-        <p v-if="group.subscription.announce" class="selectable mt-1 text-xs text-warn">
+        <div v-if="usedShare(group.subscription) !== null" class="mt-1.5 h-1 max-w-48 overflow-hidden rounded-full bg-raised">
+          <div
+            class="h-full rounded-full"
+            :class="usedShare(group.subscription)! > 0.9 ? 'bg-danger' : 'bg-accent'"
+            :style="{ width: `${Math.max(2, usedShare(group.subscription)! * 100)}%` }"
+          />
+        </div>
+        <p v-if="group.subscription.announce" class="selectable mt-2 rounded-lg bg-warn-soft px-3 py-2 text-xs text-warn">
           {{ group.subscription.announce }}
         </p>
         <Transition name="pop">
-          <p v-if="group.subscription.lastError" class="selectable mt-1 flex gap-1.5 text-xs text-danger">
+          <p v-if="group.subscription.lastError" class="selectable mt-2 flex gap-1.5 text-xs text-danger">
             <AppIcon name="alert" :size="14" class="mt-0.5 shrink-0" />{{ group.subscription.lastError }}
           </p>
         </Transition>
@@ -364,34 +376,31 @@ async function confirm() {
       <div v-else class="section-title">{{ t("servers.manual") }}</div>
 
       <TransitionGroup tag="ul" name="list" class="card relative divide-y divide-line overflow-hidden" role="radiogroup">
-        <li v-for="server in group.servers" :key="server.id" class="flex items-center bg-surface">
+        <li v-for="server in group.servers" :key="server.id" class="group flex items-center bg-surface">
           <button
             role="radio"
             :aria-checked="server.id === selectedId"
             :data-autofocus="server.id === selectedId || undefined"
-            class="flex min-w-0 flex-1 items-center gap-3 py-3 pr-1 pl-4 text-left transition-colors hover:bg-raised"
+            class="flex min-w-0 flex-1 items-center gap-3 py-3 pr-2 pl-4 text-left transition-colors hover:bg-raised"
             @click="select(server)"
           >
-            <span
-              class="flex size-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors duration-200"
-              :class="server.id === selectedId ? 'border-accent bg-accent text-accent-ink' : 'border-line'"
-            >
+            <span class="radio-mark" :class="{ 'is-on': server.id === selectedId }">
               <Transition name="pop">
                 <AppIcon v-if="server.id === selectedId" name="check" :size="12" />
               </Transition>
             </span>
             <span class="min-w-0 flex-1">
               <span class="block truncate font-medium">{{ server.name }}</span>
-              <span class="block truncate text-xs text-muted">
-                {{ server.protocol }} · {{ server.transport }} · {{ server.security }}
-                <AppIcon v-if="server.warnings?.length" name="alert" :size="12" class="inline text-warn" />
+              <span class="flex items-center gap-1 text-xs text-muted">
+                <span class="truncate">{{ serverMeta(server) }}</span>
+                <AppIcon v-if="server.warnings?.length" name="alert" :size="12" class="shrink-0 text-warn" />
               </span>
             </span>
             <Transition name="fade" mode="out-in">
               <span
                 v-if="server.delayMs !== null"
                 :key="server.delayMs"
-                class="shrink-0 font-mono text-xs tabular-nums"
+                class="shrink-0 text-xs font-medium tabular-nums"
                 :class="delayClass(server.delayMs)"
               >
                 {{ server.delayMs < 0 ? t("servers.timeout") : `${server.delayMs} ${t("servers.ms")}` }}
@@ -399,19 +408,20 @@ async function confirm() {
               <span v-else-if="testing" class="shrink-0 animate-pulse text-xs text-muted">…</span>
             </Transition>
           </button>
-          <button class="icon-btn" :aria-label="t('servers.share')" :title="t('servers.share')" @click="sharing = server">
-            <AppIcon name="qr" :size="18" />
-          </button>
-          <button
-            v-if="!server.subscriptionId"
-            class="icon-btn mr-1"
-            :aria-label="t('common.delete')"
-            :title="t('common.delete')"
-            @click="askDeleteServer(server)"
-          >
-            <AppIcon name="trash" :size="18" />
-          </button>
-          <span v-else class="w-1" />
+          <div class="row-actions flex shrink-0 items-center pr-1">
+            <button class="icon-btn" :aria-label="t('servers.share')" :title="t('servers.share')" @click="sharing = server">
+              <AppIcon name="qr" :size="18" />
+            </button>
+            <button
+              v-if="!server.subscriptionId"
+              class="icon-btn"
+              :aria-label="t('common.delete')"
+              :title="t('common.delete')"
+              @click="askDeleteServer(server)"
+            >
+              <AppIcon name="trash" :size="18" />
+            </button>
+          </div>
         </li>
         <li v-if="group.servers.length === 0" key="empty" class="px-4 py-3 text-sm text-muted">{{ t("servers.empty") }}</li>
       </TransitionGroup>

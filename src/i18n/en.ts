@@ -10,6 +10,7 @@ const en: typeof ru = {
     settings: "Settings",
   },
   common: {
+    clear: "Clear",
     cancel: "Cancel",
     add: "Add",
     delete: "Delete",

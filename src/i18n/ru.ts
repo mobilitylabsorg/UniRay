@@ -8,6 +8,7 @@ export default {
     settings: "Настройки",
   },
   common: {
+    clear: "Очистить",
     cancel: "Отмена",
     add: "Добавить",
     delete: "Удалить",
