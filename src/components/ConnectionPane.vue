@@ -252,9 +252,13 @@ const MODES: { value: Mode; label: string }[] = [
   height: 11.5rem;
   border-radius: 50%;
 }
+/* The ring and the speed are drawn over the switch (they are positioned, it
+   is not): clicks must go through them, or Chromium (WebView2 on Windows)
+   hands them to the ring and the switch never gets one. */
 .track {
   position: absolute;
   inset: 0;
+  pointer-events: none;
   width: 100%;
   height: 100%;
   transform: rotate(135deg);
@@ -312,6 +316,7 @@ const MODES: { value: Mode; label: string }[] = [
 }
 .dial-speed {
   position: absolute;
+  pointer-events: none;
   bottom: 0.125rem;
   left: 50%;
   transform: translateX(-50%);
