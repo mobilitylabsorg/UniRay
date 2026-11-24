@@ -1,0 +1,96 @@
+diff --git a/src/certs.rs b/src/certs.rs
+index 6a0bdc9..f26d635 100644
+--- a/src/certs.rs
++++ b/src/certs.rs
+@@ -396,42 +396,62 @@ pub mod windows {
+         pub fn new(common_name: &str) -> anyhow::Result<Self> {
+             unsafe {
+                 let store_name: Vec<u16> = "MY".encode_utf16().chain([0]).collect();
+-
+-                debug!("Opening LocalMachine MY certificate store");
+-
+-                let store = CertOpenStore(
+-                    CERT_STORE_PROV_SYSTEM_W,
+-                    0,
+-                    HCRYPTPROV_LEGACY::default(),
+-                    (CERT_SYSTEM_STORE_LOCAL_MACHINE_ID << CERT_SYSTEM_STORE_LOCATION_SHIFT)
+-                        | CERT_STORE_OPEN_EXISTING_FLAG
+-                        | CERT_STORE_READONLY_FLAG,
+-                    store_name.as_ptr() as _,
+-                );
+-                if store.is_null() {
+-                    return Err(win32_err("CertOpenStore"));
+-                }
+-
+                 let pattern: Vec<u16> = common_name.encode_utf16().chain([0]).collect();
+ 
+-                debug!("Searching for certificate with subject containing '{}'", common_name);
++                // The certificate and its private key may live in the user's
++                // store (certmgr.msc) or the machine's (certlm.msc). Check
++                // Point's own client issues user certificates, so look in the
++                // current user's store first and fall back to the machine's.
++                let locations = [
++                    (CERT_SYSTEM_STORE_CURRENT_USER_ID, "CurrentUser"),
++                    (CERT_SYSTEM_STORE_LOCAL_MACHINE_ID, "LocalMachine"),
++                ];
++
++                let mut cert_context: *const CERT_CONTEXT = ptr::null();
++                for (location_id, location_name) in locations {
++                    debug!("Opening {location_name}\\MY certificate store");
++
++                    let store = CertOpenStore(
++                        CERT_STORE_PROV_SYSTEM_W,
++                        0,
++                        HCRYPTPROV_LEGACY::default(),
++                        (location_id << CERT_SYSTEM_STORE_LOCATION_SHIFT)
++                            | CERT_STORE_OPEN_EXISTING_FLAG
++                            | CERT_STORE_READONLY_FLAG,
++                        store_name.as_ptr() as _,
++                    );
++                    if store.is_null() {
++                        debug!("Cannot open {location_name}\\MY: {}", win32_err("CertOpenStore"));
++                        continue;
++                    }
+ 
+-                let found = CertFindCertificateInStore(
+-                    store,
+-                    MY_ENCODING_TYPE,
+-                    0,
+-                    CERT_FIND_SUBJECT_STR,
+-                    pattern.as_ptr() as _,
+-                    ptr::null(),
+-                );
++                    debug!("Searching {location_name}\\MY for subject containing '{}'", common_name);
++
++                    let found = CertFindCertificateInStore(
++                        store,
++                        MY_ENCODING_TYPE,
++                        0,
++                        CERT_FIND_SUBJECT_STR,
++                        pattern.as_ptr() as _,
++                        ptr::null(),
++                    );
++
++                    if !found.is_null() {
++                        cert_context = CertDuplicateCertificateContext(found);
++                        CertCloseStore(store, 0);
++                        debug!("Found certificate in {location_name}\\MY");
++                        break;
++                    }
+ 
+-                if found.is_null() {
+                     CertCloseStore(store, 0);
+-                    return Err(anyhow!("No certificate matching '{}' in LocalMachine\\MY", common_name));
+                 }
+ 
+-                let cert_context = CertDuplicateCertificateContext(found);
+-                CertCloseStore(store, 0);
++                if cert_context.is_null() {
++                    return Err(anyhow!(
++                        "No certificate matching '{}' in CurrentUser\\MY or LocalMachine\\MY",
++                        common_name
++                    ));
++                }
+ 
+                 let chain = match Self::build_chain(cert_context) {
+                     Ok(c) => c,

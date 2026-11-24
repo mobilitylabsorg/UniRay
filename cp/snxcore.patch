@@ -1,0 +1,317 @@
+diff --git a/crates/snxcore/src/model/params.rs b/crates/snxcore/src/model/params.rs
+index 46ec671..e0eaf3d 100644
+--- a/crates/snxcore/src/model/params.rs
++++ b/crates/snxcore/src/model/params.rs
+@@ -691,6 +691,10 @@ pub struct TunnelParams {
+     pub disable_ipv6: bool,
+     pub mtu: u16,
+     pub transport_type: TransportType,
++    /// UNIRAY: when set, tunnel IP packets are exchanged over this socketpair
++    /// fd with the UniRay engine instead of a TUN device, and host routing/DNS
++    /// are left to the engine.
++    pub packet_fd: Option<i32>,
+     pub allow_forwarding: bool,
+     pub tls_version_max: TlsVersion,
+     #[serde(skip)]
+@@ -754,6 +758,7 @@ impl Default for TunnelParams {
+             disable_ipv6: false,
+             mtu: DEFAULT_MTU,
+             transport_type: TransportType::default(),
++            packet_fd: None,
+             allow_forwarding: false,
+             tls_version_max: TlsVersion::default(),
+             mfa_code: None,
+@@ -813,6 +818,7 @@ impl PartialEq for TunnelParams {
+             && self.disable_ipv6 == other.disable_ipv6
+             && self.mtu == other.mtu
+             && self.transport_type == other.transport_type
++            && self.packet_fd == other.packet_fd
+             && self.allow_forwarding == other.allow_forwarding
+             && self.tls_version_max == other.tls_version_max
+             && self.mfa_code == other.mfa_code
+@@ -908,6 +914,7 @@ impl TunnelParams {
+                 "disable-ipv6" => params.disable_ipv6 = v.parse().unwrap_or_default(),
+                 "mtu" => params.mtu = v.parse().unwrap_or(DEFAULT_MTU),
+                 "transport-type" => params.transport_type = v.parse().unwrap_or_default(),
++                "packet-fd" => params.packet_fd = v.parse().ok(),
+                 "allow-forwarding" => params.allow_forwarding = v.parse().unwrap_or_default(),
+                 "tls-version-max" => params.tls_version_max = v.parse().unwrap_or_default(),
+                 "client-logging-data" => params.client_logging_data = Some(v.into()),
+diff --git a/crates/snxcore/src/tunnel/ipsec/auth.rs b/crates/snxcore/src/tunnel/ipsec/auth.rs
+index 41b665b..250c6bc 100644
+--- a/crates/snxcore/src/tunnel/ipsec/auth.rs
++++ b/crates/snxcore/src/tunnel/ipsec/auth.rs
+@@ -117,6 +117,7 @@ pub(crate) fn auth_blob(params: &TunnelParams, info: &GatewayInformation, machin
+         .and_then(|path| ClientLoggingData::load(path).ok())
+         .unwrap_or_default();
+ 
++    let _ = &client_logging_data;
+     client_logging_data.os_name.get_or_insert_with(|| "Windows".to_owned());
+     client_logging_data.device_id.get_or_insert_with(util::get_device_id);
+     if client_logging_data.machine_name.is_none() {
+@@ -134,7 +135,9 @@ pub(crate) fn auth_blob(params: &TunnelParams, info: &GatewayInformation, machin
+         secondary_realm_hash: info
+             .get_login_option(&params.login_type)
+             .map(|o| o.secondary_realm_hash.clone()),
+-        client_logging_data: Some(client_logging_data),
++        // The official Endpoint Security client omits client_logging_data from
++        // the IKE identity blob (UNIRAY: match it exactly).
++        client_logging_data: None,
+     };
+ 
+     SExpression::from(&realm)
+diff --git a/crates/snxcore/src/tunnel/ipsec/ikev1.rs b/crates/snxcore/src/tunnel/ipsec/ikev1.rs
+index 6e05868..9e6dc5a 100644
+--- a/crates/snxcore/src/tunnel/ipsec/ikev1.rs
++++ b/crates/snxcore/src/tunnel/ipsec/ikev1.rs
+@@ -19,7 +19,7 @@ use isakmp::{
+         session::Ikev1Session,
+     },
+     session::{IsakmpSession, OfficeMode, SessionType},
+-    transport::{TcptDataType, TcptTransport},
++    transport::UdpTransport,
+ };
+ use tokio::{net::UdpSocket, sync::mpsc::Sender};
+ use tracing::{debug, info, trace, warn};
+@@ -156,7 +156,7 @@ impl Ikev1TunnelConnector {
+ 
+         Ok(Self {
+             params: params.clone(),
+-            service: Self::new_service(&params, &info)?,
++            service: Self::new_service(&params, &info).await?,
+             gateway_address,
+             last_message_id: 0,
+             last_identifier: 0,
+@@ -578,20 +578,21 @@ impl Ikev1TunnelConnector {
+         })
+     }
+ 
+-    fn new_service(params: &TunnelParams, info: &GatewayInformation) -> anyhow::Result<Ikev1Service> {
++    async fn new_service(params: &TunnelParams, info: &GatewayInformation) -> anyhow::Result<Ikev1Service> {
+         let identity = auth::new_identity(params, info)?;
+ 
+         let ikev1_session = Ikev1Session::new(identity, SessionType::Initiator)?;
+ 
+-        let address = util::server_name_with_port(&params.server_name, info.connectivity_info.tcpt_port);
++        // The IKE control channel runs over NAT-T UDP 4500, as the official
++        // client does. Some gateways silently drop the XAUTH ModeCfg reply when
++        // IKE is tunnelled over TCPT, so TCPT is kept only as a fallback.
++        let address = util::server_name_with_port(&params.server_name, info.connectivity_info.natt_port);
++        let natt_address = address.to_socket_addrs()?.next().context("No address!")?;
+ 
+-        let tcpt_address = address.to_socket_addrs()?.next().context("No address!")?;
++        let socket = UdpSocket::bind("0.0.0.0:0").await?;
++        socket.connect(natt_address).await?;
+ 
+-        let transport = Box::new(TcptTransport::new(
+-            TcptDataType::Ike,
+-            tcpt_address,
+-            ikev1_session.new_codec(),
+-        ));
++        let transport = Box::new(UdpTransport::new(Arc::new(socket), ikev1_session.new_codec()));
+ 
+         Ikev1Service::new(transport, ikev1_session)
+     }
+@@ -676,7 +677,7 @@ impl TunnelConnector for Ikev1TunnelConnector {
+             Err(e) => {
+                 let _ = self.delete_session().await;
+                 let info = self.gateway_connector.get_gateway_information().await?;
+-                self.service = Self::new_service(&self.params, &info)?;
++                self.service = Self::new_service(&self.params, &info).await?;
+                 Err(e)
+             }
+         }
+diff --git a/crates/snxcore/src/tunnel/ipsec/imp/tun.rs b/crates/snxcore/src/tunnel/ipsec/imp/tun.rs
+index 2af3651..d4e369c 100644
+--- a/crates/snxcore/src/tunnel/ipsec/imp/tun.rs
++++ b/crates/snxcore/src/tunnel/ipsec/imp/tun.rs
+@@ -44,6 +44,29 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(120);
+ pub type PacketSender = Sender<Bytes>;
+ pub type PacketReceiver = Receiver<Bytes>;
+ 
++/// UNIRAY: the tunnel's plaintext IP packets go either to a real TUN device
++/// (standalone) or, in engine mode, over a connected socketpair to the UniRay
++/// engine. Both expose the same async send/recv over &self.
++enum PacketDevice {
++    Tun(Arc<tun::AsyncDevice>),
++    Sock(tokio::net::UnixDatagram),
++}
++
++impl PacketDevice {
++    async fn send(&self, buf: &[u8]) -> std::io::Result<usize> {
++        match self {
++            PacketDevice::Tun(d) => d.send(buf).await,
++            PacketDevice::Sock(s) => s.send(buf).await,
++        }
++    }
++    async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
++        match self {
++            PacketDevice::Tun(d) => d.recv(buf).await,
++            PacketDevice::Sock(s) => s.recv(buf).await,
++        }
++    }
++}
++
+ pub(crate) struct TunIPsecTunnel {
+     params: Arc<TunnelParams>,
+     session: Arc<TunnelSession>,
+@@ -207,6 +230,29 @@ impl TunIPsecTunnel {
+         Ok(())
+     }
+ 
++    /// UNIRAY: prints the tunnel settings for the engine to parse (see
++    /// engine/ovpn.go `follow`), one key/value line each, ending with
++    /// `connected`.
++    fn report_settings(&self, session: &IPsecSession) {
++        use std::io::Write;
++        let mut out = std::io::stdout().lock();
++        let _ = writeln!(out, "tun {}", self.params.mtu);
++        if let Ok(net) = Ipv4Net::with_netmask(session.address, session.netmask) {
++            let _ = writeln!(out, "address {}", net);
++        }
++        for subnet in &self.subnets {
++            let _ = writeln!(out, "route {}", subnet);
++        }
++        for dns in &session.dns {
++            let _ = writeln!(out, "dns {}", dns);
++        }
++        for domain in &session.domains {
++            let _ = writeln!(out, "domain {}", domain);
++        }
++        let _ = writeln!(out, "connected");
++        let _ = out.flush();
++    }
++
+     pub(super) async fn run(
+         &mut self,
+         mut command_receiver: tokio::sync::mpsc::Receiver<TunnelCommand>,
+@@ -229,9 +275,6 @@ impl TunIPsecTunnel {
+             .with_context(|| tr!("error-no-ipsec-session"))?
+             .clone();
+ 
+-        let tun = TunDevice::new(name_hint)?;
+-        let tun_name = tun.name().to_owned();
+-
+         let nat = session.physical_address.then(|| {
+             let excluded = self
+                 .subnets
+@@ -243,44 +286,61 @@ impl TunIPsecTunnel {
+             StaticNat::new(placeholder_address(session.address, &excluded), session.address)
+         });
+ 
+-        if let Some(nat) = nat {
+-            debug!(
+-                "No Office Mode address: {} uses {}, translated to {}",
+-                tun_name,
+-                nat.local(),
+-                session.address
+-            );
+-        }
++        let resolver_config = ResolverConfig::builder(self.params.clone(), Platform::get().get_features().await)
++            .search_domains(&session.domains)
++            .dns_servers(session.dns.iter().cloned())
++            .build();
+ 
+-        let device_config = DeviceConfig {
+-            name: tun_name.clone(),
+-            mtu: self.params.mtu,
+-            address: nat.map_or_else(|| session.ipv4net_address(), |nat| nat.local().into()),
+-            allow_forwarding: self.params.allow_forwarding,
+-        };
++        // UNIRAY: in engine mode the tunnel's IP packets go over a socketpair to
++        // the UniRay engine, which owns the network stack, routing and DNS; the
++        // standalone path uses a real TUN device.
++        let (packet_dev, tun_name) = if let Some(fd) = self.params.packet_fd {
++            self.report_settings(&session);
++            use std::os::fd::FromRawFd;
++            #[allow(unsafe_code)]
++            let std_sock = unsafe { std::os::unix::net::UnixDatagram::from_raw_fd(fd) };
++            std_sock.set_nonblocking(true)?;
++            let sock = tokio::net::UnixDatagram::from_std(std_sock)?;
++            (Arc::new(PacketDevice::Sock(sock)), String::new())
++        } else {
++            let tun = TunDevice::new(name_hint)?;
++            let tun_name = tun.name().to_owned();
++
++            if let Some(nat) = nat {
++                debug!(
++                    "No Office Mode address: {} uses {}, translated to {}",
++                    tun_name,
++                    nat.local(),
++                    session.address
++                );
++            }
+ 
+-        Platform::get()
+-            .new_network_interface()
+-            .configure_device(&device_config)
+-            .await?;
++            let device_config = DeviceConfig {
++                name: tun_name.clone(),
++                mtu: self.params.mtu,
++                address: nat.map_or_else(|| session.ipv4net_address(), |nat| nat.local().into()),
++                allow_forwarding: self.params.allow_forwarding,
++            };
+ 
+-        let dev = tun.inner();
+-        let tun_sender = dev.clone();
+-        let tun_receiver = dev.clone();
++            Platform::get()
++                .new_network_interface()
++                .configure_device(&device_config)
++                .await?;
+ 
+-        self.tun_device = Some(tun);
++            let dev = tun.inner();
+ 
+-        let resolver_config = ResolverConfig::builder(self.params.clone(), Platform::get().get_features().await)
+-            .search_domains(&session.domains)
+-            .dns_servers(session.dns.iter().cloned())
+-            .build();
++            // Routing first (needs &mut self to stash the configurator), then DNS.
++            self.setup_routing(&tun_name, &session).await?;
++            if !self.params.no_dns {
++                self.setup_dns(&resolver_config, &tun_name, false).await?;
++            }
+ 
+-        // Routing first (needs &mut self to stash the configurator), then DNS.
+-        // Borrowing constraints prevent the earlier try_join.
+-        self.setup_routing(&tun_name, &session).await?;
+-        if !self.params.no_dns {
+-            self.setup_dns(&resolver_config, &tun_name, false).await?;
+-        }
++            self.tun_device = Some(tun);
++            (Arc::new(PacketDevice::Tun(dev)), tun_name)
++        };
++
++        let tun_sender = packet_dev.clone();
++        let tun_receiver = packet_dev;
+ 
+         let mut snx_receiver = self.receiver.take().context("No receiver")?;
+ 
+@@ -440,7 +500,7 @@ impl TunIPsecTunnel {
+         let mut keepalive_runner = KeepaliveRunner::new(
+             keepalive_address,
+             tun_name.clone(),
+-            if params.no_keepalive || !Platform::get().get_features().await.ipsec_keepalive {
++            if params.no_keepalive || params.packet_fd.is_some() || !Platform::get().get_features().await.ipsec_keepalive {
+                 Arc::new(AtomicBool::new(false))
+             } else {
+                 ready.clone()
+@@ -452,7 +512,15 @@ impl TunIPsecTunnel {
+         let ka_run = keepalive_runner.run();
+         pin_mut!(ka_run);
+ 
+-        let scv_runner = ScvRunner::new(keepalive_address, tun_name.clone(), ready.clone());
++        let scv_runner = ScvRunner::new(
++            keepalive_address,
++            tun_name.clone(),
++            if params.packet_fd.is_some() {
++                Arc::new(AtomicBool::new(false))
++            } else {
++                ready.clone()
++            },
++        );
+ 
+         let scv_run = scv_runner.run();
+         pin_mut!(scv_run);
