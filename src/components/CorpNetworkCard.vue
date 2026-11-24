@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// The corporate network next to the VPN: an OpenVPN profile whose networks
-// and domains go through its own tunnel, everything else as before.
+// The corporate network next to the VPN: an OpenVPN profile or a Check Point
+// gateway whose networks and domains go through its own tunnel, everything
+// else as before.
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -13,6 +14,8 @@ const store = useAppStore();
 const { t } = useI18n();
 
 const corp = computed<CorpNetwork | null>(() => store.snapshot?.corp ?? null);
+const kinds = computed(() => store.snapshot?.corpKinds ?? []);
+const isCheckPoint = computed(() => corp.value?.kind === "checkPoint");
 const status = computed(() => store.connection?.corp ?? null);
 /** Servers that can stand in front of the corporate one: those Xray runs. */
 const fronts = computed(() => store.servers.filter((server) => !["wireguard", "amneziawg", "naive"].includes(server.protocol)));
@@ -29,6 +32,51 @@ const domains = ref("");
 const dns = ref("");
 const via = ref("direct");
 const saving = ref(false);
+
+// Check Point: the form for a new gateway, and the same fields for the saved one.
+const setupOpen = ref(false);
+const cpName = ref("");
+const gateway = ref("");
+/** A certificate just picked: its file name and content in base64. */
+const cert = ref<[string, string] | null>(null);
+const certPassword = ref("");
+const certInput = ref<HTMLInputElement | null>(null);
+
+const certLabel = computed(() => {
+  if (cert.value) return cert.value[0];
+  if (corp.value?.hasCert) return corp.value.certName || t("corp.cert");
+  return t("corp.certPick");
+});
+
+async function pickCert(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  cert.value = [file.name, btoa(binary)];
+}
+
+async function addCheckPoint() {
+  saving.value = true;
+  const done = await store.run(() =>
+    api.corpCheckPoint({
+      name: cpName.value,
+      gateway: gateway.value,
+      cert: cert.value,
+      certPassword: certPassword.value === "" ? null : certPassword.value,
+      username: username.value,
+      password: password.value === "" ? null : password.value,
+    }),
+  );
+  saving.value = false;
+  if (done !== undefined) {
+    setupOpen.value = false;
+    store.toast(t("corp.added"));
+  }
+}
 
 function viaKey(value: CorpVia): string {
   return value.kind === "server" ? `server:${value.id}` : value.kind;
@@ -48,6 +96,9 @@ function fill(next: CorpNetwork | null) {
   domains.value = next.domains.join("\n");
   dns.value = next.dns.join("\n");
   via.value = viaKey(next.via);
+  gateway.value = next.gateway;
+  cert.value = null;
+  certPassword.value = "";
 }
 watch(corp, fill, { immediate: true });
 
@@ -67,7 +118,8 @@ const dirty = computed(() => {
     lines(routes.value).join() !== saved.routes.join() ||
     lines(domains.value).join() !== saved.domains.join() ||
     lines(dns.value).join() !== saved.dns.join() ||
-    via.value !== viaKey(saved.via)
+    via.value !== viaKey(saved.via) ||
+    (saved.kind === "checkPoint" && (gateway.value.trim() !== saved.gateway || cert.value !== null || certPassword.value !== ""))
   );
 });
 
@@ -96,6 +148,9 @@ async function save(enabled = corp.value?.enabled ?? true) {
       domains: lines(domains.value),
       dns: lines(dns.value),
       via: viaOf(via.value),
+      ...(isCheckPoint.value
+        ? { gateway: gateway.value, cert: cert.value, certPassword: certPassword.value === "" ? null : certPassword.value }
+        : {}),
     }),
   );
   saving.value = false;
@@ -121,6 +176,23 @@ const missingDomains = computed(() => {
   return servers.length > 0 && !anyDomain ? servers.join(", ") : null;
 });
 
+/** Why the tunnel is down, in words for the user where it is a known case. */
+const errorText = computed(() => {
+  const error = status.value?.error;
+  if (!error) return null;
+  if (error.includes("AUTH_FAILED")) return t("corp.authFailed");
+  if (/mac verify failure|PKCS12/i.test(error)) return t("corp.certPasswordWrong");
+  return error;
+});
+
+/** Where it connects, next to its name. */
+const where = computed(() => {
+  const info = corp.value?.info;
+  if (!info) return null;
+  if (isCheckPoint.value) return `${info.host}${info.port === 443 ? "" : `:${info.port}`} · Check Point`;
+  return `${info.host}:${info.port} · ${info.proto.toUpperCase()}`;
+});
+
 const STATE_CLASS = { connecting: "bg-raised text-muted", up: "bg-accent-soft text-accent", down: "bg-danger-soft text-danger" } as const;
 
 /** The options stay folded until something there needs attention. */
@@ -138,7 +210,7 @@ watch(needsAttention, (attention) => {
 /** What the options say in short, next to their heading. */
 const viaLabel = computed(() => {
   const saved = corp.value?.via;
-  if (!saved || saved.kind === "direct") return t("corp.viaDirect");
+  if (!saved || saved.kind === "direct" || isCheckPoint.value) return t("corp.viaDirect");
   if (saved.kind === "main") return t("corp.viaMain");
   return store.servers.find((server) => server.id === saved.id)?.name ?? t("corp.viaMain");
 });
@@ -154,13 +226,71 @@ const viaLabel = computed(() => {
     class="hidden"
     @change="pick"
   />
+  <input ref="certInput" type="file" accept=".p12,.pfx" class="hidden" @change="pickCert" />
 
   <div v-if="!corp" class="card mb-7 p-4">
     <p class="mb-3 text-sm text-muted">{{ t("corp.intro") }}</p>
-    <button class="btn btn-quiet" :disabled="importing" @click="fileInput?.click()">
-      <AppIcon name="file" :size="18" />{{ t("corp.import") }}
-    </button>
-    <p class="mt-2 text-xs text-muted">{{ t("corp.importHint") }}</p>
+    <template v-if="!setupOpen">
+      <div class="flex flex-wrap gap-2">
+        <button v-if="kinds.includes('openVpn')" class="btn btn-quiet" :disabled="importing" @click="fileInput?.click()">
+          <AppIcon name="file" :size="18" />{{ t("corp.import") }}
+        </button>
+        <button v-if="kinds.includes('checkPoint')" class="btn btn-quiet" @click="setupOpen = true">
+          <AppIcon name="plus" :size="18" />{{ t("corp.checkPoint") }}
+        </button>
+      </div>
+      <p v-if="kinds.includes('openVpn')" class="mt-2 text-xs text-muted">{{ t("corp.importHint") }}</p>
+    </template>
+    <form v-else class="grid gap-2" @submit.prevent="addCheckPoint">
+      <p class="text-xs text-muted">{{ t("corp.checkPointHint") }}</p>
+      <input
+        v-model="gateway"
+        class="field"
+        placeholder="vpn.example.com"
+        :aria-label="t('corp.gateway')"
+        autocapitalize="off"
+        spellcheck="false"
+        required
+      />
+      <input v-model="cpName" class="field" :placeholder="t('corp.name')" :aria-label="t('corp.name')" />
+      <button type="button" class="btn btn-quiet min-w-0 justify-self-start" @click="certInput?.click()">
+        <AppIcon name="file" :size="18" /><span class="truncate">{{ certLabel }}</span>
+      </button>
+      <input
+        v-if="cert"
+        v-model="certPassword"
+        class="field"
+        type="password"
+        :placeholder="t('corp.certPassword')"
+        :aria-label="t('corp.certPassword')"
+        autocomplete="off"
+      />
+      <div class="grid gap-2 sm:grid-cols-2">
+        <input
+          v-model="username"
+          class="field"
+          :placeholder="t('corp.username')"
+          :aria-label="t('corp.username')"
+          autocomplete="username"
+          autocapitalize="off"
+          spellcheck="false"
+        />
+        <input
+          v-model="password"
+          class="field"
+          type="password"
+          :placeholder="t('corp.password')"
+          :aria-label="t('corp.password')"
+          autocomplete="current-password"
+        />
+      </div>
+      <div class="flex gap-2">
+        <button type="submit" class="btn btn-primary" :disabled="!gateway.trim() || saving">
+          <AppIcon name="check" :size="18" />{{ t("common.add") }}
+        </button>
+        <button type="button" class="btn btn-quiet" @click="setupOpen = false">{{ t("common.cancel") }}</button>
+      </div>
+    </form>
   </div>
 
   <div v-else class="card group-card overflow-hidden">
@@ -169,23 +299,21 @@ const viaLabel = computed(() => {
       <div class="min-w-0 flex-1">
         <div class="truncate font-medium">{{ corp.name }}</div>
         <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
-          <span v-if="corp.info" class="selectable truncate font-mono">
-            {{ corp.info.host }}:{{ corp.info.port }} · {{ corp.info.proto.toUpperCase() }}
-          </span>
+          <span v-if="where" class="selectable truncate font-mono">{{ where }}</span>
           <span v-if="status" class="tag shrink-0" :class="STATE_CLASS[status.state]">
             {{ t(`corp.state.${status.state}`) }}<template v-if="status.state === 'up' && status.address"> · {{ status.address }}</template>
           </span>
         </div>
       </div>
-      <button class="icon-btn" :aria-label="t('corp.replace')" :title="t('corp.replace')" @click="fileInput?.click()">
+      <button v-if="!isCheckPoint" class="icon-btn" :aria-label="t('corp.replace')" :title="t('corp.replace')" @click="fileInput?.click()">
         <AppIcon name="refresh" :size="16" />
       </button>
       <button class="icon-btn" :aria-label="t('common.delete')" :title="t('common.delete')" @click="remove">
         <AppIcon name="trash" :size="16" />
       </button>
     </div>
-    <p v-if="status?.state === 'down' && status.error" class="selectable bg-danger-soft px-4 py-2 text-xs text-danger">
-      {{ status.error.includes("AUTH_FAILED") ? t("corp.authFailed") : status.error }}
+    <p v-if="status?.state === 'down' && errorText" class="selectable bg-danger-soft px-4 py-2 text-xs text-danger">
+      {{ errorText }}
     </p>
 
     <button class="row-button py-2.5" :aria-expanded="expanded" @click="expanded = !expanded">
@@ -195,7 +323,46 @@ const viaLabel = computed(() => {
     </button>
 
     <template v-if="expanded">
-      <div v-if="corp.info?.needsCredentials" class="grid gap-2 px-4 py-3 sm:grid-cols-2">
+      <div v-if="isCheckPoint" class="grid gap-2 px-4 py-3">
+        <label>
+          <span class="mb-1.5 block text-sm font-medium">{{ t("corp.gateway") }}</span>
+          <input v-model="gateway" class="field" placeholder="vpn.example.com" autocapitalize="off" spellcheck="false" />
+        </label>
+        <span class="block text-sm font-medium">{{ t("corp.cert") }}</span>
+        <button type="button" class="btn btn-quiet min-w-0 justify-self-start" @click="certInput?.click()">
+          <AppIcon name="file" :size="18" /><span class="truncate">{{ certLabel }}</span>
+        </button>
+        <input
+          v-if="cert || corp.hasCert"
+          v-model="certPassword"
+          class="field"
+          type="password"
+          :placeholder="corp.hasCertPassword && !cert ? t('corp.certPasswordSaved') : t('corp.certPassword')"
+          :aria-label="t('corp.certPassword')"
+          autocomplete="off"
+        />
+        <div class="grid gap-2 sm:grid-cols-2">
+          <input
+            v-model="username"
+            class="field"
+            :placeholder="t('corp.username')"
+            :aria-label="t('corp.username')"
+            autocomplete="username"
+            autocapitalize="off"
+            spellcheck="false"
+          />
+          <input
+            v-model="password"
+            class="field"
+            type="password"
+            :placeholder="corp.hasPassword ? t('corp.passwordSaved') : t('corp.password')"
+            :aria-label="t('corp.password')"
+            autocomplete="current-password"
+          />
+        </div>
+      </div>
+
+      <div v-else-if="corp.info?.needsCredentials" class="grid gap-2 px-4 py-3 sm:grid-cols-2">
         <input
           v-model="username"
           class="field"
@@ -215,7 +382,8 @@ const viaLabel = computed(() => {
         />
       </div>
 
-      <label class="block px-4 py-3">
+      <p v-if="isCheckPoint" class="row-hint px-4 py-3">{{ t("corp.directOnly") }}</p>
+      <label v-else class="block px-4 py-3">
         <span class="mb-1.5 block text-sm font-medium">{{ t("corp.via") }}</span>
         <select v-model="via" class="field px-2">
           <option value="direct">{{ t("corp.viaDirect") }}</option>

@@ -38,6 +38,9 @@ pub struct Paths {
     /// The OpenVPN client the engine runs for the corporate network.
     #[cfg(desktop)]
     pub ovpn: PathBuf,
+    /// The Check Point client, likewise.
+    #[cfg(desktop)]
+    pub cp: PathBuf,
 }
 
 pub struct App {
@@ -131,6 +134,8 @@ pub struct Snapshot {
     pub corp: Option<crate::corp::CorpView>,
     /// This build can run the corporate network.
     pub corp_available: bool,
+    /// What it can run it with.
+    pub corp_kinds: Vec<uniray_core::corp::CorpKind>,
 }
 
 pub fn snapshot(app: &AppHandle) -> Snapshot {
@@ -156,6 +161,7 @@ pub fn snapshot(app: &AppHandle) -> Snapshot {
         features: crate::edition::FEATURES,
         corp: store.data.corp.as_ref().map(crate::corp::CorpView::of),
         corp_available: crate::corp::available(app),
+        corp_kinds: crate::corp::kinds(app),
     }
 }
 

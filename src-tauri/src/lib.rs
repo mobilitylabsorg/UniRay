@@ -72,6 +72,8 @@ pub fn run() {
                 naive: sidecar("uniray-naive")?,
                 #[cfg(desktop)]
                 ovpn: sidecar("uniray-ovpn")?,
+                #[cfg(desktop)]
+                cp: sidecar("uniray-cp")?,
             };
             app.manage(App::new(store, device, paths));
             deeplink::install(&handle);
@@ -117,6 +119,7 @@ pub fn run() {
             commands::delete_subscription,
             commands::save_settings,
             corp::corp_import,
+            corp::corp_checkpoint,
             corp::corp_save,
             corp::corp_delete,
             commands::connect,

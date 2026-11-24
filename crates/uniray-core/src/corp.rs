@@ -1,8 +1,8 @@
-//! The corporate network: an OpenVPN tunnel next to the VPN.
+//! The corporate network: an OpenVPN or Check Point tunnel next to the VPN.
 //!
 //! The engine runs it (`uniray-engine ovpn`, which runs `uniray-ovpn`, the
-//! OpenVPN 3 core) and serves it to Xray as SOCKS5, as for a WireGuard
-//! server; Xray sends the corporate networks and domains there, through the
+//! OpenVPN 3 core; `uniray-engine cp`, which runs `uniray-cp`, snx-rs) and
+//! serves it to Xray as SOCKS5, as for a WireGuard server; Xray sends the corporate networks and domains there, through the
 //! `corp` outbound, and everything else by its usual rules. The tunnel can
 //! reach its server through another server in front of it (when only that one
 //! gets through, e.g. on allowlisting networks): the engine then connects to a
@@ -24,14 +24,34 @@ use crate::engine::{resolve, secret};
 use crate::error::{Error, Result};
 use crate::routes::parse_cidr;
 
+/// What runs the corporate network.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CorpKind {
+    #[default]
+    OpenVpn,
+    /// A Check Point gateway (Remote Access VPN, IPsec): [`CorpNetwork::gateway`],
+    /// with [`CorpNetwork::cert`] and the user name and password.
+    CheckPoint,
+}
+
 /// The corporate network the user imported, see the module docs.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CorpNetwork {
+    pub kind: CorpKind,
     pub enabled: bool,
     pub name: String,
     /// The OpenVPN profile, its key files inlined (see [`assemble`]).
     pub profile: String,
+    /// The Check Point gateway: `host` or `host:port` (its HTTPS port).
+    pub gateway: String,
+    /// The user's certificate for Check Point: PKCS#12 (`.p12`, `.pfx`) in
+    /// base64; empty for a login without one.
+    pub cert: String,
+    /// The file it came from, for the UI.
+    pub cert_name: String,
+    pub cert_password: String,
     pub username: String,
     pub password: String,
     /// Route what the server pushes (networks, DNS, domains) into the tunnel,
@@ -191,6 +211,34 @@ const FILE_DIRECTIVES: [(&str, &str); 8] = [
     ("pkcs12", "pkcs12"),
 ];
 
+/// Where a Check Point gateway is: `host` or `host:port`, the port its HTTPS
+/// (443 unless given).
+pub fn gateway_info(gateway: &str) -> Result<ProfileInfo> {
+    let gateway = gateway.trim();
+    let gateway = gateway.strip_prefix("https://").unwrap_or(gateway).trim_end_matches('/');
+    let (host, port) = match gateway.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') => {
+            let port = port.parse().map_err(|_| Error::InvalidConfig(format!("{port} is not a port")))?;
+            (host, port)
+        }
+        _ => (gateway, 443),
+    };
+    if host.is_empty() || host.contains(char::is_whitespace) || host.contains('/') {
+        return Err(Error::InvalidConfig(format!("{gateway} is not a gateway address (vpn.example.com)")));
+    }
+    Ok(ProfileInfo { host: host.to_owned(), port, proto: "udp", needs_credentials: true })
+}
+
+impl CorpNetwork {
+    /// Where it connects, as the UI shows it.
+    pub fn info(&self) -> Result<ProfileInfo> {
+        match self.kind {
+            CorpKind::OpenVpn => profile_info(&self.profile),
+            CorpKind::CheckPoint => gateway_info(&self.gateway),
+        }
+    }
+}
+
 /// Puts a profile together from what the user picked: the profile (`.ovpn`,
 /// `.conf`, as OpenVPN Connect, Tunnelblick's `.tblk` and Viscosity's
 /// `.visc` hold it) and the files it names (`ca ca.crt`, `tls-auth ta.key 1`),
@@ -273,10 +321,31 @@ pub enum Way {
 
 /// The engine run and Xray's part for `corp`: the engine on `port`, the
 /// tunnel's server resolved (it blocks) to an address that a rule can send
-/// past the VPN, or reached through `way`'s front. `binary` is uniray-ovpn.
+/// past the VPN, or reached through `way`'s front. `binary` is uniray-ovpn,
+/// or uniray-cp for Check Point (which goes straight only: it needs several
+/// ports of the gateway, its HTTPS and IKE/ESP over UDP).
 pub fn prepare(corp: &CorpNetwork, port: u16, ipv6: bool, binary: &Path, way: Way) -> Result<CorpRun> {
-    let remote = profile_info(&corp.profile)?;
     let (user, pass) = ("uniray".to_owned(), secret());
+    let (mode, engine, bypass, front) = match corp.kind {
+        CorpKind::OpenVpn => {
+            let (engine, bypass, front) = prepare_ovpn(corp, ipv6, binary, way)?;
+            ("ovpn", engine, bypass, front)
+        }
+        CorpKind::CheckPoint => {
+            let (engine, bypass) = prepare_cp(corp, binary)?;
+            ("cp", engine, bypass, None)
+        }
+    };
+    let mut engine = engine;
+    engine["user"] = json!(user);
+    engine["pass"] = json!(pass);
+    engine["port"] = json!(port);
+    routing(corp, mode, engine, user, pass, port, bypass, front)
+}
+
+/// The engine's `ovpn` section, the bypass rule and the front.
+fn prepare_ovpn(corp: &CorpNetwork, ipv6: bool, binary: &Path, way: Way) -> Result<(Value, Vec<Bypass>, Option<config::CorpFront>)> {
+    let remote = profile_info(&corp.profile)?;
     let (server, front, bypass) = match way {
         Way::Direct => {
             let addr = resolve(&remote.host, remote.port, ipv6)?;
@@ -294,9 +363,6 @@ pub fn prepare(corp: &CorpNetwork, port: u16, ipv6: bool, binary: &Path, way: Wa
         }
     };
     let engine = json!({
-        "user": user,
-        "pass": pass,
-        "port": port,
         "ovpn": {
             "binary": binary.to_string_lossy(),
             "profile": corp.profile,
@@ -307,7 +373,52 @@ pub fn prepare(corp: &CorpNetwork, port: u16, ipv6: bool, binary: &Path, way: Wa
             "proto": remote.proto,
         },
     });
+    Ok((engine, bypass, front))
+}
 
+/// The engine's `cp` section and the bypass rules: the gateway, resolved to
+/// its IPv4 address (snx-rs speaks IPv4 to it), on its HTTPS port and on IKE
+/// and NAT-T (UDP 500, 4500).
+fn prepare_cp(corp: &CorpNetwork, binary: &Path) -> Result<(Value, Vec<Bypass>)> {
+    let gateway = gateway_info(&corp.gateway)?;
+    let addr = resolve(&gateway.host, gateway.port, false)?;
+    let ip = addr.ip();
+    if !ip.is_ipv4() {
+        return Err(Error::InvalidConfig(format!("{} has no IPv4 address", gateway.host)));
+    }
+    let bypass = vec![
+        Bypass { addr, network: "tcp" },
+        Bypass { addr: SocketAddr::new(ip, 500), network: "udp" },
+        Bypass { addr: SocketAddr::new(ip, 4500), network: "udp" },
+    ];
+    let server_name = if gateway.port == 443 { gateway.host.clone() } else { format!("{}:{}", gateway.host, gateway.port) };
+    let engine = json!({
+        "cp": {
+            "binary": binary.to_string_lossy(),
+            "gateway": server_name,
+            "address": ip.to_string(),
+            "cert": corp.cert,
+            "certPassword": corp.cert_password,
+            "username": corp.username,
+            "password": corp.password,
+        },
+    });
+    Ok((engine, bypass))
+}
+
+/// The engine run and Xray's routing into the tunnel: the user's networks,
+/// DNS servers and domains, and (when used) what the server pushed.
+#[allow(clippy::too_many_arguments)]
+fn routing(
+    corp: &CorpNetwork,
+    mode: &'static str,
+    engine: Value,
+    user: String,
+    pass: String,
+    port: u16,
+    bypass: Vec<Bypass>,
+    front: Option<config::CorpFront>,
+) -> Result<CorpRun> {
     let pushed = if corp.use_pushed { corp.learned.clone() } else { Pushed::default() };
     let mut routes: Vec<String> = Vec::new();
     for route in corp.routes.iter().chain(&pushed.routes) {
@@ -342,7 +453,7 @@ pub fn prepare(corp: &CorpNetwork, port: u16, ipv6: bool, binary: &Path, way: Wa
 
     let runtime = config::Engine { port, user, pass, bypass, block_udp: false, sniff_excluded: Vec::new() };
     Ok(CorpRun {
-        engine: crate::engine::EngineRun { mode: "ovpn", config: engine, runtime: runtime.clone(), warnings: Vec::new() },
+        engine: crate::engine::EngineRun { mode, config: engine, runtime: runtime.clone(), warnings: Vec::new() },
         runtime: config::Corp { engine: runtime, routes, domains, dns, front },
     })
 }
@@ -430,5 +541,62 @@ mod tests {
         assert_eq!((front.port, front.host.as_str(), front.remote_port, front.network), (40300, "203.0.113.7", 1195, "udp"));
         let engine: Value = serde_json::from_slice(&run.engine.config_for(&crate::engine::Peers::Pids(vec![]), false)).unwrap();
         assert_eq!((engine["ovpn"]["server"].as_str(), engine["ovpn"]["port"].as_u64()), (Some("127.0.0.1"), Some(40300)));
+    }
+
+    #[test]
+    fn gateway_info_reads_host_and_port() {
+        assert_eq!(gateway_info("vpn.corp.example").unwrap().host, "vpn.corp.example");
+        assert_eq!(gateway_info("https://vpn.corp.example/").unwrap().port, 443);
+        let custom = gateway_info(" vpn.corp.example:8443 ").unwrap();
+        assert_eq!((custom.host.as_str(), custom.port), ("vpn.corp.example", 8443));
+        assert!(gateway_info("").is_err());
+        assert!(gateway_info("vpn.corp.example:x").is_err());
+        assert!(gateway_info("vpn corp").is_err());
+    }
+
+    #[test]
+    fn prepare_check_point() {
+        let corp = CorpNetwork {
+            kind: CorpKind::CheckPoint,
+            enabled: true,
+            gateway: "203.0.113.9".into(),
+            cert: "UDEy".into(),
+            cert_password: "cp".into(),
+            username: "u".into(),
+            password: "p".into(),
+            routes: vec!["10.11.0.0/16".into()],
+            learned: Pushed { routes: vec![], dns: vec!["10.11.33.18".into()], domains: vec!["corp.test".into()] },
+            use_pushed: true,
+            via: Via::Main,
+            ..Default::default()
+        };
+        let run = prepare(&corp, 40200, false, Path::new("/opt/uniray-cp"), Way::Direct).unwrap();
+        assert_eq!(run.engine.mode, "cp");
+        assert_eq!(
+            run.runtime.engine.bypass,
+            [
+                Bypass { addr: "203.0.113.9:443".parse().unwrap(), network: "tcp" },
+                Bypass { addr: "203.0.113.9:500".parse().unwrap(), network: "udp" },
+                Bypass { addr: "203.0.113.9:4500".parse().unwrap(), network: "udp" },
+            ]
+        );
+        assert_eq!(run.runtime.routes, ["10.11.0.0/16"]);
+        assert_eq!(run.runtime.domains, ["domain:corp.test"]);
+        assert!(run.runtime.front.is_none());
+        let mut engine_run = run.engine.clone();
+        engine_run.set_cp_binary(Path::new("/staged/uniray-cp"));
+        let engine: Value = serde_json::from_slice(&engine_run.config_for(&crate::engine::Peers::Pids(vec![]), false)).unwrap();
+        assert_eq!(engine["cp"]["gateway"], "203.0.113.9");
+        assert_eq!(engine["cp"]["address"], "203.0.113.9");
+        assert_eq!(engine["cp"]["cert"], "UDEy");
+        assert_eq!(engine["cp"]["binary"], "/staged/uniray-cp");
+        assert_eq!(engine["port"], 40200);
+        assert!(engine["ovpn"].is_null());
+
+        let custom = CorpNetwork { gateway: "203.0.113.9:8443".into(), ..corp };
+        let run = prepare(&custom, 40200, false, Path::new("x"), Way::Direct).unwrap();
+        let engine: Value = serde_json::from_slice(&run.engine.config_for(&crate::engine::Peers::Pids(vec![]), false)).unwrap();
+        assert_eq!(engine["cp"]["gateway"], "203.0.113.9:8443");
+        assert_eq!(run.runtime.engine.bypass[0].addr.port(), 8443);
     }
 }

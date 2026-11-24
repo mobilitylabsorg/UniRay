@@ -295,6 +295,7 @@ async fn launch(
                 let mut run = (*run).clone();
                 run.set_naive_binary(&staged.naive);
                 run.set_ovpn_binary(&staged.ovpn);
+                run.set_cp_binary(&staged.cp);
                 run
             };
             write_private(path, &run.config_for(&Peers::Pids(Vec::new()), false)).map_err(CmdError::io)?;
@@ -358,6 +359,7 @@ struct RootReadable {
     engine: PathBuf,
     naive: PathBuf,
     ovpn: PathBuf,
+    cp: PathBuf,
     assets: PathBuf,
 }
 
@@ -376,20 +378,25 @@ fn root_readable(app: &AppHandle) -> CmdResult<RootReadable> {
             engine: paths.engine.clone(),
             naive: paths.naive.clone(),
             ovpn: paths.ovpn.clone(),
+            cp: paths.cp.clone(),
             assets: paths.assets.clone(),
         });
     }
     let mut binaries = vec![paths.helper.as_path(), &paths.xray, &paths.engine, &paths.naive];
-    // Only builds that have it.
-    let has_ovpn = paths.ovpn.is_file();
+    // Only builds that have them.
+    let (has_ovpn, has_cp) = (paths.ovpn.is_file(), paths.cp.is_file());
     if has_ovpn {
         binaries.push(&paths.ovpn);
     }
+    if has_cp {
+        binaries.push(&paths.cp);
+    }
     let (mut binaries, assets) =
         stage_for_root(&paths.run_dir.join("elevated"), &binaries, &paths.assets).map_err(CmdError::io)?;
+    let cp = if has_cp { binaries.pop().expect("one copy per binary") } else { paths.cp.clone() };
     let ovpn = if has_ovpn { binaries.pop().expect("one copy per binary") } else { paths.ovpn.clone() };
     let [helper, xray, engine, naive] = <[PathBuf; 4]>::try_from(binaries).expect("one copy per binary");
-    Ok(RootReadable { helper, xray, engine, naive, ovpn, assets })
+    Ok(RootReadable { helper, xray, engine, naive, ovpn, cp, assets })
 }
 
 /// Copies the binaries (under their own names) and the files of the asset

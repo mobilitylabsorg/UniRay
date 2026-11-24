@@ -153,11 +153,20 @@ export interface CorpPushed {
   domains: string[];
 }
 
+/** What runs the corporate network. */
+export type CorpKind = "openVpn" | "checkPoint";
+
 /** The corporate network next to the VPN (src-tauri/src/corp.rs). */
 export interface CorpNetwork {
+  kind: CorpKind;
   enabled: boolean;
   name: string;
   info: { host: string; port: number; proto: "udp" | "tcp"; needsCredentials: boolean } | null;
+  /** Check Point: the gateway, the certificate's file name. */
+  gateway: string;
+  certName: string;
+  hasCert: boolean;
+  hasCertPassword: boolean;
   username: string;
   hasPassword: boolean;
   usePushed: boolean;
@@ -179,6 +188,21 @@ export interface CorpUpdate {
   domains: string[];
   dns: string[];
   via: CorpVia;
+  /** Check Point; null (or left out) keeps the saved one. */
+  gateway?: string | null;
+  /** The certificate's file name and content in base64. */
+  cert?: [string, string] | null;
+  certPassword?: string | null;
+}
+
+/** A Check Point gateway as the user gives it; null keeps the saved one. */
+export interface CheckPointSetup {
+  name: string;
+  gateway: string;
+  cert: [string, string] | null;
+  certPassword: string | null;
+  username: string;
+  password: string | null;
 }
 
 export interface CorpStatus {
@@ -202,8 +226,10 @@ export interface Snapshot {
    * no ad blocking (src-tauri/src/edition.rs). */
   features: { stealth: boolean; adBlock: boolean };
   corp: CorpNetwork | null;
-  /** This build can run the corporate network (Linux for now). */
+  /** This build can run the corporate network (desktop for now). */
   corpAvailable: boolean;
+  /** What it can run it with. */
+  corpKinds: CorpKind[];
 }
 
 export interface Traffic {
@@ -301,6 +327,7 @@ export const api = {
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
   /** An OpenVPN profile with the key files it names, as [name, text] pairs. */
   corpImport: (files: [string, string][]) => invoke<void>("corp_import", { files }),
+  corpCheckPoint: (setup: CheckPointSetup) => invoke<void>("corp_checkpoint", { setup }),
   corpSave: (update: CorpUpdate) => invoke<void>("corp_save", { update }),
   corpDelete: () => invoke<void>("corp_delete"),
   connect: () => invoke<void>("connect"),

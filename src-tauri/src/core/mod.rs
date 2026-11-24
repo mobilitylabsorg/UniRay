@@ -183,7 +183,12 @@ pub(crate) async fn prepare_corp(app: &AppHandle, server: &Server, settings: &Se
         (corp, front)
     };
     let Some(corp) = corp else { return Ok(None) };
+    let Some(binary) = crate::corp::binary(app, corp.kind) else {
+        return Err(CmdError::new("corpVia", "this build cannot run this corporate network"));
+    };
     let way = match (&corp.via, front) {
+        // Check Point goes straight only (see `uniray_core::corp::prepare`).
+        _ if corp.kind == uniray_core::corp::CorpKind::CheckPoint => Way::Direct,
         (Via::Direct, _) => Way::Direct,
         (_, None) => Way::Front { port: free_port()?, outbound: None },
         (_, Some(None)) => {
@@ -201,10 +206,6 @@ pub(crate) async fn prepare_corp(app: &AppHandle, server: &Server, settings: &Se
         }
     };
     let (ipv6, port) = (settings.ipv6, free_port()?);
-    #[cfg(desktop)]
-    let binary = app.state::<App>().paths.ovpn.clone();
-    #[cfg(mobile)]
-    let binary = std::path::PathBuf::new();
     let run = tauri::async_runtime::spawn_blocking(move || uniray_core::corp::prepare(&corp, port, ipv6, &binary, way))
         .await
         .map_err(|err| CmdError::core(err.to_string()))??;

@@ -149,6 +149,14 @@ impl EngineRun {
         }
     }
 
+    /// Points the engine at another copy of `uniray-cp`, as
+    /// [`Self::set_naive_binary`] does for naive.
+    pub fn set_cp_binary(&mut self, binary: &Path) {
+        if self.config["cp"].is_object() {
+            self.config["cp"]["binary"] = binary.to_string_lossy().into_owned().into();
+        }
+    }
+
     /// The engine's config file, telling it who may connect. A `detached`
     /// engine keeps running when its stdin closes (it is stopped by a kill).
     pub fn config_for(&self, peers: &Peers, detached: bool) -> Vec<u8> {
