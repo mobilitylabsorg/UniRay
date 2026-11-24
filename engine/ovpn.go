@@ -72,8 +72,7 @@ const (
 // The app learns the tunnel's state from the log ("corp: up {settings}",
 // "corp: down <reason>"), which it reaches by every route the engine runs.
 type ovpnUpstream struct {
-	config *OVPNConfig
-	dir    string
+	child tunnelChild
 
 	mu      sync.Mutex
 	stack   *ovpnStack
@@ -87,6 +86,18 @@ type ovpnUpstream struct {
 	done    chan struct{}
 }
 
+// tunnelChild is the program behind a corporate tunnel: uniray-ovpn, or
+// uniray-cp (Check Point, see cp.go), which speaks the same protocol.
+type tunnelChild struct {
+	// Its name, for the log.
+	name string
+	// The tunnel's protocol, for errors the user sees.
+	label string
+	// command is its command line for one session on `channel`, what to
+	// write to its stdin, and what to remove once the session is over.
+	command func(channel *ovpnChannel) (cmd *exec.Cmd, input string, cleanup func(), err error)
+}
+
 // ovpnStack is the userspace network stack on the tunnel's address.
 type ovpnStack struct {
 	device   tun.Device
@@ -98,9 +109,33 @@ func startOVPN(config *OVPNConfig, dir string) (Upstream, error) {
 	if config.Binary == "" || config.Profile == "" {
 		return nil, errors.New("the config has no uniray-ovpn binary or profile")
 	}
-	u := &ovpnUpstream{config: config, dir: dir, changed: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{})}
+	child := tunnelChild{name: "uniray-ovpn", label: "OpenVPN", command: func(channel *ovpnChannel) (*exec.Cmd, string, func(), error) {
+		// uniray-ovpn removes the profile once read; cleanup, if it never does.
+		profile := filepath.Join(dir, "ovpn-"+randomHex(8)+".ovpn")
+		if err := os.WriteFile(profile, []byte(config.Profile), 0o600); err != nil {
+			return nil, "", nil, fmt.Errorf("profile: %w", err)
+		}
+		args := append([]string{"--config", profile}, channel.args...)
+		if config.Server != "" {
+			args = append(args, "--server", config.Server, "--port", strconv.Itoa(config.Port))
+			if config.Proto != "" {
+				args = append(args, "--proto", config.Proto)
+			}
+		}
+		input := config.Username + "\n" + config.Password + "\n"
+		if channel.token != "" {
+			input += channel.token + "\n"
+		}
+		return exec.Command(config.Binary, args...), input, func() { os.Remove(profile) }, nil
+	}}
+	return startTunnel(child), nil
+}
+
+// startTunnel keeps sessions of `child` up, see ovpnUpstream.
+func startTunnel(child tunnelChild) *ovpnUpstream {
+	u := &ovpnUpstream{child: child, changed: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{})}
 	go u.run()
-	return u, nil
+	return u
 }
 
 func (u *ovpnUpstream) run() {
@@ -115,7 +150,7 @@ func (u *ovpnUpstream) run() {
 		var refused *ovpnRefused
 		if errors.As(err, &refused) {
 			logf("Error", "corp: down %s", refused.message)
-			u.update(func() { u.failure = errors.New("OpenVPN: " + refused.message) })
+			u.update(func() { u.failure = errors.New(u.child.label + ": " + refused.message) })
 			return
 		}
 		if time.Since(started) > ovpnRetryMax {
@@ -131,13 +166,13 @@ func (u *ovpnUpstream) run() {
 	}
 }
 
-// ovpnRefused is uniray-ovpn's "error" line: the server or the profile
+// ovpnRefused is the child's "error" line: the server or the profile
 // refused the session, which starting again would not change.
 type ovpnRefused struct{ message string }
 
 func (e *ovpnRefused) Error() string { return e.message }
 
-// session runs uniray-ovpn until it exits.
+// session runs the child until it exits.
 func (u *ovpnUpstream) session() error {
 	channel, err := openPackets()
 	if err != nil {
@@ -147,20 +182,11 @@ func (u *ovpnUpstream) session() error {
 	defer packets.Close()
 	defer channel.release()
 
-	// uniray-ovpn removes the profile once read; this, if it never does.
-	profile := filepath.Join(u.dir, "ovpn-"+randomHex(8)+".ovpn")
-	if err := os.WriteFile(profile, []byte(u.config.Profile), 0o600); err != nil {
-		return fmt.Errorf("profile: %w", err)
+	cmd, input, cleanup, err := u.child.command(channel)
+	if err != nil {
+		return err
 	}
-	defer os.Remove(profile)
-	args := append([]string{"--config", profile}, channel.args...)
-	if u.config.Server != "" {
-		args = append(args, "--server", u.config.Server, "--port", strconv.Itoa(u.config.Port))
-		if u.config.Proto != "" {
-			args = append(args, "--proto", u.config.Proto)
-		}
-	}
-	cmd := exec.Command(u.config.Binary, args...)
+	defer cleanup()
 	channel.prepare(cmd)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
@@ -175,7 +201,7 @@ func (u *ovpnUpstream) session() error {
 	err = cmd.Start()
 	channel.release()
 	if err != nil {
-		return fmt.Errorf("starting uniray-ovpn: %w", err)
+		return fmt.Errorf("starting %s: %w", u.child.name, err)
 	}
 	// Closing stdin stops it: on Close, or when this session is over.
 	stopped := make(chan struct{})
@@ -191,9 +217,8 @@ func (u *ovpnUpstream) session() error {
 			cmd.Process.Kill()
 		}
 	}()
-	fmt.Fprintf(stdin, "%s\n%s\n", u.config.Username, u.config.Password)
-	if channel.token != "" {
-		fmt.Fprintf(stdin, "%s\n", channel.token)
+	if input != "" {
+		io.WriteString(stdin, input)
 	}
 
 	go u.fromServer(packets)
@@ -205,9 +230,9 @@ func (u *ovpnUpstream) session() error {
 		return refused
 	}
 	if waitErr != nil {
-		return fmt.Errorf("uniray-ovpn: %w", waitErr)
+		return fmt.Errorf("%s: %w", u.child.name, waitErr)
 	}
-	return errors.New("uniray-ovpn ended")
+	return fmt.Errorf("%s ended", u.child.name)
 }
 
 // follow reads uniray-ovpn's lines until it exits: the tunnel's settings,
@@ -257,7 +282,7 @@ func (u *ovpnUpstream) follow(stdout io.Reader, packets ovpnPackets, quit func()
 // address is the same (connections survive a reconnect), else a new one.
 func (u *ovpnUpstream) up(settings OVPNSettings, packets ovpnPackets) error {
 	if len(settings.Addresses) == 0 {
-		return errors.New("the OpenVPN server gave no tunnel address")
+		return fmt.Errorf("the %s server gave no tunnel address", u.child.label)
 	}
 	if settings.MTU <= 0 {
 		settings.MTU = 1500
@@ -380,7 +405,7 @@ func (u *ovpnUpstream) net(ctx context.Context) (*netstack.Net, error) {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-timeout.C:
-			return nil, errors.New("the OpenVPN tunnel is not up")
+			return nil, fmt.Errorf("the %s tunnel is not up", u.child.label)
 		}
 	}
 }

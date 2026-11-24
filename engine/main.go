@@ -3,7 +3,7 @@
 // loopback. Xray stays in front (TUN, routing, DNS, stats); for such a server
 // its proxy outbound is SOCKS to this engine.
 //
-// Usage: uniray-engine awg|naive|ovpn --config <file> [--probe <url> [--timeout <duration>]]
+// Usage: uniray-engine awg|naive|ovpn|cp --config <file> [--probe <url> [--timeout <duration>]]
 //
 // With --probe it serves nothing: it fetches the URL through the server,
 // prints "delay <ms>" (-1 on failure) and exits - the app's delay test.
@@ -12,7 +12,8 @@
 // the official NaiveProxy client as its child and passes connections on; ovpn
 // starts uniray-ovpn (the OpenVPN 3 core) as its child, which hands it the
 // tunnel's packets for the same userspace stack as awg; it serves at once and
-// keeps the tunnel up meanwhile (see ovpnUpstream).
+// keeps the tunnel up meanwhile (see ovpnUpstream); cp does the same with
+// uniray-cp, a Check Point client (see CPConfig).
 //
 // The config file holds secrets, so it is read once and removed. Nothing
 // secret goes on the command line, which other users can read. The engine
@@ -62,11 +63,12 @@ type Config struct {
 	AWG   *AWGConfig   `json:"awg"`
 	Naive *NaiveConfig `json:"naive"`
 	OVPN  *OVPNConfig  `json:"ovpn"`
+	CP    *CPConfig    `json:"cp"`
 }
 
 func main() {
 	if len(os.Args) < 2 {
-		fatalf("usage: uniray-engine awg|naive|ovpn --config <file>")
+		fatalf("usage: uniray-engine awg|naive|ovpn|cp --config <file>")
 	}
 	mode := os.Args[1]
 	flags := flag.NewFlagSet(mode, flag.ExitOnError)
@@ -110,6 +112,11 @@ func main() {
 			fatalf("the config has no ovpn section")
 		}
 		upstream, err = startOVPN(config.OVPN, filepath.Dir(*configPath))
+	case "cp":
+		if config.CP == nil {
+			fatalf("the config has no cp section")
+		}
+		upstream, err = startCP(config.CP, filepath.Dir(*configPath))
 	default:
 		fatalf("unknown mode %q", mode)
 	}
