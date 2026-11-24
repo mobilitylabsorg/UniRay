@@ -362,10 +362,10 @@ index 6e05868..93447bf 100644
              }
          }
 diff --git a/crates/snxcore/src/tunnel/ipsec/imp/tun.rs b/crates/snxcore/src/tunnel/ipsec/imp/tun.rs
-index 2af3651..6b4b51f 100644
+index 2af3651..b6ab96e 100644
 --- a/crates/snxcore/src/tunnel/ipsec/imp/tun.rs
 +++ b/crates/snxcore/src/tunnel/ipsec/imp/tun.rs
-@@ -44,6 +44,35 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(120);
+@@ -44,6 +44,77 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(120);
  pub type PacketSender = Sender<Bytes>;
  pub type PacketReceiver = Receiver<Bytes>;
  
@@ -398,10 +398,52 @@ index 2af3651..6b4b51f 100644
 +    }
 +}
 +
++/// UNIRAY: in engine mode no socket of this host reaches the tunnel, so the
++/// keepalive goes in as a whole IPv4/UDP packet from the Office Mode address.
++const ENGINE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
++/// Once the gateway has answered, this long without an answer ends the tunnel
++/// (the engine starts it again).
++const ENGINE_KEEPALIVE_DEAD: Duration = Duration::from_secs(120);
++
++fn engine_keepalive_packet(src: Ipv4Addr, dst: Ipv4Addr) -> Vec<u8> {
++    let payload = crate::tunnel::ipsec::keepalive::make_keepalive_packet();
++    let port = TunnelParams::IPSEC_KEEPALIVE_PORT.to_be_bytes();
++    let total = 20 + 8 + payload.len();
++    let mut packet = vec![0u8; total];
++    packet[0] = 0x45;
++    packet[2..4].copy_from_slice(&(total as u16).to_be_bytes());
++    packet[8] = 64;
++    packet[9] = 17;
++    packet[12..16].copy_from_slice(&src.octets());
++    packet[16..20].copy_from_slice(&dst.octets());
++    let sum = packet[..20]
++        .chunks(2)
++        .map(|word| u32::from(u16::from_be_bytes([word[0], word[1]])))
++        .sum::<u32>();
++    let sum = (sum & 0xffff) + (sum >> 16);
++    let sum = !(((sum & 0xffff) + (sum >> 16)) as u16);
++    packet[10..12].copy_from_slice(&sum.to_be_bytes());
++    packet[20..22].copy_from_slice(&port);
++    packet[22..24].copy_from_slice(&port);
++    packet[24..26].copy_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
++    // The UDP checksum stays 0 (none), as the gateway expects.
++    packet[28..].copy_from_slice(&payload);
++    packet
++}
++
++/// Whether `packet` is the gateway's answer to [`engine_keepalive_packet`].
++fn is_engine_keepalive_reply(packet: &[u8], gateway: Ipv4Addr) -> bool {
++    packet.len() >= 28 && packet[0] >> 4 == 4 && packet[9] == 17 && packet[12..16] == gateway.octets() && {
++        let udp = usize::from(packet[0] & 0x0f) * 4;
++        packet.len() >= udp + 4
++            && u16::from_be_bytes([packet[udp], packet[udp + 1]]) == TunnelParams::IPSEC_KEEPALIVE_PORT
++    }
++}
++
  pub(crate) struct TunIPsecTunnel {
      params: Arc<TunnelParams>,
      session: Arc<TunnelSession>,
-@@ -207,6 +236,54 @@ impl TunIPsecTunnel {
+@@ -207,6 +278,54 @@ impl TunIPsecTunnel {
          Ok(())
      }
  
@@ -456,7 +498,7 @@ index 2af3651..6b4b51f 100644
      pub(super) async fn run(
          &mut self,
          mut command_receiver: tokio::sync::mpsc::Receiver<TunnelCommand>,
-@@ -229,9 +306,6 @@ impl TunIPsecTunnel {
+@@ -229,9 +348,6 @@ impl TunIPsecTunnel {
              .with_context(|| tr!("error-no-ipsec-session"))?
              .clone();
  
@@ -466,7 +508,7 @@ index 2af3651..6b4b51f 100644
          let nat = session.physical_address.then(|| {
              let excluded = self
                  .subnets
-@@ -243,44 +317,55 @@ impl TunIPsecTunnel {
+@@ -243,44 +359,55 @@ impl TunIPsecTunnel {
              StaticNat::new(placeholder_address(session.address, &excluded), session.address)
          });
  
@@ -554,7 +596,43 @@ index 2af3651..6b4b51f 100644
  
          let mut snx_receiver = self.receiver.take().context("No receiver")?;
  
-@@ -440,7 +525,7 @@ impl TunIPsecTunnel {
+@@ -319,6 +446,14 @@ impl TunIPsecTunnel {
+ 
+         let esp_codec = esp_codec_in.clone();
+ 
++        let keepalive_address = self
++            .internal_gateway_address
++            .unwrap_or(self.gateway_information.connectivity_info.server_ip);
++        let engine_keepalive = (self.params.engine_mode() && !self.params.no_keepalive).then_some(keepalive_address);
++        let keepalive_source = session.address;
++        let keepalive_answered: Arc<std::sync::Mutex<Option<std::time::Instant>>> = Arc::default();
++        let answered = keepalive_answered.clone();
++
+         tokio::spawn(async move {
+             while let Some(item) = snx_receiver.next().await {
+                 let codec = esp_codec.clone();
+@@ -327,6 +462,13 @@ impl TunIPsecTunnel {
+ 
+                 match result.await {
+                     Ok(Ok(packet)) => {
++                        if let Some(gateway) = engine_keepalive
++                            && is_engine_keepalive_reply(&packet, gateway)
++                        {
++                            debug!("Keepalive answered by {}", gateway);
++                            *answered.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
++                            continue;
++                        }
+                         let _ = match nat {
+                             Some(nat) => {
+                                 let mut packet = packet
+@@ -433,14 +575,10 @@ impl TunIPsecTunnel {
+         };
+         pin_mut!(command_fut);
+ 
+-        let keepalive_address = self
+-            .internal_gateway_address
+-            .unwrap_or(self.gateway_information.connectivity_info.server_ip);
+-
          let mut keepalive_runner = KeepaliveRunner::new(
              keepalive_address,
              tun_name.clone(),
@@ -563,7 +641,7 @@ index 2af3651..6b4b51f 100644
                  Arc::new(AtomicBool::new(false))
              } else {
                  ready.clone()
-@@ -452,7 +537,15 @@ impl TunIPsecTunnel {
+@@ -452,7 +590,15 @@ impl TunIPsecTunnel {
          let ka_run = keepalive_runner.run();
          pin_mut!(ka_run);
  
@@ -580,6 +658,34 @@ index 2af3651..6b4b51f 100644
  
          let scv_run = scv_runner.run();
          pin_mut!(scv_run);
+@@ -461,8 +607,27 @@ impl TunIPsecTunnel {
+ 
+         let mut buf = vec![0u8; self.params.mtu as usize];
+ 
++        let mut engine_keepalive_tick = tokio::time::interval(ENGINE_KEEPALIVE_INTERVAL);
++        engine_keepalive_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
++
+         let result = loop {
+             tokio::select! {
++                _ = engine_keepalive_tick.tick(), if engine_keepalive.is_some() => {
++                    let last = *keepalive_answered.lock().unwrap_or_else(|e| e.into_inner());
++                    if last.is_some_and(|last| last.elapsed() > ENGINE_KEEPALIVE_DEAD) {
++                        break Err(anyhow!("the gateway stopped answering keepalives"));
++                    }
++                    let item = engine_keepalive_packet(keepalive_source, keepalive_address);
++                    let codec = esp_codec_out.clone();
++                    let result = tokio::task::spawn_blocking(move || {
++                        codec.read().unwrap_or_else(|e| e.into_inner()).encode(&item)
++                    })
++                    .await;
++                    if let Ok(Ok(packet)) = result {
++                        self.send(packet).await?;
++                    }
++                }
++
+                 () = &mut command_fut => {
+                     debug!("Terminating IPsec tunnel due to stop command");
+                     break Ok(());
 diff --git a/crates/snxcore/src/tunnel/ipsec/imp/udp.rs b/crates/snxcore/src/tunnel/ipsec/imp/udp.rs
 index edd5e37..cdfc72f 100644
 --- a/crates/snxcore/src/tunnel/ipsec/imp/udp.rs
@@ -601,6 +707,19 @@ index edd5e37..cdfc72f 100644
  
          // macOS/BSD returns EISCONN if sendto() carries a destination on a connected
          // UDP socket; UdpFramed always sends with an address, so leave the socket
+diff --git a/crates/snxcore/src/tunnel/ipsec/keepalive.rs b/crates/snxcore/src/tunnel/ipsec/keepalive.rs
+index e3c5e12..354ae5a 100644
+--- a/crates/snxcore/src/tunnel/ipsec/keepalive.rs
++++ b/crates/snxcore/src/tunnel/ipsec/keepalive.rs
+@@ -22,7 +22,7 @@ const LOOP_INTERVAL: Duration = Duration::from_secs(1);
+ const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(2);
+ const KEEPALIVE_MAX_RETRIES: u32 = 5;
+ 
+-fn make_keepalive_packet() -> [u8; 12] {
++pub(crate) fn make_keepalive_packet() -> [u8; 12] {
+     static KEEPALIVE_COUNTER: AtomicUsize = AtomicUsize::new(1);
+ 
+     let mut data = [0u8; 12];
 diff --git a/crates/snxcore/src/util.rs b/crates/snxcore/src/util.rs
 index cf14661..89fcd54 100644
 --- a/crates/snxcore/src/util.rs
