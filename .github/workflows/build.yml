@@ -79,8 +79,9 @@ jobs:
           cache-dependency-path: engine/go.sum
 
       - run: pnpm install --frozen-lockfile
-      # uniray-ovpn is built in Docker on Alpine (build-ovpn.sh).
-      - name: Sidecars (Xray, helper, engine, naive, ovpn)
+      # uniray-ovpn and uniray-cp are built in Docker on Alpine (build-ovpn.sh,
+      # build-cp.sh).
+      - name: Sidecars (Xray, helper, engine, naive, ovpn, cp)
         run: bash scripts/prepare-sidecars.sh --release
         env:
           # fetch-naive.sh reads the naiveproxy release through the API.
@@ -170,8 +171,9 @@ jobs:
           cache-dependency-path: engine/go.sum
 
       - run: pnpm install --frozen-lockfile
-      # uniray-ovpn is cross-built with MinGW in Docker (build-ovpn.sh).
-      - name: Sidecars (Xray, Wintun, helper, engine, naive, ovpn)
+      # uniray-ovpn and uniray-cp are cross-built with MinGW in Docker
+      # (build-ovpn.sh, build-cp.sh).
+      - name: Sidecars (Xray, Wintun, helper, engine, naive, ovpn, cp)
         run: bash scripts/prepare-sidecars.sh --release "$TARGET"
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -186,7 +188,7 @@ jobs:
         run: |
           release="target/$TARGET/release"
           rm -rf portable && mkdir -p portable/UniRay
-          cp "$release"/{uniray,uniray-xray,uniray-helper,uniray-engine,uniray-naive,uniray-ovpn}.exe \
+          cp "$release"/{uniray,uniray-xray,uniray-helper,uniray-engine,uniray-naive,uniray-ovpn,uniray-cp}.exe \
             "$release/wintun.dll" "$release/LICENSE-Wintun" portable/UniRay/
           cp -r "$release/resources" portable/UniRay/
           (cd portable && zip -qr UniRay-windows-x64-portable.zip UniRay)

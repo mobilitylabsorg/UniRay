@@ -217,7 +217,7 @@ bash scripts/prepare-sidecars.sh --release x86_64-pc-windows-msvc
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
 ```
 
-Установщик появится в `target/x86_64-pc-windows-msvc/release/bundle/nsis/`. Для портативной версии достаточно содержимого `target/x86_64-pc-windows-msvc/release/`: `uniray.exe`, `uniray-xray.exe`, `uniray-helper.exe`, `uniray-engine.exe`, `uniray-naive.exe`, `wintun.dll` и папка `resources`.
+Установщик появится в `target/x86_64-pc-windows-msvc/release/bundle/nsis/`. Для портативной версии достаточно содержимого `target/x86_64-pc-windows-msvc/release/`: `uniray.exe`, `uniray-xray.exe`, `uniray-helper.exe`, `uniray-engine.exe`, `uniray-naive.exe`, `uniray-ovpn.exe`, `uniray-cp.exe`, `wintun.dll` и папка `resources`.
 
 Скрипт установщика Tauri подключает `Win\RestartManager.nsh` из NSIS 3.09+. С более старым NSIS (например, 3.08 из Ubuntu 22.04) скопируйте `scripts/nsis/Win` в его папку `Include`.
 
@@ -270,3 +270,5 @@ UniRay распространяется под [GNU General Public License v3.0]
 **Движок `uniray-engine` распространяется на условиях [GNU AGPL v3.0](https://www.gnu.org/licenses/agpl-3.0.html).** В него входит код под AGPL-3.0 из [apoxy-dev/ccsim](https://github.com/apoxy-dev/ccsim): BBRv3 и патч gVisor в форке [mobilitylabsorg/gvisor](https://github.com/mobilitylabsorg/gvisor/tree/uniray). GPL-3.0 (раздел 13) разрешает такое объединение: исходники UniRay остаются под GPL-3.0, а собранный движок, где они соединены с кодом под AGPL, — под AGPL-3.0. Для пользователей приложения разницы нет; условие AGPL о сетевом доступе касается только тех, кто изменит движок и даст им пользоваться по сети.
 
 Сторонние компоненты сохраняют свои лицензии: Xray-core — MPL-2.0, amneziawg-go — MIT, gVisor — Apache-2.0 (патч и BBRv3 в нашем форке — AGPL-3.0), NaiveProxy — BSD-3-Clause, Wintun — свои условия (`LICENSE-Wintun` рядом с `wintun.dll`).
+
+**Клиент Check Point `uniray-cp` — отдельная программа на основе [snx-rs](https://github.com/ancwrd1/snx-rs) и [isakmp](https://github.com/ancwrd1/isakmp) под AGPL-3.0.** Исходники — эти репозитории на закреплённых коммитах (`scripts/build-cp.sh`) с нашими изменениями из `cp/*.patch`; движок запускает её отдельным процессом.
