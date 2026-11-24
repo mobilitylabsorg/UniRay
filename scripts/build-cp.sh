@@ -13,9 +13,11 @@
 # instead of a TUN device, and the settings (address, routes, DNS, domains) are
 # printed for the engine to parse; host routing and DNS are left to the engine.
 #
-# Linux: built in Docker on Debian (OpenSSL and SQLite from the distro). Windows
+# Linux: a static musl binary built in Docker on Alpine, OpenSSL and SQLite
+# vendored, so it runs on any distribution, as uniray-ovpn does. Windows
 # (x86_64): cross-built with MinGW-w64, OpenSSL vendored and linked statically,
-# so the .exe imports only system DLLs.
+# so the .exe imports only system DLLs. The crates are fetched first; the
+# build itself runs with no network.
 set -euo pipefail
 
 SNX_REPO="https://github.com/ancwrd1/snx-rs.git"
@@ -68,48 +70,53 @@ EOF
   fi
 }
 
-linux() {
-  local image="uniray-cp-build"
-  docker build --quiet -t "$image" - >/dev/null <<'EOF'
-FROM rust:1-trixie
-RUN apt-get update && apt-get install -y --no-install-recommends libssl-dev libsqlite3-dev pkg-config && rm -rf /var/lib/apt/lists/*
-EOF
-  local work
-  work="$(mktemp -d)"
-  docker run --rm --user "$(id -u):$(id -g)" \
-    -e CARGO_HOME=/work/cargo -e CARGO_TARGET_DIR=/work/target \
-    -v "$deps:/deps" -v "$work:/work" -w /deps/snx-rs "$image" \
-    cargo build --release -p snx-rs >"$work/build.log" 2>&1 \
-    || { tail -30 "$work/build.log"; rm -rf "$work"; exit 1; }
-  cp "$work/target/release/snx-rs" "$out"
-  rm -rf "$work"
+cargo_home="$deps/cargo"
+
+# build <image> <dockerfile> <platform> <rust target> [env...]: cargo fetch,
+# then the build with no network; the binary to $out.
+build() {
+  local image="$1" dockerfile="$2" platform="$3" rust_target="$4"
+  shift 4
+  docker build --quiet --platform "$platform" -t "$image" - >/dev/null <<<"$dockerfile"
+  # One target directory per image: build scripts run on its platform.
+  local target_dir="$deps/target-$image"
+  mkdir -p "$cargo_home" "$target_dir"
+  local run=(docker run --rm --platform "$platform" --user "$(id -u):$(id -g)"
+    -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target "$@"
+    -v "$cargo_home:/cargo" -v "$target_dir:/target" -v "$snx:/deps/snx-rs" -v "$isakmp:/deps/isakmp:ro"
+    -w /deps/snx-rs)
+  local log="$deps/build.log"
+  "${run[@]}" "$image" cargo fetch >"$log" 2>&1 || { tail -30 "$log"; exit 1; }
+  "${run[@]}" --network none "$image" \
+    cargo build --offline --release --target "$rust_target" -p snx-rs \
+      --features snxcore/vendored-openssl,snxcore/vendored-sqlite >"$log" 2>&1 \
+    || { tail -30 "$log"; exit 1; }
+  local exe=""
+  [[ "$rust_target" == *windows* ]] && exe=".exe"
+  install -m 755 "$target_dir/$rust_target/release/snx-rs$exe" "$out"
+}
+
+linux() { # docker platform, rust target
+  build "uniray-cp-alpine-${1//\//-}" 'FROM rust:1-alpine3.22
+RUN apk add --no-cache musl-dev perl make linux-headers' "$1" "$2" \
+    -e RUSTFLAGS="-C target-feature=+crt-static -C strip=symbols"
 }
 
 windows() {
-  local image="uniray-cp-mingw"
-  docker build --quiet -t "$image" - >/dev/null <<'EOF'
-FROM rust:1-trixie
+  build uniray-cp-mingw 'FROM rust:1-trixie
 RUN apt-get update && apt-get install -y --no-install-recommends g++-mingw-w64-x86-64-posix gcc-mingw-w64-x86-64-posix perl && rm -rf /var/lib/apt/lists/*
-RUN rustup target add x86_64-pc-windows-gnu
-EOF
-  local work
-  work="$(mktemp -d)"
-  docker run --rm --user "$(id -u):$(id -g)" \
-    -e CARGO_HOME=/work/cargo -e CARGO_TARGET_DIR=/work/target \
+RUN rustup target add x86_64-pc-windows-gnu' linux/amd64 x86_64-pc-windows-gnu \
     -e CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc \
     -e CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++ \
     -e AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar \
     -e CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
-    -v "$deps:/deps" -v "$work:/work" -w /deps/snx-rs "$image" \
-    cargo build --release --target x86_64-pc-windows-gnu -p snx-rs >"$work/build.log" 2>&1 \
-    || { tail -30 "$work/build.log"; rm -rf "$work"; exit 1; }
-  cp "$work/target/x86_64-pc-windows-gnu/release/snx-rs.exe" "$out"
-  rm -rf "$work"
+    -e RUSTFLAGS="-C strip=symbols"
 }
 
 prepare
 case "$target" in
-  *-linux-gnu | *-linux-musl) linux ;;
+  x86_64-unknown-linux-*) linux linux/amd64 x86_64-unknown-linux-musl ;;
+  aarch64-unknown-linux-*) linux linux/arm64 aarch64-unknown-linux-musl ;;
   x86_64-pc-windows-*) windows ;;
   *) echo "build-cp.sh: unsupported target $target" >&2; exit 1 ;;
 esac

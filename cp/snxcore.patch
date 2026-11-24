@@ -1,8 +1,187 @@
+diff --git a/apps/snx-rs/Cargo.toml b/apps/snx-rs/Cargo.toml
+index d99389c..67c704c 100644
+--- a/apps/snx-rs/Cargo.toml
++++ b/apps/snx-rs/Cargo.toml
+@@ -22,13 +22,14 @@ i18n = { path = "../../crates/i18n" }
+ anyhow = "1"
+ futures = "0.3"
+ tracing = "0.1"
+-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
++tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "time"] }
+ tracing-subscriber = "0.3"
+ clap = { version = "4", features = ["derive"] }
+ clap_complete = { workspace = true }
+ ipnet = {  version = "2", features = ["serde"] }
+ secrecy = "0.10"
+ hex = "0.4"
++reqwest = { version = "0.13", default-features = false }
+ 
+ [target.'cfg(target_os = "windows")'.dependencies]
+ windows-service = "0.8"
+diff --git a/apps/snx-rs/src/main.rs b/apps/snx-rs/src/main.rs
+index ee75c94..c8c6e9d 100644
+--- a/apps/snx-rs/src/main.rs
++++ b/apps/snx-rs/src/main.rs
+@@ -8,7 +8,7 @@ use snxcore::{
+     model::{
+         MfaType, PromptInfo, SessionState,
+         params::{CertType, OperationMode, TunnelParams},
+-        proto::CertificateResponse,
++        proto::{CertificateResponse, GatewayInformation, LoginOption},
+     },
+     otp::OtpListener,
+     platform::{NetworkInterface, Platform, PlatformAccess, SingleInstance},
+@@ -67,7 +67,14 @@ fn main() -> anyhow::Result<()> {
+         return Ok(());
+     }
+ 
+-    if cmdline_params.mode.requires_root() {
++    // UNIRAY: the engine mode (packet-fd) sets up no device, routes or DNS.
++    let engine = cmdline_params
++        .config_file
++        .as_ref()
++        .and_then(|path| TunnelParams::load(path).ok())
++        .is_some_and(|params| params.engine_mode());
++
++    if cmdline_params.mode.requires_root() && !engine {
+         Platform::get().check_privileges()?;
+     }
+ 
+@@ -97,8 +104,11 @@ async fn async_main(cmdline_params: CmdlineParams) -> anyhow::Result<()> {
+     };
+     cmdline_params.merge_into_tunnel_params(&mut params);
+ 
++    // UNIRAY: stdout carries the settings to the engine; the log goes to stderr.
+     let subscriber = tracing_subscriber::fmt()
+         .with_max_level(params.log_level.parse::<LevelFilter>().unwrap_or(LevelFilter::OFF))
++        .with_writer(std::io::stderr)
++        .with_ansi(false)
+         .finish();
+     tracing::subscriber::set_global_default(subscriber)?;
+ 
+@@ -109,7 +119,14 @@ async fn async_main(cmdline_params: CmdlineParams) -> anyhow::Result<()> {
+     match mode {
+         OperationMode::Standalone => {
+             debug!("Running in standalone mode");
+-            main_standalone(factory, params).await
++            let engine = params.engine_mode();
++            let result = main_standalone(factory, params).await;
++            if let (true, Err(e)) = (engine, &result)
++                && !retryable(e)
++            {
++                println!("error {}", format!("{e:#}").replace('\n', " "));
++            }
++            result
+         }
+         OperationMode::Command => {
+             debug!("Running in command mode");
+@@ -234,6 +251,44 @@ where
+     await_termination(server.run()).await
+ }
+ 
++/// UNIRAY: whether the engine should start the client again after `e`: a
++/// network failure, not a refusal (a wrong password must not be tried over and
++/// over, which locks the account).
++fn retryable(e: &anyhow::Error) -> bool {
++    e.chain().any(|cause| {
++        cause.is::<std::io::Error>() || cause.is::<reqwest::Error>() || cause.is::<tokio::time::error::Elapsed>()
++    })
++}
++
++/// UNIRAY: the gateway's login option for what the engine was given: with a
++/// certificate when there is one, with a password when there is one.
++fn pick_login_type(info: &GatewayInformation, params: &TunnelParams) -> anyhow::Result<String> {
++    let user_defined = params.user_defined_factor.as_deref();
++    let has_cert = params.cert_type != CertType::None;
++    let has_password = !params.password.expose_secret().is_empty();
++    let options = info
++        .login_options_data
++        .as_ref()
++        .map(|data| data.login_options_list.values().cloned().collect::<Vec<_>>())
++        .unwrap_or_default();
++    if options.is_empty() {
++        return Ok(LoginOption::unspecified().id);
++    }
++    options
++        .iter()
++        .filter(|option| option.show_realm != 0 && !option.is_identity_provider() && !option.is_mobile_access())
++        .filter(|option| option.is_certificate(user_defined) == has_cert)
++        .max_by_key(|option| option.is_multi_factor(user_defined) == has_password)
++        .map(|option| option.id.clone())
++        .ok_or_else(|| {
++            let offered = options
++                .iter()
++                .map(|option| option.display_name.as_str())
++                .collect::<Vec<_>>();
++            anyhow::anyhow!("the gateway has no login for this: it offers {}", offered.join(", "))
++        })
++}
++
+ async fn main_standalone<F>(factory: F, mut params: TunnelParams) -> anyhow::Result<()>
+ where
+     F: TunnelConnectorFactory,
+@@ -242,7 +297,21 @@ where
+ 
+     let tty_prompt = TtyPrompt;
+ 
+-    if params.server_name.is_empty() || params.login_type.is_empty() {
++    // UNIRAY: the engine stops the client by closing its stdin, and it goes
++    // with the engine should that die.
++    let engine = params.engine_mode();
++    if engine {
++        let sender = command_sender.clone();
++        tokio::spawn(async move {
++            let mut sink = tokio::io::sink();
++            let _ = tokio::io::copy(&mut tokio::io::stdin(), &mut sink).await;
++            let _ = sender.send(TunnelCommand::Terminate(true)).await;
++            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
++            std::process::exit(0);
++        });
++    }
++
++    if params.server_name.is_empty() || (params.login_type.is_empty() && !engine) {
+         anyhow::bail!(tr!("error-missing-required-parameters"));
+     }
+ 
+@@ -258,6 +327,13 @@ where
+         }
+     }
+ 
++    if params.login_type.is_empty() {
++        let connector = factory.new_gateway_connector(Arc::new(params.clone()));
++        let info = connector.get_gateway_information().await?;
++        params.login_type = pick_login_type(&info, &params)?;
++        debug!("Login type: {}", params.login_type);
++    }
++
+     let params = Arc::new(params);
+ 
+     let connector = factory.new_gateway_connector(params.clone());
+@@ -355,7 +431,7 @@ where
+                 .inspect_err(|e| warn!("{e}"));
+ 
+             match event {
+-                TunnelEvent::Connected(info) => {
++                TunnelEvent::Connected(info) if !engine => {
+                     println!("{}", info.print(false));
+                     println!("{}", tr!("cli-tunnel-connected"));
+                 }
+@@ -369,7 +445,9 @@ where
+ 
+     tunnel.run(command_receiver, event_sender).await?;
+ 
+-    println!("\n{}", tr!("cli-tunnel-disconnected"));
++    if !engine {
++        println!("\n{}", tr!("cli-tunnel-disconnected"));
++    }
+ 
+     Ok(())
+ }
 diff --git a/crates/snxcore/src/model/params.rs b/crates/snxcore/src/model/params.rs
-index 46ec671..e0eaf3d 100644
+index 46ec671..5885d50 100644
 --- a/crates/snxcore/src/model/params.rs
 +++ b/crates/snxcore/src/model/params.rs
-@@ -691,6 +691,10 @@ pub struct TunnelParams {
+@@ -691,6 +691,18 @@ pub struct TunnelParams {
      pub disable_ipv6: bool,
      pub mtu: u16,
      pub transport_type: TransportType,
@@ -10,33 +189,80 @@ index 46ec671..e0eaf3d 100644
 +    /// fd with the UniRay engine instead of a TUN device, and host routing/DNS
 +    /// are left to the engine.
 +    pub packet_fd: Option<i32>,
++    /// UNIRAY: the gateway's IPv4 address to connect to instead of resolving
++    /// server-name (which still names it for TLS): UniRay resolves it and
++    /// sends the traffic to that address past its own tunnel.
++    pub server_address: Option<std::net::Ipv4Addr>,
++    /// UNIRAY: as packet-fd, over UDP to this port on 127.0.0.1 (Windows, which
++    /// has no socketpair to inherit); the first datagram is packet-token.
++    pub packet_udp: Option<u16>,
++    pub packet_token: Option<String>,
      pub allow_forwarding: bool,
      pub tls_version_max: TlsVersion,
      #[serde(skip)]
-@@ -754,6 +758,7 @@ impl Default for TunnelParams {
+@@ -754,6 +766,10 @@ impl Default for TunnelParams {
              disable_ipv6: false,
              mtu: DEFAULT_MTU,
              transport_type: TransportType::default(),
 +            packet_fd: None,
++            server_address: None,
++            packet_udp: None,
++            packet_token: None,
              allow_forwarding: false,
              tls_version_max: TlsVersion::default(),
              mfa_code: None,
-@@ -813,6 +818,7 @@ impl PartialEq for TunnelParams {
+@@ -813,6 +829,10 @@ impl PartialEq for TunnelParams {
              && self.disable_ipv6 == other.disable_ipv6
              && self.mtu == other.mtu
              && self.transport_type == other.transport_type
 +            && self.packet_fd == other.packet_fd
++            && self.server_address == other.server_address
++            && self.packet_udp == other.packet_udp
++            && self.packet_token == other.packet_token
              && self.allow_forwarding == other.allow_forwarding
              && self.tls_version_max == other.tls_version_max
              && self.mfa_code == other.mfa_code
-@@ -908,6 +914,7 @@ impl TunnelParams {
+@@ -826,6 +846,10 @@ impl PartialEq for TunnelParams {
+ }
+ 
+ impl TunnelParams {
++    /// UNIRAY: the packets go to the UniRay engine, not a TUN device.
++    pub fn engine_mode(&self) -> bool {
++        self.packet_fd.is_some() || self.packet_udp.is_some()
++    }
+     pub const IPSEC_KEEPALIVE_PORT: u16 = 18234;
+     pub const IPSEC_SCV_PORT: u16 = 18233;
+     pub const DEFAULT_IPSEC_IF_NAME: &'static str = "snx-xfrm";
+@@ -908,6 +932,10 @@ impl TunnelParams {
                  "disable-ipv6" => params.disable_ipv6 = v.parse().unwrap_or_default(),
                  "mtu" => params.mtu = v.parse().unwrap_or(DEFAULT_MTU),
                  "transport-type" => params.transport_type = v.parse().unwrap_or_default(),
 +                "packet-fd" => params.packet_fd = v.parse().ok(),
++                "server-address" => params.server_address = v.parse().ok(),
++                "packet-udp" => params.packet_udp = v.parse().ok(),
++                "packet-token" => params.packet_token = Some(v),
                  "allow-forwarding" => params.allow_forwarding = v.parse().unwrap_or_default(),
                  "tls-version-max" => params.tls_version_max = v.parse().unwrap_or_default(),
                  "client-logging-data" => params.client_logging_data = Some(v.into()),
+diff --git a/crates/snxcore/src/tunnel/gateway.rs b/crates/snxcore/src/tunnel/gateway.rs
+index cb3a8a1..84aa3df 100644
+--- a/crates/snxcore/src/tunnel/gateway.rs
++++ b/crates/snxcore/src/tunnel/gateway.rs
+@@ -205,6 +205,14 @@ impl CccGatewayConnector {
+ 
+         let mut builder = reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT);
+ 
++        if let Some(ip) = self.params.server_address {
++            let (host, port) = match self.params.server_name.rsplit_once(':') {
++                Some((host, port)) => (host, port.parse().unwrap_or(443)),
++                None => (self.params.server_name.as_str(), 443),
++            };
++            builder = builder.resolve(host, std::net::SocketAddr::from((ip, port)));
++        }
++
+         match self.params.tls_version_max {
+             TlsVersion::Tls12 => builder = builder.tls_version_max(reqwest::tls::Version::TLS_1_2),
+             TlsVersion::Tls13 => builder = builder.tls_version_max(reqwest::tls::Version::TLS_1_3),
 diff --git a/crates/snxcore/src/tunnel/ipsec/auth.rs b/crates/snxcore/src/tunnel/ipsec/auth.rs
 index 41b665b..250c6bc 100644
 --- a/crates/snxcore/src/tunnel/ipsec/auth.rs
@@ -61,7 +287,7 @@ index 41b665b..250c6bc 100644
  
      SExpression::from(&realm)
 diff --git a/crates/snxcore/src/tunnel/ipsec/ikev1.rs b/crates/snxcore/src/tunnel/ipsec/ikev1.rs
-index 6e05868..9e6dc5a 100644
+index 6e05868..93447bf 100644
 --- a/crates/snxcore/src/tunnel/ipsec/ikev1.rs
 +++ b/crates/snxcore/src/tunnel/ipsec/ikev1.rs
 @@ -19,7 +19,7 @@ use isakmp::{
@@ -73,7 +299,21 @@ index 6e05868..9e6dc5a 100644
  };
  use tokio::{net::UdpSocket, sync::mpsc::Sender};
  use tracing::{debug, info, trace, warn};
-@@ -156,7 +156,7 @@ impl Ikev1TunnelConnector {
+@@ -123,10 +123,11 @@ impl Ikev1TunnelConnector {
+         let socket = UdpSocket::bind("0.0.0.0:0").await?;
+ 
+         let host = if let Some((host, _)) = params.server_name.split_once(':') {
+-            host
++            host.to_owned()
+         } else {
+-            &params.server_name
++            params.server_name.clone()
+         };
++        let host = params.server_address.map(|ip| ip.to_string()).unwrap_or(host);
+ 
+         socket
+             .connect(&format!("{host}:{}", info.connectivity_info.natt_port))
+@@ -156,7 +157,7 @@ impl Ikev1TunnelConnector {
  
          Ok(Self {
              params: params.clone(),
@@ -82,7 +322,7 @@ index 6e05868..9e6dc5a 100644
              gateway_address,
              last_message_id: 0,
              last_identifier: 0,
-@@ -578,20 +578,21 @@ impl Ikev1TunnelConnector {
+@@ -578,20 +579,21 @@ impl Ikev1TunnelConnector {
          })
      }
  
@@ -96,7 +336,7 @@ index 6e05868..9e6dc5a 100644
 +        // The IKE control channel runs over NAT-T UDP 4500, as the official
 +        // client does. Some gateways silently drop the XAUTH ModeCfg reply when
 +        // IKE is tunnelled over TCPT, so TCPT is kept only as a fallback.
-+        let address = util::server_name_with_port(&params.server_name, info.connectivity_info.natt_port);
++        let address = util::gateway_address(params, info.connectivity_info.natt_port);
 +        let natt_address = address.to_socket_addrs()?.next().context("No address!")?;
  
 -        let tcpt_address = address.to_socket_addrs()?.next().context("No address!")?;
@@ -112,7 +352,7 @@ index 6e05868..9e6dc5a 100644
  
          Ikev1Service::new(transport, ikev1_session)
      }
-@@ -676,7 +677,7 @@ impl TunnelConnector for Ikev1TunnelConnector {
+@@ -676,7 +678,7 @@ impl TunnelConnector for Ikev1TunnelConnector {
              Err(e) => {
                  let _ = self.delete_session().await;
                  let info = self.gateway_connector.get_gateway_information().await?;
@@ -122,10 +362,10 @@ index 6e05868..9e6dc5a 100644
              }
          }
 diff --git a/crates/snxcore/src/tunnel/ipsec/imp/tun.rs b/crates/snxcore/src/tunnel/ipsec/imp/tun.rs
-index 2af3651..d4e369c 100644
+index 2af3651..6b4b51f 100644
 --- a/crates/snxcore/src/tunnel/ipsec/imp/tun.rs
 +++ b/crates/snxcore/src/tunnel/ipsec/imp/tun.rs
-@@ -44,6 +44,29 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(120);
+@@ -44,6 +44,35 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(120);
  pub type PacketSender = Sender<Bytes>;
  pub type PacketReceiver = Receiver<Bytes>;
  
@@ -134,20 +374,26 @@ index 2af3651..d4e369c 100644
 +/// engine. Both expose the same async send/recv over &self.
 +enum PacketDevice {
 +    Tun(Arc<tun::AsyncDevice>),
++    #[cfg(unix)]
 +    Sock(tokio::net::UnixDatagram),
++    Udp(tokio::net::UdpSocket),
 +}
 +
 +impl PacketDevice {
 +    async fn send(&self, buf: &[u8]) -> std::io::Result<usize> {
 +        match self {
 +            PacketDevice::Tun(d) => d.send(buf).await,
++            #[cfg(unix)]
 +            PacketDevice::Sock(s) => s.send(buf).await,
++            PacketDevice::Udp(s) => s.send(buf).await,
 +        }
 +    }
 +    async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
 +        match self {
 +            PacketDevice::Tun(d) => d.recv(buf).await,
++            #[cfg(unix)]
 +            PacketDevice::Sock(s) => s.recv(buf).await,
++            PacketDevice::Udp(s) => s.recv(buf).await,
 +        }
 +    }
 +}
@@ -155,7 +401,7 @@ index 2af3651..d4e369c 100644
  pub(crate) struct TunIPsecTunnel {
      params: Arc<TunnelParams>,
      session: Arc<TunnelSession>,
-@@ -207,6 +230,29 @@ impl TunIPsecTunnel {
+@@ -207,6 +236,54 @@ impl TunIPsecTunnel {
          Ok(())
      }
  
@@ -182,10 +428,35 @@ index 2af3651..d4e369c 100644
 +        let _ = out.flush();
 +    }
 +
++    /// UNIRAY: the engine's packet socket, once the settings are printed.
++    async fn engine_device(&self, session: &IPsecSession) -> anyhow::Result<PacketDevice> {
++        if let Some(port) = self.params.packet_udp {
++            let sock = tokio::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
++            sock.connect((std::net::Ipv4Addr::LOCALHOST, port)).await?;
++            sock.send(self.params.packet_token.as_deref().unwrap_or_default().as_bytes())
++                .await?;
++            self.report_settings(session);
++            return Ok(PacketDevice::Udp(sock));
++        }
++        #[cfg(unix)]
++        if let Some(fd) = self.params.packet_fd {
++            use std::os::fd::FromRawFd;
++            // SAFETY: the engine hands this process the socket as this descriptor,
++            // which nothing else in it owns.
++            #[allow(unsafe_code)]
++            let std_sock = unsafe { std::os::unix::net::UnixDatagram::from_raw_fd(fd) };
++            std_sock.set_nonblocking(true)?;
++            let sock = tokio::net::UnixDatagram::from_std(std_sock)?;
++            self.report_settings(session);
++            return Ok(PacketDevice::Sock(sock));
++        }
++        anyhow::bail!("no engine packet socket")
++    }
++
      pub(super) async fn run(
          &mut self,
          mut command_receiver: tokio::sync::mpsc::Receiver<TunnelCommand>,
-@@ -229,9 +275,6 @@ impl TunIPsecTunnel {
+@@ -229,9 +306,6 @@ impl TunIPsecTunnel {
              .with_context(|| tr!("error-no-ipsec-session"))?
              .clone();
  
@@ -195,7 +466,7 @@ index 2af3651..d4e369c 100644
          let nat = session.physical_address.then(|| {
              let excluded = self
                  .subnets
-@@ -243,44 +286,61 @@ impl TunIPsecTunnel {
+@@ -243,44 +317,55 @@ impl TunIPsecTunnel {
              StaticNat::new(placeholder_address(session.address, &excluded), session.address)
          });
  
@@ -221,14 +492,8 @@ index 2af3651..d4e369c 100644
 +        // UNIRAY: in engine mode the tunnel's IP packets go over a socketpair to
 +        // the UniRay engine, which owns the network stack, routing and DNS; the
 +        // standalone path uses a real TUN device.
-+        let (packet_dev, tun_name) = if let Some(fd) = self.params.packet_fd {
-+            self.report_settings(&session);
-+            use std::os::fd::FromRawFd;
-+            #[allow(unsafe_code)]
-+            let std_sock = unsafe { std::os::unix::net::UnixDatagram::from_raw_fd(fd) };
-+            std_sock.set_nonblocking(true)?;
-+            let sock = tokio::net::UnixDatagram::from_std(std_sock)?;
-+            (Arc::new(PacketDevice::Sock(sock)), String::new())
++        let (packet_dev, tun_name) = if self.params.engine_mode() {
++            (Arc::new(self.engine_device(&session).await?), String::new())
 +        } else {
 +            let tun = TunDevice::new(name_hint)?;
 +            let tun_name = tun.name().to_owned();
@@ -289,16 +554,16 @@ index 2af3651..d4e369c 100644
  
          let mut snx_receiver = self.receiver.take().context("No receiver")?;
  
-@@ -440,7 +500,7 @@ impl TunIPsecTunnel {
+@@ -440,7 +525,7 @@ impl TunIPsecTunnel {
          let mut keepalive_runner = KeepaliveRunner::new(
              keepalive_address,
              tun_name.clone(),
 -            if params.no_keepalive || !Platform::get().get_features().await.ipsec_keepalive {
-+            if params.no_keepalive || params.packet_fd.is_some() || !Platform::get().get_features().await.ipsec_keepalive {
++            if params.no_keepalive || params.engine_mode() || !Platform::get().get_features().await.ipsec_keepalive {
                  Arc::new(AtomicBool::new(false))
              } else {
                  ready.clone()
-@@ -452,7 +512,15 @@ impl TunIPsecTunnel {
+@@ -452,7 +537,15 @@ impl TunIPsecTunnel {
          let ka_run = keepalive_runner.run();
          pin_mut!(ka_run);
  
@@ -306,7 +571,7 @@ index 2af3651..d4e369c 100644
 +        let scv_runner = ScvRunner::new(
 +            keepalive_address,
 +            tun_name.clone(),
-+            if params.packet_fd.is_some() {
++            if params.engine_mode() {
 +                Arc::new(AtomicBool::new(false))
 +            } else {
 +                ready.clone()
@@ -315,3 +580,44 @@ index 2af3651..d4e369c 100644
  
          let scv_run = scv_runner.run();
          pin_mut!(scv_run);
+diff --git a/crates/snxcore/src/tunnel/ipsec/imp/udp.rs b/crates/snxcore/src/tunnel/ipsec/imp/udp.rs
+index edd5e37..cdfc72f 100644
+--- a/crates/snxcore/src/tunnel/ipsec/imp/udp.rs
++++ b/crates/snxcore/src/tunnel/ipsec/imp/udp.rs
+@@ -81,13 +81,12 @@ impl UdpIPsecTunnel {
+ 
+         let gateway_information = gateway_connector.get_gateway_information().await?;
+ 
+-        let address_str =
+-            util::server_name_with_port(&params.server_name, gateway_information.connectivity_info.natt_port);
++        let address_str = util::gateway_address(&params, gateway_information.connectivity_info.natt_port);
+ 
+-        let address: SocketAddr = lookup_host(address_str.as_ref())
++        let address: SocketAddr = lookup_host(address_str.as_str())
+             .await?
+             .next()
+-            .ok_or_else(|| anyhow!("Failed to resolve {}", address_str.as_ref()))?;
++            .ok_or_else(|| anyhow!("Failed to resolve {}", address_str))?;
+ 
+         // macOS/BSD returns EISCONN if sendto() carries a destination on a connected
+         // UDP socket; UdpFramed always sends with an address, so leave the socket
+diff --git a/crates/snxcore/src/util.rs b/crates/snxcore/src/util.rs
+index cf14661..89fcd54 100644
+--- a/crates/snxcore/src/util.rs
++++ b/crates/snxcore/src/util.rs
+@@ -128,6 +128,15 @@ pub fn server_name_with_port(server_name: &str, port: u16) -> Cow<'_, str> {
+     }
+ }
+ 
++/// UNIRAY: where to connect to the gateway on `port`: its pinned address
++/// (server-address), else server-name.
++pub fn gateway_address(params: &crate::model::params::TunnelParams, port: u16) -> String {
++    match params.server_address {
++        Some(ip) => format!("{ip}:{port}"),
++        None => server_name_with_port(&params.server_name, port).into_owned(),
++    }
++}
++
+ pub fn server_name_to_ipv4(server_name: &str, port: u16) -> anyhow::Result<Ipv4Addr> {
+     let address = server_name_with_port(server_name, port)
+         .to_socket_addrs()?
