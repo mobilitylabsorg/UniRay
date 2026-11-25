@@ -17,6 +17,12 @@
 # APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD (an app-specific password)
 # and APPLE_TEAM_ID; Tauri picks them up by these names.
 #
+# Updates: with TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+# (the key from `tauri signer generate`; its public half is in tauri.conf.json)
+# the desktop jobs also build signed update packages, and a release carries
+# latest.json, which the apps' updater reads from the latest release. Without
+# them the packages are built as before and the release has no latest.json.
+#
 # Android signing: without secrets the APK is signed with a throwaway debug
 # key, so each build installs only over itself. For updates that install over
 # each other, add these repository secrets:
@@ -44,6 +50,10 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+  # Passed to `tauri build` when the signing key is there (see Updates above).
+  UPDATER_CONFIG: '{"bundle":{"createUpdaterArtifacts":true}}'
 
 jobs:
   linux:
@@ -120,12 +130,16 @@ jobs:
       - name: Build
         run: |
           rm -rf target/release/bundle/appimage
-          pnpm tauri build --bundles appimage --verbose
+          updater=()
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then updater=(--config "$UPDATER_CONFIG"); fi
+          pnpm tauri build --bundles appimage --verbose "${updater[@]}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: uniray-linux
-          path: target/release/bundle/appimage/*.AppImage
+          path: |
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/appimage/*.AppImage.sig
           if-no-files-found: error
           retention-days: 7
 
@@ -181,7 +195,9 @@ jobs:
       - name: Build
         run: |
           rm -rf "target/$TARGET/release/bundle/nsis"
-          pnpm tauri build --runner cargo-xwin --target "$TARGET" --bundles nsis
+          updater=()
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then updater=(--config "$UPDATER_CONFIG"); fi
+          pnpm tauri build --runner cargo-xwin --target "$TARGET" --bundles nsis "${updater[@]}"
 
       # The same files the installer puts down, for running without installing.
       - name: Portable zip
@@ -198,6 +214,7 @@ jobs:
           name: uniray-windows
           path: |
             target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe.sig
             portable/*.zip
           if-no-files-found: error
           retention-days: 7
@@ -405,18 +422,27 @@ jobs:
             fi
           done
 
+      # The app bundle too: the update package is that app as .tar.gz.
       - name: Build
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles dmg
+        run: |
+          updater=()
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then updater=(--config "$UPDATER_CONFIG"); fi
+          pnpm tauri build --target ${{ matrix.target }} --bundles app,dmg "${updater[@]}"
 
       - name: Collect
         run: |
           mkdir -p dmg
-          cp target/${{ matrix.target }}/release/bundle/dmg/*.dmg dmg/UniRay-macos-${{ matrix.arch }}.dmg
+          bundle=target/${{ matrix.target }}/release/bundle
+          cp $bundle/dmg/*.dmg dmg/UniRay-macos-${{ matrix.arch }}.dmg
+          if [ -f $bundle/macos/UniRay.app.tar.gz ]; then
+            cp $bundle/macos/UniRay.app.tar.gz dmg/UniRay-macos-${{ matrix.arch }}.app.tar.gz
+            cp $bundle/macos/UniRay.app.tar.gz.sig dmg/UniRay-macos-${{ matrix.arch }}.app.tar.gz.sig
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: uniray-macos-${{ matrix.arch }}
-          path: dmg/*.dmg
+          path: dmg/*
           if-no-files-found: error
           retention-days: 7
 
@@ -504,6 +530,7 @@ jobs:
             echo "::error::CHANGELOG.md has no section for $version"
             exit 1
           fi
+          cp "$RUNNER_TEMP/notes.md" "$RUNNER_TEMP/changelog.md"
       # The packages, not the Play bundle (play-android-bundle).
       - uses: actions/download-artifact@v4
         with:
@@ -553,6 +580,39 @@ jobs:
             "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" >> "$out"
           cat "$out" "$RUNNER_TEMP/notes.md" > "$RUNNER_TEMP/body.md"
           mv "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/notes.md"
+      # What the apps' updater reads: the version, its notes and a signed
+      # package per platform, from the .sig files the builds left beside them.
+      - name: Update manifest
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python3 - "$version" "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/changelog.md" <<'PY'
+          import json, pathlib, sys, datetime
+          version, base, notes = sys.argv[1], sys.argv[2], pathlib.Path(sys.argv[3]).read_text()
+          packages = {
+              "linux-x86_64": f"UniRay_{version}_amd64.AppImage",
+              "windows-x86_64": f"UniRay_{version}_x64-setup.exe",
+              "darwin-aarch64": "UniRay-macos-arm64.app.tar.gz",
+              "darwin-x86_64": "UniRay-macos-x64.app.tar.gz",
+          }
+          platforms = {}
+          for platform, name in packages.items():
+              signature = next(pathlib.Path("dist").rglob(name + ".sig"), None)
+              if signature is None:
+                  print(f"::warning::no signed update package {name}")
+                  continue
+              platforms[platform] = {"signature": signature.read_text().strip(), "url": f"{base}/{name}"}
+          if platforms:
+              manifest = {
+                  "version": version,
+                  "notes": notes.strip(),
+                  "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "platforms": platforms,
+              }
+              pathlib.Path("dist/latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+          PY
+          # The signatures are in latest.json; the release does not need them.
+          find dist -name '*.sig' -delete
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/**/*

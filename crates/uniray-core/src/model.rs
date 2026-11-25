@@ -275,6 +275,8 @@ pub struct Settings {
     /// Auto-recover connection when stalled or dropped in background.
     #[serde(default)]
     pub auto_recover: bool,
+    /// Look for a new version in the GitHub releases (not in the Play edition).
+    pub check_updates: bool,
 }
 
 fn default_auto_update_hours() -> u32 {
@@ -349,6 +351,7 @@ impl Default for Settings {
             auto_connect: false,
             auto_failover: false,
             auto_recover: false,
+            check_updates: true,
         }
     }
 }

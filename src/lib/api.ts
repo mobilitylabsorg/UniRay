@@ -97,6 +97,7 @@ export interface Settings {
   autoConnect: boolean;
   autoFailover: boolean;
   autoRecover: boolean;
+  checkUpdates: boolean;
 }
 
 /** Elevated access the device offers; only `root`/`shizukuRoot` can do stealth. */
@@ -224,7 +225,7 @@ export interface Snapshot {
   testing: boolean;
   /** What this edition offers: the Google Play one has no stealth mode and
    * no ad blocking (src-tauri/src/edition.rs). */
-  features: { stealth: boolean; adBlock: boolean };
+  features: { stealth: boolean; adBlock: boolean; updates: boolean };
   corp: CorpNetwork | null;
   /** This build can run the corporate network (desktop for now). */
   corpAvailable: boolean;
@@ -303,6 +304,23 @@ export interface DpiReport {
   canApply: boolean;
 }
 
+/** A newer version in the GitHub releases (src-tauri/src/updater.rs). */
+export interface UpdateInfo {
+  version: string;
+  current: string;
+  /** The version's CHANGELOG.md section, Markdown. */
+  notes: string;
+  date: string | null;
+  /** The app can install it itself; otherwise `url` is where to get it. */
+  install: boolean;
+  url: string;
+}
+
+export interface UpdateProgress {
+  downloaded: number;
+  total: number | null;
+}
+
 /** What a uniray:// link asks for (src-tauri/src/deeplink.rs). */
 export type DeepLink =
   | { action: "connect" }
@@ -357,6 +375,10 @@ export const api = {
   runDpiProbe: () => invoke<DpiReport>("run_dpi_probe"),
   applyDpiFixes: () => invoke<void>("apply_dpi_fixes"),
   quit: () => invoke<void>("quit"),
+  updateStatus: () => invoke<UpdateInfo | null>("update_status"),
+  updateCheck: () => invoke<UpdateInfo | null>("update_check"),
+  /** Downloads, installs and restarts into the new version. */
+  updateInstall: () => invoke<void>("update_install"),
 };
 
 export const events = {
@@ -371,6 +393,11 @@ export const events = {
     listen<ImportReport>("handoff", (event) => handler(event.payload)),
   /** A uniray:// link arrived; take it with `api.takeDeepLinks`. */
   deepLink: (handler: () => void): Promise<UnlistenFn> => listen("deep-link", () => handler()),
+  /** A background check found a new version. */
+  updateAvailable: (handler: (info: UpdateInfo) => void): Promise<UnlistenFn> =>
+    listen<UpdateInfo>("update-available", (event) => handler(event.payload)),
+  updateProgress: (handler: (progress: UpdateProgress) => void): Promise<UnlistenFn> =>
+    listen<UpdateProgress>("update-progress", (event) => handler(event.payload)),
 };
 
 /** Commands reject with a `CmdError`; anything else is an unexpected failure. */

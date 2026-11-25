@@ -12,6 +12,7 @@ import {
   type Settings,
   type Snapshot,
   type Traffic,
+  type UpdateInfo,
 } from "../lib/api";
 
 const MAX_LOG_LINES = 2000;
@@ -46,6 +47,8 @@ export const useAppStore = defineStore("app", () => {
    * import dialog with it, so the user confirms (any web page can open such
    * a link). */
   const pendingImport = ref<string | null>(null);
+  /** A newer version, once a check found one. */
+  const update = shallowRef<UpdateInfo | null>(null);
 
   const servers = computed(() => snapshot.value?.servers ?? []);
   const subscriptions = computed(() => snapshot.value?.subscriptions ?? []);
@@ -101,8 +104,10 @@ export const useAppStore = defineStore("app", () => {
         logs.value.splice(0, logs.value.length - MAX_LOG_LINES);
       }
     });
+    await events.updateAvailable((info) => (update.value = info));
     apply(await api.getState());
     logs.value = await api.getLogs();
+    update.value = await api.updateStatus().catch(() => null);
   }
 
   function toast(text: string, kind: Toast["kind"] = "info") {
@@ -120,7 +125,7 @@ export const useAppStore = defineStore("app", () => {
     const { t, te } = i18n.global;
     const key = `errors.${error.code}`;
     const title = te(key) ? t(key) : t("errors.other");
-    const detailed = ["corpVia", "core", "coreStopped", "teardown", "network", "http", "invalidLink", "invalidConfig", "invalidSettings", "other", "io"];
+    const detailed = ["update", "corpVia", "core", "coreStopped", "teardown", "network", "http", "invalidLink", "invalidConfig", "invalidSettings", "other", "io"];
     return detailed.includes(error.code) && error.message ? `${title}: ${error.message}` : title;
   }
 
@@ -188,6 +193,7 @@ export const useAppStore = defineStore("app", () => {
     logs,
     toasts,
     pendingImport,
+    update,
     init,
     toast,
     dismiss,

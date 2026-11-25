@@ -97,6 +97,36 @@ async fn fetch(app: &AppHandle, url: &str) -> CmdResult<Parsed> {
     Ok(subscription::parse_response(status, &response_headers, &body, hwid_sent)?)
 }
 
+/// GETs a JSON document (the GitHub API's latest release), directly or,
+/// failing that, through the VPN.
+#[cfg(mobile)]
+pub(crate) async fn get_json(app: &AppHandle, url: &str) -> CmdResult<serde_json::Value> {
+    let state = app.state::<App>();
+    let user_agent = format!("UniRay/{}", app.package_info().version);
+    let request = |client: &reqwest::Client| {
+        client
+            .get(url)
+            .header("user-agent", user_agent.as_str())
+            .header("accept", "application/vnd.github+json")
+            .send()
+    };
+    let response = match request(&state.http).await {
+        Ok(response) => response,
+        Err(direct_err) => {
+            let mixed_port = state.connection.lock().unwrap().mixed_port;
+            let settings = state.store.lock().unwrap().data.settings.clone();
+            let proxied = match mixed_port.and_then(|port| proxied_client(&settings, port)) {
+                Some(client) => request(&client).await.ok(),
+                None => None,
+            };
+            proxied.ok_or_else(|| CmdError::network(describe(&direct_err)))?
+        }
+    };
+    let response = response.error_for_status().map_err(|err| CmdError::network(describe(&err)))?;
+    let body = response.bytes().await.map_err(|err| CmdError::network(describe(&err)))?;
+    serde_json::from_slice(&body).map_err(|err| CmdError::network(err.to_string()))
+}
+
 fn proxied_client(settings: &uniray_core::model::Settings, mixed_port: u16) -> Option<reqwest::Client> {
     let proxy = reqwest::Proxy::all(crate::monitor::local_proxy_url(settings, mixed_port)).ok()?;
     reqwest::Client::builder()

@@ -11,6 +11,7 @@ import SettingRow from "../components/SettingRow.vue";
 import ServiceCheckModal from "../components/ServiceCheckModal.vue";
 import SpeedTestModal from "../components/SpeedTestModal.vue";
 import ToggleSwitch from "../components/ToggleSwitch.vue";
+import UpdateCard from "../components/UpdateCard.vue";
 import { LOCALES } from "../i18n";
 import { api, type DelayTestMode, type Mode, type PerAppMode, type PrivilegeState, type Settings } from "../lib/api";
 import { useAppStore } from "../stores/app";
@@ -796,7 +797,8 @@ const proxyAddress = computed(() => `socks5://127.0.0.1:${store.settings?.mixedP
                 <option v-for="locale in LOCALES" :key="locale" :value="locale">{{ LOCALE_NAMES[locale] }}</option>
               </select>
             </SettingRow>
-            <div class="row">
+            <UpdateCard v-if="store.snapshot.features.updates" />
+            <div v-else class="row">
               <span class="min-w-0 flex-1 font-medium">{{ t("settings.version") }}</span>
               <span class="selectable font-mono text-sm text-muted">{{ store.snapshot.version }}</span>
             </div>

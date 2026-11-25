@@ -19,6 +19,7 @@ mod sysproxy;
 mod tray;
 #[cfg(desktop)]
 mod uplink;
+mod updater;
 
 use tauri::Manager;
 #[cfg(desktop)]
@@ -39,6 +40,7 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main_window(app);
         }));
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
     #[cfg(mobile)]
     {
@@ -76,6 +78,8 @@ pub fn run() {
                 cp: sidecar("uniray-cp")?,
             };
             app.manage(App::new(store, device, paths));
+            app.manage(updater::Updates::default());
+            updater::spawn_checks(handle.clone());
             deeplink::install(&handle);
 
             #[cfg(desktop)]
@@ -147,6 +151,9 @@ pub fn run() {
             commands::run_dpi_probe,
             commands::apply_dpi_fixes,
             commands::quit,
+            updater::update_status,
+            updater::update_check,
+            updater::update_install,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -14,12 +14,14 @@ use uniray_core::model::Settings;
 pub struct Features {
     pub stealth: bool,
     pub ad_block: bool,
+    /// Looks for new versions in the GitHub releases; Play updates its own.
+    pub updates: bool,
 }
 
 #[cfg(not(play_store))]
-pub const FEATURES: Features = Features { stealth: true, ad_block: true };
+pub const FEATURES: Features = Features { stealth: true, ad_block: true, updates: true };
 #[cfg(play_store)]
-pub const FEATURES: Features = Features { stealth: false, ad_block: false };
+pub const FEATURES: Features = Features { stealth: false, ad_block: false, updates: false };
 
 /// Turns off the settings this edition cannot honour: saved ones from the
 /// full edition, a backup or the settings page alike.
@@ -46,11 +48,11 @@ mod tests {
         let wanted = Settings { stealth: true, stealth_root_tun: true, block_ads: true, ..Default::default() };
 
         let mut full = wanted.clone();
-        restrict_to(&mut full, Features { stealth: true, ad_block: true });
+        restrict_to(&mut full, Features { stealth: true, ad_block: true, updates: true });
         assert_eq!(full, wanted);
 
         let mut play = wanted.clone();
-        restrict_to(&mut play, Features { stealth: false, ad_block: false });
+        restrict_to(&mut play, Features { stealth: false, ad_block: false, updates: false });
         assert!(!play.stealth && !play.stealth_root_tun && !play.block_ads);
         assert_eq!(Settings { stealth: true, stealth_root_tun: true, block_ads: true, ..play }, wanted);
     }

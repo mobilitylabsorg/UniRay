@@ -45,3 +45,4 @@ sysproxy = "0.3"
 machine-uid = "0.5"
 # The system language, for the tray menu (the window asks the webview).
 sys-locale = "0.3"
+tauri-plugin-updater = "2"

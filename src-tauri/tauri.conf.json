@@ -42,6 +42,11 @@
     "deep-link": {
       "desktop": { "schemes": ["uniray"] },
       "mobile": [{ "scheme": ["uniray"], "appLink": false }]
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJCMTFCQTQ3MDhGMzRFMEMKUldRTVR2TUlSN29SS3h2NzdKVDAxcndjbzI4UThoWk4yaEQ5cVVLRTRKQnRsbDR2ZnZ6TG5tam8K",
+      "endpoints": ["https://github.com/mobilitylabsorg/UniRay/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
     }
   }
 }

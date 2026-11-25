@@ -61,9 +61,10 @@ const tabs = computed(() => TABS.filter((tab) => !tab.tvOnly || props.variant ==
         :class="variant === 'sidebar' ? '' : 'h-7 w-12 rounded-full group-[.is-active]:bg-accent-soft'"
       >
         <AppIcon :name="tab.icon" :size="20" />
-        <!-- The connection tab says whether the VPN is on from every page. -->
+        <!-- The connection tab says whether the VPN is on from every page, the
+             settings tab that a new version is out. -->
         <span
-          v-if="tab.to === '/' && store.status === 'connected'"
+          v-if="(tab.to === '/' && store.status === 'connected') || (tab.to === '/settings' && store.update)"
           class="absolute size-[7px] rounded-full bg-accent"
           :class="variant === 'sidebar' ? '-top-1 left-[0.6875rem] ring-2 ring-bg' : 'top-0.5 right-3'"
           aria-hidden="true"
