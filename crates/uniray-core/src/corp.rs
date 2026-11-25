@@ -351,12 +351,15 @@ pub fn prepare(corp: &CorpNetwork, port: u16, ipv6: bool, binary: &Path, way: Wa
             ("cp", engine, bypass, None)
         }
     };
+    // Reached by name straight, not through a front (resolved at its far end).
+    let host = corp.info()?.host;
+    let host = (front.is_none() && host.parse::<IpAddr>().is_err()).then_some(host);
     let mut engine = engine;
     engine["corp"] = json!(corp.id);
     engine["user"] = json!(user);
     engine["pass"] = json!(pass);
     engine["port"] = json!(port);
-    routing(corp, mode, engine, user, pass, port, bypass, front)
+    routing(corp, mode, engine, user, pass, port, bypass, front, host)
 }
 
 /// The engine's `ovpn` section, the bypass rule and the front.
@@ -434,6 +437,7 @@ fn routing(
     port: u16,
     bypass: Vec<Bypass>,
     front: Option<config::CorpFront>,
+    host: Option<String>,
 ) -> Result<CorpRun> {
     let pushed = if corp.use_pushed { corp.learned.clone() } else { Pushed::default() };
     let mut routes: Vec<String> = Vec::new();
@@ -470,7 +474,7 @@ fn routing(
     let runtime = config::Engine { port, user, pass, bypass, block_udp: false, sniff_excluded: Vec::new() };
     Ok(CorpRun {
         engine: crate::engine::EngineRun { mode, config: engine, runtime: runtime.clone(), warnings: Vec::new() },
-        runtime: config::Corp { engine: runtime, routes, domains, dns, front },
+        runtime: config::Corp { engine: runtime, routes, domains, dns, front, host },
     })
 }
 

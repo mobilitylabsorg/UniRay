@@ -251,6 +251,7 @@ fn xray_accepts_generated_configs() {
             domains: vec!["domain:corp.test".into()],
             dns: vec!["10.8.0.1".parse().unwrap()],
             front,
+            host: None,
         };
         for (server_index, server) in [&servers[0], &wireguard].into_iter().enumerate() {
             for (runtime_index, runtime) in runtimes.iter().enumerate() {
@@ -278,6 +279,7 @@ fn xray_accepts_generated_configs() {
                 network: "udp",
                 outbound: (index == 2).then(|| config::probe_outbound(&other, "x", &settings[1]).unwrap()),
             }),
+            host: (index == 0).then(|| "vpn0.corp.example".to_owned()),
         })
         .collect();
     for (runtime_index, runtime) in runtimes.iter().enumerate() {

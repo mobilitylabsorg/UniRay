@@ -667,6 +667,7 @@ fn corp(front: Option<CorpFront>) -> Corp {
         domains: vec!["domain:corp.test".into()],
         dns: vec!["10.8.0.1".parse().unwrap()],
         front,
+        host: None,
     }
 }
 
@@ -710,6 +711,7 @@ fn two_corp_networks_at_once() {
         domains: vec!["domain:other.test".into()],
         dns: vec!["10.11.33.18".parse().unwrap()],
         front: None,
+        host: Some("vpn.other.test".into()),
     };
     let runtime = Runtime { corps: vec![corp(None), second], ..proxy_runtime() };
     let config = build(&server, &Settings::default(), &runtime).unwrap().config;
@@ -720,12 +722,18 @@ fn two_corp_networks_at_once() {
     // Both servers' ways out first, then each network's rules in turn.
     assert_eq!(rules[0]["ip"], json!(["198.51.100.5/32"]));
     assert_eq!(rules[1]["ip"], json!(["203.0.113.9/32"]));
-    let tags: Vec<&str> = rules[2..8].iter().map(|rule| rule["outboundTag"].as_str().unwrap()).collect();
+    // The direct DNS reached direct, for the servers' names.
+    assert_eq!(rules[2]["outboundTag"], "direct");
+    let tags: Vec<&str> = rules[3..9].iter().map(|rule| rule["outboundTag"].as_str().unwrap()).collect();
     assert_eq!(tags, ["corp", "corp", "corp", "corp-2", "corp-2", "corp-2"]);
-    assert_eq!(rules[6], json!({ "ip": ["10.11.0.0/16"], "outboundTag": "corp-2" }));
+    assert_eq!(rules[7], json!({ "ip": ["10.11.0.0/16"], "outboundTag": "corp-2" }));
     let servers = config["dns"]["servers"].as_array().unwrap();
-    assert_eq!(servers[0]["address"], "10.8.0.1");
-    assert_eq!(servers[1], json!({ "address": "10.11.33.18", "domains": ["domain:other.test"], "skipFallback": true }));
+    // The second network's own server by the direct DNS, ahead of its own
+    // DNS servers that resolve its domain: the tunnel is not up when it is
+    // looked up.
+    assert_eq!(servers[0], json!({ "address": "https://8.8.8.8/dns-query", "domains": ["full:vpn.other.test"], "skipFallback": true }));
+    assert_eq!(servers[1]["address"], "10.8.0.1");
+    assert_eq!(servers[2], json!({ "address": "10.11.33.18", "domains": ["domain:other.test"], "skipFallback": true }));
 }
 
 #[test]

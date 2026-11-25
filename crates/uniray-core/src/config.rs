@@ -129,6 +129,11 @@ pub struct Corp {
     /// DNS servers inside the tunnel, which resolve `domains`.
     pub dns: Vec<IpAddr>,
     pub front: Option<CorpFront>,
+    /// The corporate server's name, when the engine reaches it by name: it
+    /// resolves through the direct DNS, even where its domain is among
+    /// `domains` (a gateway inside its own company's domain), as the tunnel
+    /// is not up yet when its server is looked up.
+    pub host: Option<String>,
 }
 
 /// A loopback port of Xray ([`TAG_CORP_FRONT`]) where the engine connects in
@@ -735,6 +740,11 @@ fn apply_corps(config: &mut Value, settings: &Settings, corps: &[Corp], main: Op
     let mut new_outbounds = Vec::new();
     let mut rules: Vec<Value> = corps.iter().flat_map(|corp| &corp.engine.bypass).map(bypass_rule).collect();
     let mut dns_servers = Vec::new();
+    let hosts: Vec<String> = corps.iter().filter_map(|corp| corp.host.as_ref()).map(|host| format!("full:{host}")).collect();
+    if !hosts.is_empty() {
+        rules.push(dns_server_rule(&settings.direct_dns, TAG_DIRECT));
+        dns_servers.push(json!({ "address": settings.direct_dns, "domains": hosts, "skipFallback": true }));
+    }
     for (index, corp) in corps.iter().enumerate() {
         let (tag, front_tag, via_tag) = corp_tags(index);
         let mut outbound = corp.engine.outbound();
