@@ -177,6 +177,20 @@ index ee75c94..c8c6e9d 100644
  
      Ok(())
  }
+diff --git a/crates/snxcore/Cargo.toml b/crates/snxcore/Cargo.toml
+index 2cbe062..4bc62fd 100644
+--- a/crates/snxcore/Cargo.toml
++++ b/crates/snxcore/Cargo.toml
+@@ -63,6 +63,9 @@ xfrmnetlink = "0.4"
+ netlink-packet-xfrm = "0.5"
+ nix = { version = "0.32", features = ["fs", "user", "socket"] }
+ 
++[target.'cfg(target_os = "android")'.dependencies]
++nix = { version = "0.32", features = ["fs", "user", "socket"] }
++
+ [target.'cfg(target_os = "macos")'.dependencies]
+ nix = { version = "0.32", features = ["user", "socket", "net", "fs"] }
+ system-configuration = "0.8"
 diff --git a/crates/snxcore/src/model/params.rs b/crates/snxcore/src/model/params.rs
 index 46ec671..5885d50 100644
 --- a/crates/snxcore/src/model/params.rs
@@ -244,6 +258,250 @@ index 46ec671..5885d50 100644
                  "allow-forwarding" => params.allow_forwarding = v.parse().unwrap_or_default(),
                  "tls-version-max" => params.tls_version_max = v.parse().unwrap_or_default(),
                  "client-logging-data" => params.client_logging_data = Some(v.into()),
+diff --git a/crates/snxcore/src/platform.rs b/crates/snxcore/src/platform.rs
+index 5950b53..b0535f7 100644
+--- a/crates/snxcore/src/platform.rs
++++ b/crates/snxcore/src/platform.rs
+@@ -10,6 +10,8 @@ use std::{
+ use anyhow::anyhow;
+ use async_trait::async_trait;
+ use ipnet::Ipv4Net;
++#[cfg(target_os = "android")]
++use android::AndroidPlatformAccess as PlatformAccessImpl;
+ #[cfg(target_os = "linux")]
+ use linux::LinuxPlatformAccess as PlatformAccessImpl;
+ #[cfg(target_os = "macos")]
+@@ -26,6 +28,8 @@ use crate::model::{
+     params::{DnsResolver, TunnelParams, TunnelType},
+ };
+ 
++#[cfg(target_os = "android")]
++mod android;
+ #[cfg(target_os = "linux")]
+ mod linux;
+ #[cfg(target_os = "macos")]
+diff --git a/crates/snxcore/src/platform/android.rs b/crates/snxcore/src/platform/android.rs
+new file mode 100644
+index 0000000..331e64b
+--- /dev/null
++++ b/crates/snxcore/src/platform/android.rs
+@@ -0,0 +1,216 @@
++// Android runs snx-rs only in engine mode, as a child of UniRay's engine: the engine takes the packets,
++// and the app owns the routes and DNS, so there is nothing for the platform to configure here.
++
++use std::{
++    net::{Ipv4Addr, SocketAddr},
++    path::{Path, PathBuf},
++    time::Duration,
++};
++
++use async_trait::async_trait;
++use ipnet::Ipv4Net;
++use secrecy::SecretString;
++use tokio::net::UdpSocket;
++use uuid::Uuid;
++
++use crate::{
++    model::{IPsecSession, LiveStats, params::TunnelType},
++    platform::{
++        DeviceConfig, IPsecConfigurator, Keychain, NetworkInterface, PlatformAccess, PlatformFeatures,
++        ResolverConfig, ResolverConfigurator, RoutingConfig, RoutingConfigurator, SingleInstance, StatsPoller,
++        UdpEncapType, UdpSocketExt,
++    },
++};
++
++impl UdpSocketExt for UdpSocket {
++    fn set_encapsulation(&self, _encap: UdpEncapType) -> anyhow::Result<()> {
++        Ok(())
++    }
++
++    fn set_no_check(&self, _flag: bool) -> anyhow::Result<()> {
++        Ok(())
++    }
++
++    fn bind_to_tunnel(&self, _device: &str) -> anyhow::Result<()> {
++        anyhow::bail!("no tunnel device on Android")
++    }
++
++    async fn send_receive(&self, data: &[u8], timeout: Duration, target: SocketAddr) -> anyhow::Result<Vec<u8>> {
++        super::udp_send_receive(self, data, timeout, target).await
++    }
++}
++
++struct Nothing;
++
++#[async_trait]
++impl ResolverConfigurator for Nothing {
++    async fn configure(&self, _config: &ResolverConfig) -> anyhow::Result<()> {
++        Ok(())
++    }
++
++    async fn cleanup(&self, _config: &ResolverConfig) -> anyhow::Result<()> {
++        Ok(())
++    }
++}
++
++#[async_trait]
++impl RoutingConfigurator for Nothing {
++    async fn configure(&self, _config: &RoutingConfig) -> anyhow::Result<()> {
++        Ok(())
++    }
++}
++
++#[async_trait]
++impl StatsPoller for Nothing {
++    async fn poll(&self) -> anyhow::Result<LiveStats> {
++        Ok(LiveStats::default())
++    }
++}
++
++#[async_trait]
++impl IPsecConfigurator for Nothing {
++    async fn configure(&self) -> anyhow::Result<()> {
++        anyhow::bail!("no kernel IPsec on Android")
++    }
++
++    async fn rekey(&mut self, _session: &IPsecSession) -> anyhow::Result<()> {
++        anyhow::bail!("no kernel IPsec on Android")
++    }
++
++    async fn cleanup(&self) {}
++}
++
++impl Keychain for Nothing {
++    async fn acquire_password(&self, _profile_id: Uuid) -> anyhow::Result<String> {
++        anyhow::bail!("no keychain on Android")
++    }
++
++    async fn store_password(&self, _profile_id: Uuid, _password: &SecretString) -> anyhow::Result<()> {
++        anyhow::bail!("no keychain on Android")
++    }
++
++    async fn delete_password(&self, _profile_id: Uuid) -> anyhow::Result<()> {
++        Ok(())
++    }
++}
++
++impl SingleInstance for Nothing {
++    fn is_single(&self) -> bool {
++        true
++    }
++}
++
++impl NetworkInterface for Nothing {
++    async fn start_network_state_monitoring(&self) -> anyhow::Result<()> {
++        Ok(())
++    }
++
++    // Apps may not read the routing table; the source address of a route to a public address is the
++    // same answer. The engine gives the gateway's address, which crate::util::local_address_to uses.
++    async fn get_default_ipv4(&self) -> anyhow::Result<Ipv4Addr> {
++        crate::util::local_address_to(Ipv4Addr::new(8, 8, 8, 8))
++    }
++
++    async fn delete_device(&self, _device_name: &str) -> anyhow::Result<()> {
++        Ok(())
++    }
++
++    async fn configure_device(&self, _device_config: &DeviceConfig) -> anyhow::Result<()> {
++        anyhow::bail!("no tunnel device on Android")
++    }
++
++    async fn replace_ip_address(
++        &self,
++        _device_name: &str,
++        _old_address: Ipv4Net,
++        _new_address: Ipv4Net,
++    ) -> anyhow::Result<()> {
++        Ok(())
++    }
++
++    async fn new_stats_poller(&self, _device_name: &str) -> anyhow::Result<impl StatsPoller + Send + Sync + 'static> {
++        Ok(Nothing)
++    }
++
++    fn is_online(&self) -> bool {
++        true
++    }
++}
++
++pub struct AndroidPlatformAccess;
++
++impl PlatformAccess for AndroidPlatformAccess {
++    async fn get_features(&self) -> PlatformFeatures {
++        PlatformFeatures {
++            ipsec_native: false,
++            ipsec_keepalive: false,
++            split_dns: false,
++        }
++    }
++
++    fn new_resolver_configurator<S: AsRef<str>>(
++        &self,
++        _device: S,
++    ) -> anyhow::Result<Box<dyn ResolverConfigurator + Send + Sync>> {
++        Ok(Box::new(Nothing))
++    }
++
++    fn new_keychain(&self) -> impl Keychain + Send + Sync {
++        Nothing
++    }
++
++    fn get_machine_uuid(&self) -> anyhow::Result<Uuid> {
++        anyhow::bail!("no machine id on Android")
++    }
++
++    fn check_privileges(&self) -> anyhow::Result<()> {
++        Ok(())
++    }
++
++    fn init(&self) {}
++
++    fn new_ipsec_configurator(
++        &self,
++        _device_config: DeviceConfig,
++        _ipsec_session: IPsecSession,
++        _src_ip: Ipv4Addr,
++        _src_port: u16,
++        _dest_ip: Ipv4Addr,
++        _dest_port: u16,
++    ) -> impl IPsecConfigurator + use<> + Send + Sync {
++        Nothing
++    }
++
++    async fn new_routing_configurator<S: AsRef<str> + Send>(
++        &self,
++        _device: S,
++        _tunnel_type: TunnelType,
++    ) -> anyhow::Result<impl RoutingConfigurator + Send + Sync + 'static> {
++        Ok(Nothing)
++    }
++
++    fn new_network_interface(&self) -> impl NetworkInterface + Send + Sync + 'static {
++        Nothing
++    }
++
++    fn new_single_instance<S: AsRef<str>>(&self, _name: S) -> anyhow::Result<impl SingleInstance + 'static> {
++        Ok(Nothing)
++    }
++
++    // The engine runs snx-rs in the app's private run directory.
++    fn data_dir(&self) -> PathBuf {
++        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
++    }
++
++    fn trusted_library_path(&self, _path: &Path) -> Option<PathBuf> {
++        None
++    }
++
++    fn write_private_file(&self, path: &Path, data: &[u8]) -> std::io::Result<()> {
++        super::unix::write_private_file(path, data)
++    }
++
++    async fn authorize_socket_peer(&self, _stream: &interprocess::local_socket::tokio::Stream) -> bool {
++        false
++    }
++}
 diff --git a/crates/snxcore/src/tunnel/gateway.rs b/crates/snxcore/src/tunnel/gateway.rs
 index cb3a8a1..84aa3df 100644
 --- a/crates/snxcore/src/tunnel/gateway.rs
@@ -287,7 +545,7 @@ index 41b665b..250c6bc 100644
  
      SExpression::from(&realm)
 diff --git a/crates/snxcore/src/tunnel/ipsec/ikev1.rs b/crates/snxcore/src/tunnel/ipsec/ikev1.rs
-index 6e05868..93447bf 100644
+index 6e05868..def386e 100644
 --- a/crates/snxcore/src/tunnel/ipsec/ikev1.rs
 +++ b/crates/snxcore/src/tunnel/ipsec/ikev1.rs
 @@ -19,7 +19,7 @@ use isakmp::{
@@ -352,7 +610,19 @@ index 6e05868..93447bf 100644
  
          Ikev1Service::new(transport, ikev1_session)
      }
-@@ -676,7 +678,7 @@ impl TunnelConnector for Ikev1TunnelConnector {
+@@ -600,7 +602,10 @@ impl Ikev1TunnelConnector {
+ #[async_trait]
+ impl TunnelConnector for Ikev1TunnelConnector {
+     async fn authenticate(&mut self) -> anyhow::Result<Arc<TunnelSession>> {
+-        let my_address = Platform::get().new_network_interface().get_default_ipv4().await?;
++        let my_address = match self.params.server_address {
++            Some(_) => util::local_address_to(self.gateway_address)?,
++            None => Platform::get().new_network_interface().get_default_ipv4().await?,
++        };
+         self.service.do_sa_proposal(self.params.ike_lifetime).await?;
+         self.service.do_key_exchange(my_address, self.gateway_address).await?;
+ 
+@@ -676,7 +681,7 @@ impl TunnelConnector for Ikev1TunnelConnector {
              Err(e) => {
                  let _ = self.delete_session().await;
                  let info = self.gateway_connector.get_gateway_information().await?;
@@ -361,8 +631,21 @@ index 6e05868..93447bf 100644
                  Err(e)
              }
          }
+diff --git a/crates/snxcore/src/tunnel/ipsec/imp/native.rs b/crates/snxcore/src/tunnel/ipsec/imp/native.rs
+index d9bc211..580558a 100644
+--- a/crates/snxcore/src/tunnel/ipsec/imp/native.rs
++++ b/crates/snxcore/src/tunnel/ipsec/imp/native.rs
+@@ -57,7 +57,7 @@ impl NativeIPsecTunnel {
+         let subnets = util::ranges_to_subnets(&client_settings.updated_policies.range.settings).collect::<Vec<_>>();
+ 
+         let gateway_address =
+-            util::server_name_to_ipv4(&params.server_name, gateway_information.connectivity_info.natt_port)?;
++            util::gateway_ipv4(&params, gateway_information.connectivity_info.natt_port)?;
+ 
+         debug!(
+             "Resolved gateway address: {}, acquired internal address: {}",
 diff --git a/crates/snxcore/src/tunnel/ipsec/imp/tun.rs b/crates/snxcore/src/tunnel/ipsec/imp/tun.rs
-index 2af3651..9280986 100644
+index 2af3651..4892cb1 100644
 --- a/crates/snxcore/src/tunnel/ipsec/imp/tun.rs
 +++ b/crates/snxcore/src/tunnel/ipsec/imp/tun.rs
 @@ -44,6 +44,77 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(120);
@@ -443,7 +726,17 @@ index 2af3651..9280986 100644
  pub(crate) struct TunIPsecTunnel {
      params: Arc<TunnelParams>,
      session: Arc<TunnelSession>,
-@@ -207,6 +278,54 @@ impl TunIPsecTunnel {
+@@ -79,8 +150,7 @@ impl TunIPsecTunnel {
+             _ => EspEncapType::None,
+         };
+ 
+-        let gateway_address =
+-            util::server_name_to_ipv4(&params.server_name, gateway_information.connectivity_info.tcpt_port)?;
++        let gateway_address = util::gateway_ipv4(&params, gateway_information.connectivity_info.tcpt_port)?;
+ 
+         let internal_gateway_address = params
+             .use_internal_gateway_ip
+@@ -207,6 +277,54 @@ impl TunIPsecTunnel {
          Ok(())
      }
  
@@ -498,7 +791,7 @@ index 2af3651..9280986 100644
      pub(super) async fn run(
          &mut self,
          mut command_receiver: tokio::sync::mpsc::Receiver<TunnelCommand>,
-@@ -229,9 +348,6 @@ impl TunIPsecTunnel {
+@@ -229,9 +347,6 @@ impl TunIPsecTunnel {
              .with_context(|| tr!("error-no-ipsec-session"))?
              .clone();
  
@@ -508,7 +801,7 @@ index 2af3651..9280986 100644
          let nat = session.physical_address.then(|| {
              let excluded = self
                  .subnets
-@@ -243,44 +359,55 @@ impl TunIPsecTunnel {
+@@ -243,44 +358,55 @@ impl TunIPsecTunnel {
              StaticNat::new(placeholder_address(session.address, &excluded), session.address)
          });
  
@@ -596,7 +889,7 @@ index 2af3651..9280986 100644
  
          let mut snx_receiver = self.receiver.take().context("No receiver")?;
  
-@@ -319,6 +446,16 @@ impl TunIPsecTunnel {
+@@ -319,6 +445,16 @@ impl TunIPsecTunnel {
  
          let esp_codec = esp_codec_in.clone();
  
@@ -613,7 +906,7 @@ index 2af3651..9280986 100644
          tokio::spawn(async move {
              while let Some(item) = snx_receiver.next().await {
                  let codec = esp_codec.clone();
-@@ -327,6 +464,13 @@ impl TunIPsecTunnel {
+@@ -327,6 +463,13 @@ impl TunIPsecTunnel {
  
                  match result.await {
                      Ok(Ok(packet)) => {
@@ -627,7 +920,7 @@ index 2af3651..9280986 100644
                          let _ = match nat {
                              Some(nat) => {
                                  let mut packet = packet
-@@ -433,14 +577,10 @@ impl TunIPsecTunnel {
+@@ -433,14 +576,10 @@ impl TunIPsecTunnel {
          };
          pin_mut!(command_fut);
  
@@ -643,7 +936,7 @@ index 2af3651..9280986 100644
                  Arc::new(AtomicBool::new(false))
              } else {
                  ready.clone()
-@@ -452,17 +592,67 @@ impl TunIPsecTunnel {
+@@ -452,17 +591,67 @@ impl TunIPsecTunnel {
          let ka_run = keepalive_runner.run();
          pin_mut!(ka_run);
  
@@ -714,10 +1007,20 @@ index 2af3651..9280986 100644
                      debug!("Terminating IPsec tunnel due to stop command");
                      break Ok(());
 diff --git a/crates/snxcore/src/tunnel/ipsec/imp/udp.rs b/crates/snxcore/src/tunnel/ipsec/imp/udp.rs
-index edd5e37..cdfc72f 100644
+index edd5e37..02e08ee 100644
 --- a/crates/snxcore/src/tunnel/ipsec/imp/udp.rs
 +++ b/crates/snxcore/src/tunnel/ipsec/imp/udp.rs
-@@ -81,13 +81,12 @@ impl UdpIPsecTunnel {
+@@ -75,19 +75,21 @@ impl UdpIPsecTunnel {
+     ) -> anyhow::Result<Self> {
+         let socket = {
+             use crate::platform::{NetworkInterface, Platform, PlatformAccess};
+-            let local_ip = Platform::get().new_network_interface().get_default_ipv4().await?;
++            let local_ip = match params.server_address {
++                Some(gateway) => util::local_address_to(gateway)?,
++                None => Platform::get().new_network_interface().get_default_ipv4().await?,
++            };
+             UdpSocket::bind(SocketAddr::from((local_ip, 0))).await?
+         };
  
          let gateway_information = gateway_connector.get_gateway_information().await?;
  
@@ -766,11 +1069,24 @@ index 1f9c214..cb7b742 100644
      0x44, 0x56, 0x10, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x7, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x45,
      0x4b, 0x77, 0x60, 0x61, 0x59, 0x01, 0x09, 0x33, 0x47, 0x77, 0xd0, 0x45, 0x77, 0x03, 0x05, 0x00, 0x00, 0x00, 0x51,
      0x94, 0xe8, 0x98, 0x03, 0xb5, 0xff, 00,
+diff --git a/crates/snxcore/src/tunnel/ssl.rs b/crates/snxcore/src/tunnel/ssl.rs
+index 59faa23..ce350a7 100644
+--- a/crates/snxcore/src/tunnel/ssl.rs
++++ b/crates/snxcore/src/tunnel/ssl.rs
+@@ -102,7 +102,7 @@ impl SslTunnel {
+     ) -> anyhow::Result<Self> {
+         let info = gateway_connector.get_gateway_information().await?;
+ 
+-        let gateway_address = util::server_name_to_ipv4(&params.server_name, info.connectivity_info.tcpt_port)?;
++        let gateway_address = util::gateway_ipv4(&params, info.connectivity_info.tcpt_port)?;
+ 
+         let tcp = tokio::net::TcpStream::connect((gateway_address, info.connectivity_info.tcpt_port)).await?;
+         tcp.set_nodelay(true)?;
 diff --git a/crates/snxcore/src/util.rs b/crates/snxcore/src/util.rs
-index cf14661..89fcd54 100644
+index cf14661..3bc0502 100644
 --- a/crates/snxcore/src/util.rs
 +++ b/crates/snxcore/src/util.rs
-@@ -128,6 +128,15 @@ pub fn server_name_with_port(server_name: &str, port: u16) -> Cow<'_, str> {
+@@ -128,6 +128,35 @@ pub fn server_name_with_port(server_name: &str, port: u16) -> Cow<'_, str> {
      }
  }
  
@@ -780,6 +1096,26 @@ index cf14661..89fcd54 100644
 +    match params.server_address {
 +        Some(ip) => format!("{ip}:{port}"),
 +        None => server_name_with_port(&params.server_name, port).into_owned(),
++    }
++}
++
++/// The local address of the route to `target`, found without sending anything: where a VPN holds the
++/// default route, the address the gateway is reached from is not the default route's.
++pub fn local_address_to(target: Ipv4Addr) -> anyhow::Result<Ipv4Addr> {
++    let socket = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
++    socket.connect((target, 4500))?;
++    match socket.local_addr()?.ip() {
++        IpAddr::V4(ip) => Ok(ip),
++        IpAddr::V6(_) => anyhow::bail!("no IPv4 route to {target}"),
++    }
++}
++
++/// The gateway's IPv4 address: the one given (`server-address`), else the server name resolved. A gateway
++/// whose own domain is routed into its tunnel cannot be resolved before the tunnel is up.
++pub fn gateway_ipv4(params: &crate::model::params::TunnelParams, port: u16) -> anyhow::Result<Ipv4Addr> {
++    match params.server_address {
++        Some(ip) => Ok(ip),
++        None => server_name_to_ipv4(&params.server_name, port),
 +    }
 +}
 +

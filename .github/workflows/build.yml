@@ -269,7 +269,7 @@ jobs:
       # APK carries only its own.
       # libXray and the stealth Xray are built from UniRay's forks (BBRv3 and RACK
       # in Xray's TUN), with the NDK above.
-      - name: Xray for Android (libXray, stealth binaries, geo files) and the engine
+      - name: Xray for Android (libXray, stealth binaries, geo files), the engine and the corporate clients
         run: |
           android=src-tauri/gen/android/app/src/main
           bash scripts/build-libxray-android.sh
@@ -281,6 +281,9 @@ jobs:
             bash scripts/build-xray-android.sh "$target"
             bash scripts/build-engine.sh "$target" "$android/jniLibs/$abi/libuniray_engine.so"
             bash scripts/fetch-naive.sh "$target" "$android/jniLibs/$abi/libnaive.so"
+            # The corporate network clients (OpenVPN, Check Point), in Docker with the NDK.
+            bash scripts/build-ovpn.sh "$target" "$android/jniLibs/$abi/libuniray_ovpn.so"
+            bash scripts/build-cp.sh "$target" "$android/jniLibs/$abi/libuniray_cp.so"
           done
         env:
           GITHUB_TOKEN: ${{ github.token }}

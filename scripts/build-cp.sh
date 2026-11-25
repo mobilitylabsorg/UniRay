@@ -16,7 +16,9 @@
 # Linux: a static musl binary built in Docker on Alpine, OpenSSL and SQLite
 # vendored, so it runs on any distribution, as uniray-ovpn does. Windows
 # (x86_64): cross-built with MinGW-w64, OpenSSL vendored and linked statically,
-# so the .exe imports only system DLLs. The crates are fetched first; the
+# so the .exe imports only system DLLs. Android (aarch64, armv7): with the
+# NDK (NDK_HOME), mounted into Docker; snx-rs gets a platform module for it
+# (engine mode only). The crates are fetched first; the
 # build itself runs with no network.
 set -euo pipefail
 
@@ -56,8 +58,9 @@ prepare() {
   fetch "$SNX_REPO" "$SNX_COMMIT" "$snx" "$SNX_TAG"
   fetch "$ISAKMP_REPO" "$ISAKMP_COMMIT" "$isakmp"
   # Reset to the pinned tree and (re)apply the UniRay patches.
-  git -C "$snx" checkout --quiet -- . && git -C "$snx" clean -qfd
-  git -C "$isakmp" checkout --quiet -- . && git -C "$isakmp" clean -qfd
+  # (The index too: regenerating the patch marks its new files with git add -N.)
+  git -C "$snx" reset --quiet && git -C "$snx" checkout --quiet -- . && git -C "$snx" clean -qfd
+  git -C "$isakmp" reset --quiet && git -C "$isakmp" checkout --quiet -- . && git -C "$isakmp" clean -qfd
   git -C "$snx" apply "$root/cp/snxcore.patch"
   git -C "$isakmp" apply "$root/cp/isakmp.patch"
   # snxcore pulls isakmp from git; use our patched local copy instead.
@@ -73,7 +76,8 @@ EOF
 cargo_home="$deps/cargo"
 
 # build <image> <dockerfile> <platform> <rust target> [env...]: cargo fetch,
-# then the build with no network; the binary to $out.
+# then the build with no network; the binary to $out. Android: an executable
+# the APK carries as a native library (libuniray_cp.so).
 build() {
   local image="$1" dockerfile="$2" platform="$3" rust_target="$4"
   shift 4
@@ -113,8 +117,29 @@ RUN rustup target add x86_64-pc-windows-gnu' linux/amd64 x86_64-pc-windows-gnu \
     -e RUSTFLAGS="-C strip=symbols"
 }
 
+# android <rust target> <clang>: with the NDK in $NDK_HOME, mounted into the
+# container. OpenSSL (vendored) builds with the NDK's clang as well.
+android() {
+  local ndk="${NDK_HOME:-${ANDROID_NDK_HOME:-}}"
+  if [[ -z "$ndk" || ! -d "$ndk/toolchains/llvm" ]]; then
+    echo "build-cp.sh: set NDK_HOME to the Android NDK" >&2
+    exit 1
+  fi
+  local triple="$1" clang="$2"
+  local var="${triple//-/_}"
+  build uniray-cp-android 'FROM rust:1-trixie
+RUN apt-get update && apt-get install -y --no-install-recommends perl make && rm -rf /var/lib/apt/lists/*
+RUN rustup target add aarch64-linux-android armv7-linux-androideabi' linux/amd64 "$triple" \
+    -v "$ndk:/ndk:ro" -e ANDROID_NDK_ROOT=/ndk -e ANDROID_NDK_HOME=/ndk \
+    -e PATH=/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin \
+    -e "CC_$var=$clang" -e "AR_$var=llvm-ar" -e "CARGO_TARGET_${var^^}_LINKER=$clang" \
+    -e RUSTFLAGS="-C strip=symbols"
+}
+
 prepare
 case "$target" in
+  aarch64-linux-android) android aarch64-linux-android aarch64-linux-android24-clang ;;
+  armv7-linux-androideabi) android armv7-linux-androideabi armv7a-linux-androideabi24-clang ;;
   x86_64-unknown-linux-*) linux linux/amd64 x86_64-unknown-linux-musl ;;
   aarch64-unknown-linux-*) linux linux/arm64 aarch64-unknown-linux-musl ;;
   x86_64-pc-windows-*) windows ;;
