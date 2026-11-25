@@ -19,7 +19,8 @@
 # so the .exe imports only system DLLs. Android (aarch64, armv7): with the
 # NDK (NDK_HOME), mounted into Docker; snx-rs gets a platform module for it
 # (engine mode only). The crates are fetched first; the
-# build itself runs with no network.
+# build itself runs with no network. macOS (arm64, x86_64): on a Mac, with
+# cargo directly.
 set -euo pipefail
 
 SNX_REPO="https://github.com/ancwrd1/snx-rs.git"
@@ -126,18 +127,31 @@ android() {
     exit 1
   fi
   local triple="$1" clang="$2"
-  local var="${triple//-/_}"
+  local var="${triple//-/_}" upper
+  upper="$(echo "$var" | tr '[:lower:]' '[:upper:]')"
   build uniray-cp-android 'FROM rust:1-trixie
 RUN apt-get update && apt-get install -y --no-install-recommends perl make && rm -rf /var/lib/apt/lists/*
 RUN rustup target add aarch64-linux-android armv7-linux-androideabi' linux/amd64 "$triple" \
     -v "$ndk:/ndk:ro" -e ANDROID_NDK_ROOT=/ndk -e ANDROID_NDK_HOME=/ndk \
     -e PATH=/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin \
-    -e "CC_$var=$clang" -e "AR_$var=llvm-ar" -e "CARGO_TARGET_${var^^}_LINKER=$clang" \
+    -e "CC_$var=$clang" -e "AR_$var=llvm-ar" -e "CARGO_TARGET_${upper}_LINKER=$clang" \
     -e RUSTFLAGS="-C strip=symbols"
+}
+
+# darwin <rust target>: on a Mac, with its own toolchain (snx-rs supports
+# macOS; the target's standard library from rustup).
+darwin() {
+  local target_dir="$deps/target-darwin" log="$deps/build.log"
+  (cd "$snx" && CARGO_TARGET_DIR="$target_dir" RUSTFLAGS="-C strip=symbols" \
+    cargo build --release --target "$1" -p snx-rs \
+      --features snxcore/vendored-openssl,snxcore/vendored-sqlite) >"$log" 2>&1 \
+    || { tail -30 "$log"; exit 1; }
+  install -m 755 "$target_dir/$1/release/snx-rs" "$out"
 }
 
 prepare
 case "$target" in
+  aarch64-apple-darwin | x86_64-apple-darwin) darwin "$target" ;;
   aarch64-linux-android) android aarch64-linux-android aarch64-linux-android24-clang ;;
   armv7-linux-androideabi) android armv7-linux-androideabi armv7a-linux-androideabi24-clang ;;
   x86_64-unknown-linux-*) linux linux/amd64 x86_64-unknown-linux-musl ;;

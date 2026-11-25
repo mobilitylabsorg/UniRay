@@ -390,9 +390,12 @@ jobs:
           cache-dependency-path: engine/go.sum
 
       - run: pnpm install --frozen-lockfile
-      # uniray-ovpn is built in Docker on Alpine (build-ovpn.sh).
-      - name: Sidecars (Xray, helper, engine, naive, ovpn)
-        run: bash scripts/prepare-sidecars.sh --release ${{ matrix.target }}
+      # uniray-ovpn and uniray-cp build natively here: asio's headers from
+      # Homebrew, OpenSSL and LZ4 for the target (build-ovpn.sh, build-cp.sh).
+      - name: Sidecars (Xray, helper, engine, naive, ovpn, cp)
+        run: |
+          brew install asio
+          bash scripts/prepare-sidecars.sh --release ${{ matrix.target }}
         env:
           # fetch-naive.sh reads the naiveproxy release through the API.
           GITHUB_TOKEN: ${{ github.token }}

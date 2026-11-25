@@ -17,14 +17,15 @@
 # Docker on Debian), OpenSSL and LZ4 as for Windows, libc++ linked statically.
 # The result is an executable that the APK carries as a native library
 # (libuniray_ovpn.so), the only place an app may run programs from.
-# macOS: on a Mac, with Homebrew's asio, lz4 and openssl@3 linked statically.
+# macOS (arm64, x86_64): on a Mac, OpenSSL and LZ4 as for Windows, built for
+# the target's architecture; asio's headers from Homebrew.
 set -euo pipefail
 
 OPENVPN3_REPO="https://github.com/OpenVPN/openvpn3.git"
 OPENVPN3_TAG="release/3.9"
 OPENVPN3_COMMIT="10c6a56cb17fd015a2d24953c3c42145bbcdea58"
 
-# Windows' and Android's dependencies, built from source.
+# The dependencies built from source (Windows, Android, macOS).
 OPENSSL_VERSION="3.5.9"
 OPENSSL_SHA256="603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"
 LZ4_VERSION="1.10.0"
@@ -67,14 +68,19 @@ EOF
   rm -rf "$work"
 }
 
+# sha256_is <sha256> <file>: GNU sha256sum, or macOS's shasum.
+sha256_is() {
+  [[ "$( (sha256sum "$2" 2>/dev/null || shasum -a 256 "$2") | cut -d' ' -f1)" == "$1" ]]
+}
+
 # fetch <url> <sha256>: into build/cache/ovpn-deps/dl, checked.
 fetch() {
   local dl="$root/build/cache/ovpn-deps/dl" file
   file="$dl/$(basename "$1")"
   mkdir -p "$dl"
-  if [[ ! -f "$file" ]] || ! echo "$2  $file" | sha256sum --check --status; then
+  if [[ ! -f "$file" ]] || ! sha256_is "$2" "$file"; then
     curl -sSfL -o "$file.part" "$1"
-    if ! echo "$2  $file.part" | sha256sum --check --status; then
+    if ! sha256_is "$2" "$file.part"; then
       echo "build-ovpn.sh: $1 does not match its checksum" >&2
       exit 1
     fi
@@ -192,6 +198,47 @@ DOCKERFILE
   rm -rf "$work"
 }
 
+# darwin <arch> <OpenSSL target> <deployment target>: on a Mac. OpenSSL and LZ4
+# from the tarballs for the target's architecture (the runner's Homebrew has
+# its own only), asio's headers from Homebrew (brew install asio).
+darwin() {
+  local arch="$1" openssl_target="$2"
+  export MACOSX_DEPLOYMENT_TARGET="$3"
+  fetch "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz" "$OPENSSL_SHA256"
+  fetch "https://github.com/lz4/lz4/releases/download/v$LZ4_VERSION/lz4-$LZ4_VERSION.tar.gz" "$LZ4_SHA256"
+  local dl="$root/build/cache/ovpn-deps/dl"
+  local deps="$root/build/cache/ovpn-deps/darwin-$arch-openssl-$OPENSSL_VERSION-lz4-$LZ4_VERSION"
+  local work
+  work="$(mktemp -d)"
+  mkdir -p "$deps/lib" "$deps/include"
+  if [[ ! -f "$deps/lib/libssl.a" ]]; then
+    tar -xzf "$dl/openssl-$OPENSSL_VERSION.tar.gz" -C "$work"
+    (cd "$work/openssl-$OPENSSL_VERSION" &&
+      ./Configure "$openssl_target" no-shared no-tests no-docs no-apps no-module \
+        --prefix="$deps" --libdir=lib >"$work/openssl.log" 2>&1 &&
+      make -j"$(sysctl -n hw.ncpu)" build_libs >>"$work/openssl.log" 2>&1 &&
+      make install_dev >>"$work/openssl.log" 2>&1) || { tail -30 "$work/openssl.log"; exit 1; }
+  fi
+  if [[ ! -f "$deps/lib/liblz4.a" ]]; then
+    tar -xzf "$dl/lz4-$LZ4_VERSION.tar.gz" -C "$work"
+    local lz4="$work/lz4-$LZ4_VERSION/lib"
+    make -C "$lz4" liblz4.a CFLAGS="-O2 -arch $arch" >"$work/lz4.log" 2>&1 || { tail -20 "$work/lz4.log"; exit 1; }
+    cp "$lz4/liblz4.a" "$deps/lib/"
+    cp "$lz4/lz4.h" "$lz4/lz4hc.h" "$lz4/lz4frame.h" "$deps/include/"
+  fi
+  local asio
+  asio="$(brew --prefix asio)/include"
+  cmake -S "$root/ovpn" -B "$work/build" -DOPENVPN3_DIR="$core" -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_OSX_ARCHITECTURES="$arch" -DOPENSSL_ROOT_DIR="$deps" -DOPENSSL_USE_STATIC_LIBS=TRUE \
+    -DASIO_INCLUDE_DIR="$asio" -DLZ4_INCLUDE_DIR="$deps/include" -DLZ4_LIBRARY="$deps/lib/liblz4.a" \
+    >"$work/cmake.log" 2>&1 || { tail -30 "$work/cmake.log"; exit 1; }
+  cmake --build "$work/build" -j"$(sysctl -n hw.ncpu)" >"$work/build.log" 2>&1 \
+    || { grep -B2 -A8 "error" "$work/build.log" | head -60; exit 1; }
+  strip -x "$work/build/uniray-ovpn"
+  install -m 755 "$work/build/uniray-ovpn" "$out"
+  rm -rf "$work"
+}
+
 case "$target" in
   aarch64-linux-android) android arm64-v8a android-arm64 aarch64-linux-android ;;
   armv7-linux-androideabi) android armeabi-v7a android-arm armv7a-linux-androideabi ;;
@@ -199,17 +246,7 @@ case "$target" in
   x86_64-unknown-linux-*) linux linux/amd64 ;;
   aarch64-unknown-linux-*) linux linux/arm64 ;;
   armv7-unknown-linux-*) linux linux/arm/v7 ;;
-  *-apple-darwin)
-    brew="$(brew --prefix)"
-    arch="${target%%-*}"
-    [[ "$arch" == aarch64 ]] && arch=arm64
-    work="$(mktemp -d)"
-    cmake -S "$root/ovpn" -B "$work" -DOPENVPN3_DIR="$core" -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_OSX_ARCHITECTURES="$arch" -DCMAKE_PREFIX_PATH="$brew/opt/asio;$brew/opt/lz4;$brew/opt/openssl@3" \
-      -DOPENSSL_USE_STATIC_LIBS=TRUE -DLZ4_LIBRARY="$brew/opt/lz4/lib/liblz4.a" >/dev/null
-    cmake --build "$work" -j"$(sysctl -n hw.ncpu)" >/dev/null
-    install -m 755 "$work/uniray-ovpn" "$out"
-    rm -rf "$work"
-    ;;
+  aarch64-apple-darwin) darwin arm64 darwin64-arm64-cc 11.0 ;;
+  x86_64-apple-darwin) darwin x86_64 darwin64-x86_64-cc 10.15 ;;
   *) echo "build-ovpn.sh: no uniray-ovpn build for $target yet" >&2; exit 1 ;;
 esac

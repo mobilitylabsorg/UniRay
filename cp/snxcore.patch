@@ -19,7 +19,7 @@ index d99389c..67c704c 100644
  [target.'cfg(target_os = "windows")'.dependencies]
  windows-service = "0.8"
 diff --git a/apps/snx-rs/src/main.rs b/apps/snx-rs/src/main.rs
-index ee75c94..c8c6e9d 100644
+index ee75c94..c6f2373 100644
 --- a/apps/snx-rs/src/main.rs
 +++ b/apps/snx-rs/src/main.rs
 @@ -8,7 +8,7 @@ use snxcore::{
@@ -47,10 +47,24 @@ index ee75c94..c8c6e9d 100644
          Platform::get().check_privileges()?;
      }
  
-@@ -97,8 +104,11 @@ async fn async_main(cmdline_params: CmdlineParams) -> anyhow::Result<()> {
+@@ -86,8 +93,6 @@ fn main() -> anyhow::Result<()> {
+ }
+ 
+ async fn async_main(cmdline_params: CmdlineParams) -> anyhow::Result<()> {
+-    Platform::get().init();
+-
+     let mode = cmdline_params.mode;
+ 
+     let mut params = if let Some(ref config_file) = cmdline_params.config_file {
+@@ -97,8 +102,16 @@ async fn async_main(cmdline_params: CmdlineParams) -> anyhow::Result<()> {
      };
      cmdline_params.merge_into_tunnel_params(&mut params);
  
++    // UNIRAY: under the engine, the host's DNS and routes are not ours to tidy up.
++    if !params.engine_mode() {
++        Platform::get().init();
++    }
++
 +    // UNIRAY: stdout carries the settings to the engine; the log goes to stderr.
      let subscriber = tracing_subscriber::fmt()
          .with_max_level(params.log_level.parse::<LevelFilter>().unwrap_or(LevelFilter::OFF))
@@ -59,7 +73,7 @@ index ee75c94..c8c6e9d 100644
          .finish();
      tracing::subscriber::set_global_default(subscriber)?;
  
-@@ -109,7 +119,14 @@ async fn async_main(cmdline_params: CmdlineParams) -> anyhow::Result<()> {
+@@ -109,7 +122,14 @@ async fn async_main(cmdline_params: CmdlineParams) -> anyhow::Result<()> {
      match mode {
          OperationMode::Standalone => {
              debug!("Running in standalone mode");
@@ -75,7 +89,7 @@ index ee75c94..c8c6e9d 100644
          }
          OperationMode::Command => {
              debug!("Running in command mode");
-@@ -234,6 +251,44 @@ where
+@@ -234,6 +254,44 @@ where
      await_termination(server.run()).await
  }
  
@@ -120,7 +134,7 @@ index ee75c94..c8c6e9d 100644
  async fn main_standalone<F>(factory: F, mut params: TunnelParams) -> anyhow::Result<()>
  where
      F: TunnelConnectorFactory,
-@@ -242,7 +297,21 @@ where
+@@ -242,7 +300,21 @@ where
  
      let tty_prompt = TtyPrompt;
  
@@ -143,7 +157,7 @@ index ee75c94..c8c6e9d 100644
          anyhow::bail!(tr!("error-missing-required-parameters"));
      }
  
-@@ -258,6 +327,13 @@ where
+@@ -258,6 +330,13 @@ where
          }
      }
  
@@ -157,7 +171,7 @@ index ee75c94..c8c6e9d 100644
      let params = Arc::new(params);
  
      let connector = factory.new_gateway_connector(params.clone());
-@@ -355,7 +431,7 @@ where
+@@ -355,7 +434,7 @@ where
                  .inspect_err(|e| warn!("{e}"));
  
              match event {
@@ -166,7 +180,7 @@ index ee75c94..c8c6e9d 100644
                      println!("{}", info.print(false));
                      println!("{}", tr!("cli-tunnel-connected"));
                  }
-@@ -369,7 +445,9 @@ where
+@@ -369,7 +448,9 @@ where
  
      tunnel.run(command_receiver, event_sender).await?;
  

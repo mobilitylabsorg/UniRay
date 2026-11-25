@@ -5,8 +5,8 @@
 #   src-tauri/binaries/uniray-helper-<target triple>   built from crates/uniray-helper
 #   src-tauri/binaries/uniray-engine-<target triple>   built from engine/ (Go), see build-engine.sh
 #   src-tauri/binaries/uniray-naive-<target triple>    downloaded, see fetch-naive.sh
-#   src-tauri/binaries/uniray-ovpn-<target triple>     Linux, Windows: built from ovpn/ in Docker, see build-ovpn.sh
-#   src-tauri/binaries/uniray-cp-<target triple>       Linux, Windows: snx-rs patched by cp/, in Docker, see build-cp.sh
+#   src-tauri/binaries/uniray-ovpn-<target triple>     Linux, Windows, macOS: built from ovpn/ (Docker; on a Mac natively), see build-ovpn.sh
+#   src-tauri/binaries/uniray-cp-<target triple>       Linux, Windows, macOS: snx-rs patched by cp/ (Docker; on a Mac natively), see build-cp.sh
 #
 # Usage: scripts/prepare-sidecars.sh [--release] [target triple]
 # Runs before `tauri dev` and `tauri build` (see package.json).
@@ -50,9 +50,9 @@ install -m 755 "$out/uniray-helper$exe" "$root/src-tauri/binaries/uniray-helper-
 "$root/scripts/build-engine.sh" "$target" "$root/src-tauri/binaries/uniray-engine-$target$exe"
 naive="$root/src-tauri/binaries/uniray-naive-$target$exe"
 [[ -f "$naive" ]] || "$root/scripts/fetch-naive.sh" "$target" "$naive"
-# The corporate network's OpenVPN client, on Linux and Windows so far
-# (tauri.linux.conf.json, tauri.windows.conf.json).
-if [[ "$target" == *-linux-gnu || "$target" == x86_64-pc-windows-* ]]; then
+# The corporate network's clients, on Linux, Windows and macOS
+# (tauri.linux.conf.json, tauri.windows.conf.json, tauri.macos.conf.json).
+if [[ "$target" == *-linux-gnu || "$target" == x86_64-pc-windows-* || "$target" == *-apple-darwin ]]; then
   ovpn="$root/src-tauri/binaries/uniray-ovpn-$target$exe"
   # Built again when its source changed; the core is pinned in build-ovpn.sh.
   if [[ ! -f "$ovpn" || "$root/ovpn/uniray-ovpn.cpp" -nt "$ovpn" || "$root/ovpn/CMakeLists.txt" -nt "$ovpn" || "$root/ovpn/win/tap-windows.h" -nt "$ovpn" || "$root/scripts/build-ovpn.sh" -nt "$ovpn" ]]; then
