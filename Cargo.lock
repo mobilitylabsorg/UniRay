@@ -5051,7 +5051,7 @@ checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "uniray"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -5077,7 +5077,7 @@ dependencies = [
 
 [[package]]
 name = "uniray-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -5091,7 +5091,7 @@ dependencies = [
 
 [[package]]
 name = "uniray-gateway"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "libc",
  "serde",
@@ -5103,7 +5103,7 @@ dependencies = [
 
 [[package]]
 name = "uniray-helper"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
