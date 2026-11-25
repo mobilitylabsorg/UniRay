@@ -143,6 +143,9 @@ struct StartArgs {
     keep_awake: bool,
     #[serde(flatten)]
     engine: EngineArgs,
+    /// The corporate networks' engines, as JSON: `[{"engineMode", "engineConfig",
+    /// "enginePort"}]`, each started like the server's.
+    corp_engines: String,
 }
 
 /// The engine for a server Xray cannot run (WireGuard, AmneziaWG), started by
@@ -203,6 +206,9 @@ struct DeviceInfo {
     /// Android TV / Google TV.
     #[serde(default)]
     tv: bool,
+    /// The corporate network clients the APK carries.
+    #[serde(default)]
+    corp_kinds: Vec<uniray_core::corp::CorpKind>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -364,6 +370,13 @@ impl Running {
     }
 }
 
+/// The engines of the VPN mode accept the app's own uid (Xray runs inside the
+/// app), which the service vouches for over a socket only it and that engine
+/// know (the name is random, the abstract namespace is shared).
+fn app_peers() -> Peers {
+    Peers::Uid { uid: own_uid(), socket: Some(format!("@uniray-{}", &engine::secret()[..24])) }
+}
+
 /// Brings the tunnel up through the OS VPN service, the default path.
 async fn start_vpn_service(
     app: &AppHandle,
@@ -374,6 +387,7 @@ async fn start_vpn_service(
     log: &LogSink,
 ) -> CmdResult<Vec<String>> {
     let engine_run = prepare_engine(app, server, settings).await?;
+    let corp_runs = super::prepare_corps(app, server, settings).await?;
     let runtime = Runtime {
         tun: Some(Tun::External { name: name.to_owned() }),
         mixed_port: None,
@@ -381,7 +395,7 @@ async fn start_vpn_service(
         metrics_socket: Some(metrics.to_owned()),
         log: log.clone(),
         engine: engine_run.as_ref().map(|run| run.runtime.clone()),
-        corps: Vec::new(),
+        corps: corp_runs.iter().map(|run| run.runtime.clone()).collect(),
     };
     let mut built = config::build(server, settings, &runtime)?;
     apply_mobile_optimizations(&mut built.config);
@@ -409,14 +423,11 @@ async fn start_vpn_service(
         metrics_socket: metrics.to_owned(),
         proxy_tags: built.proxy_tags.clone(),
         keep_awake: settings.keep_awake,
-        // Xray runs inside the app: the engine accepts the app's own uid,
-        // which the service vouches for over a socket only it and the engine
-        // know (the name is random, the abstract namespace is shared).
-        engine: EngineArgs::new(
-            engine_run.as_ref(),
-            &Peers::Uid { uid: own_uid(), socket: Some(format!("@uniray-{}", &engine::secret()[..24])) },
-            false,
-        ),
+        engine: EngineArgs::new(engine_run.as_ref(), &app_peers(), false),
+        corp_engines: serde_json::to_string(
+            &corp_runs.iter().map(|run| EngineArgs::new(Some(&run.engine), &app_peers(), false)).collect::<Vec<_>>(),
+        )
+        .expect("JSON"),
     };
     call::<Value>(app, "start", args).await?;
     Ok(built.proxy_tags)
@@ -442,6 +453,13 @@ async fn start_stealth(
         Tun::Transparent { port: STEALTH_TPROXY_PORT }
     };
     let engine_run = prepare_engine(app, server, settings).await?;
+    // The corporate networks run with the VPN service only, for now.
+    let state = app.state::<App>();
+    let had_corps = !std::mem::take(&mut state.connection.lock().unwrap().corps).is_empty();
+    if had_corps {
+        logs::push(app, "[Warning] corporate networks are not available in stealth mode yet");
+        emit_state(app);
+    }
     let runtime = Runtime {
         tun: Some(tun),
         mixed_port: None,
@@ -575,6 +593,7 @@ pub async fn init_device(app: &AppHandle) {
         device.model = info.model;
         device.os_version = info.os_version;
         state.tv.store(info.tv, std::sync::atomic::Ordering::Relaxed);
+        crate::corp::set_mobile_kinds(info.corp_kinds);
     }
 
     let files = run_files(app);

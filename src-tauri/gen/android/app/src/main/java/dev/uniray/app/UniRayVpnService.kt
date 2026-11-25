@@ -30,6 +30,7 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import libXray.DialerController
 import libXray.LibXray
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -101,6 +102,8 @@ class UniRayVpnService : VpnService() {
   private var defaultNetworkCallback: ConnectivityManager.NetworkCallback? = null
   // For a WireGuard/AmneziaWG or Naive server: the engine Xray hands its traffic to.
   private var engine: Engine.Child? = null
+  // The corporate networks' engines, one each (see the core's corp module).
+  private val corpEngines = mutableListOf<Engine.Child>()
   private var notification: NotificationCompat.Builder? = null
 
   // Notification content.
@@ -313,6 +316,19 @@ class UniRayVpnService : VpnService() {
       engine = child
       child.start()?.let { return it }
     }
+    // Their tunnels come up in the background and say so in the log; one
+    // that stops leaves the VPN up, as on the desktop.
+    val corps = JSONArray(spec.optString("corpEngines").ifEmpty { "[]" })
+    for (index in 0 until corps.length()) {
+      val corp = corps.getJSONObject(index)
+      val log = Engine.logFile(spec.getString("config"), File(filesDir, "run/engine.log"))
+      val child =
+        Engine.Child(this, corp.getString("engineMode"), corp.getString("engineConfig"), log, "engine-corp-$index") { reason ->
+          Log.w(TAG, "corporate network engine: $reason")
+        }
+      corpEngines.add(child)
+      child.start()?.let { return it }
+    }
     keepAwake.start(spec.optBoolean("keepAwake"))
     return null
   }
@@ -329,6 +345,8 @@ class UniRayVpnService : VpnService() {
     // After Xray, which has nothing to send it any more.
     engine?.stop()
     engine = null
+    corpEngines.forEach { it.stop() }
+    corpEngines.clear()
     // Closing the descriptor is what takes the interface down.
     try {
       tun?.close()

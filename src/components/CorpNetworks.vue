@@ -12,6 +12,11 @@ import { useAppStore } from "../stores/app";
 
 const store = useAppStore();
 const { t } = useI18n();
+/** Android's picker knows files by MIME type, and .ovpn or .pfx have none it
+ * would match: there it shows every file. */
+const fileTypes = computed(() =>
+  store.isDesktop ? { profile: ".ovpn,.conf,.crt,.pem,.key,.txt", cert: ".p12,.pfx" } : { profile: undefined, cert: undefined },
+);
 
 const corps = computed(() => store.snapshot?.corps ?? []);
 const kinds = computed(() => store.snapshot?.corpKinds ?? []);
@@ -87,8 +92,8 @@ async function addCheckPoint() {
 
 <template>
   <div class="section-title">{{ corps.length > 1 ? t("corp.titleMany") : t("corp.title") }}</div>
-  <input ref="fileInput" type="file" multiple accept=".ovpn,.conf,.crt,.pem,.key,.txt" class="hidden" @change="pick" />
-  <input ref="certInput" type="file" accept=".p12,.pfx" class="hidden" @change="pickCert" />
+  <input ref="fileInput" type="file" multiple :accept="fileTypes.profile" class="hidden" @change="pick" />
+  <input ref="certInput" type="file" :accept="fileTypes.cert" class="hidden" @change="pickCert" />
 
   <div v-for="corp in corps" :key="corp.id" class="mb-3">
     <CorpNetworkCard :corp="corp" />

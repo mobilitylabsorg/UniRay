@@ -165,7 +165,6 @@ use mobile::run_engine_probe;
 /// The engine runs of the corporate networks that are on (see
 /// `uniray_core::corp`), next to `server`, in the list's order. Resolving
 /// their servers' names blocks, so it happens off the async runtime.
-#[cfg_attr(mobile, allow(dead_code))] // Android: still to come
 pub(crate) async fn prepare_corps(app: &AppHandle, server: &Server, settings: &Settings) -> CmdResult<Vec<CorpRun>> {
     if !crate::corp::available(app) {
         return Ok(Vec::new());

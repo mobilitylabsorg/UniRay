@@ -429,7 +429,7 @@ class StealthService : Service() {
     val mode = spec.optString("engineMode")
     if (mode.isEmpty()) return ""
     val port = spec.optInt("enginePort")
-    val configFile = File(dir, "engine.json").apply { writeText(Engine.withNaive(this@StealthService, spec.getString("engineConfig"))) }
+    val configFile = File(dir, "engine.json").apply { writeText(Engine.withBinaries(this@StealthService, spec.getString("engineConfig"))) }
     val out = File(dir, "engine.out").absolutePath
     val log = Engine.logFile(config, File(dir, "engine.log")).absolutePath
     val pid = File(dir, "engine.pid").absolutePath

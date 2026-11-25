@@ -12,6 +12,11 @@ import { useAppStore } from "../stores/app";
 
 const store = useAppStore();
 const { t } = useI18n();
+/** Android's picker knows files by MIME type, and .ovpn or .pfx have none it
+ * would match: there it shows every file. */
+const fileTypes = computed(() =>
+  store.isDesktop ? { profile: ".ovpn,.conf,.crt,.pem,.key,.txt", cert: ".p12,.pfx" } : { profile: undefined, cert: undefined },
+);
 
 const props = defineProps<{ corp: CorpNetwork }>();
 const corp = computed<CorpNetwork | null>(() => props.corp);
@@ -201,11 +206,11 @@ const viaLabel = computed(() => {
     ref="fileInput"
     type="file"
     multiple
-    accept=".ovpn,.conf,.crt,.pem,.key,.txt"
+    :accept="fileTypes.profile"
     class="hidden"
     @change="pick"
   />
-  <input ref="certInput" type="file" accept=".p12,.pfx" class="hidden" @change="pickCert" />
+  <input ref="certInput" type="file" :accept="fileTypes.cert" class="hidden" @change="pickCert" />
 
   <div v-if="corp" class="card group-card overflow-hidden">
     <div class="row pr-2">

@@ -49,6 +49,8 @@ class StartArgs {
   var engineMode: String = ""
   var engineConfig: String = ""
   var enginePort: Int = 0
+  /** The corporate networks' engines, JSON: `[{"engineMode", "engineConfig", "enginePort"}]`. */
+  var corpEngines: String = "[]"
 }
 
 @InvokeArg
@@ -152,6 +154,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         .put("proxyTags", JSONArray(args.proxyTags))
         .put("engineMode", args.engineMode)
         .put("engineConfig", args.engineConfig)
+        .put("corpEngines", args.corpEngines)
     val file = UniRayVpnService.specFile(activity)
     file.parentFile?.mkdirs()
     file.writeText(spec.toString())
@@ -360,6 +363,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
         .put("model", "${Build.MANUFACTURER} ${Build.MODEL}")
         .put("osVersion", Build.VERSION.RELEASE ?: "")
         .put("tv", isTv(activity))
+        .put("corpKinds", JSONArray(Engine.corpKinds(activity)))
     )
   }
 

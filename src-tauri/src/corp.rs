@@ -104,11 +104,26 @@ pub fn binary(app: &AppHandle, kind: CorpKind) -> Option<std::path::PathBuf> {
         };
         path.is_file().then(|| path.clone())
     }
+    // Android: the APK carries them as native libraries, whose directory only
+    // the service knows; it puts the path in place of the bare name.
     #[cfg(mobile)]
     {
-        let _ = (app, kind);
-        None
+        let _ = app;
+        let name = match kind {
+            CorpKind::OpenVpn => "libuniray_ovpn.so",
+            CorpKind::CheckPoint => "libuniray_cp.so",
+        };
+        MOBILE_KINDS.lock().unwrap().contains(&kind).then(|| std::path::PathBuf::from(name))
     }
+}
+
+/// What the APK carries, as the service reported at start (`deviceInfo`).
+#[cfg(mobile)]
+static MOBILE_KINDS: std::sync::Mutex<Vec<CorpKind>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(mobile)]
+pub fn set_mobile_kinds(kinds: Vec<CorpKind>) {
+    *MOBILE_KINDS.lock().unwrap() = kinds;
 }
 
 /// The network `id` in the list, or an error for the UI.

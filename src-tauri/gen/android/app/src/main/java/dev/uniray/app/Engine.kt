@@ -32,15 +32,30 @@ object Engine {
   fun binary(context: Context) = File(context.applicationInfo.nativeLibraryDir, "libuniray_engine.so")
 
   /**
-   * The engine's config with the `naive` it runs for a Naive server, which
-   * ships as a native library too; the app cannot know where the system put
+   * The engine's config with the program it runs: `naive` for a Naive
+   * server, `uniray-ovpn` or `uniray-cp` for a corporate network. They ship
+   * as native libraries too, and the app cannot know where the system put
    * those. Unchanged for the other servers.
    */
-  fun withNaive(context: Context, config: String): String {
+  fun withBinaries(context: Context, config: String): String {
     val json = JSONObject(config)
-    val naive = json.optJSONObject("naive") ?: return config
-    naive.put("binary", File(context.applicationInfo.nativeLibraryDir, "libnaive.so").absolutePath)
-    return json.toString()
+    val libs = context.applicationInfo.nativeLibraryDir
+    var changed = false
+    for ((section, library) in listOf("naive" to "libnaive.so", "ovpn" to "libuniray_ovpn.so", "cp" to "libuniray_cp.so")) {
+      val part = json.optJSONObject(section) ?: continue
+      part.put("binary", File(libs, library).absolutePath)
+      changed = true
+    }
+    return if (changed) json.toString() else config
+  }
+
+  /** The corporate network clients this APK carries, as the app names them. */
+  fun corpKinds(context: Context): List<String> {
+    val libs = context.applicationInfo.nativeLibraryDir
+    return listOfNotNull(
+      "openVpn".takeIf { File(libs, "libuniray_ovpn.so").exists() },
+      "checkPoint".takeIf { File(libs, "libuniray_cp.so").exists() },
+    )
   }
 
   /** Where the engine's log lines go: the core's error log, which the app shows. */
@@ -58,7 +73,7 @@ object Engine {
    */
   fun probe(context: Context, mode: String, config: String, url: String, timeoutSeconds: Int): Long {
     val file = File(context.cacheDir, "probe-${java.util.UUID.randomUUID()}.json")
-    file.writeText(withNaive(context, config))
+    file.writeText(withBinaries(context, config))
     try {
       val process =
         ProcessBuilder(
@@ -106,10 +121,12 @@ object Engine {
     config: String,
     /** Gets the engine's log lines, appended. */
     private val log: File,
+    /** Its config file's name in the run directory; one per engine of a run. */
+    name: String = "engine",
     private val onExit: (String) -> Unit,
   ) {
-    private val configFile = File(context.filesDir, "run/engine.json")
-    private var config = JSONObject(withNaive(context, config))
+    private val configFile = File(context.filesDir, "run/$name.json")
+    private var config = JSONObject(withBinaries(context, config))
     private var process: java.lang.Process? = null
     private val exited = CountDownLatch(1)
     private var owner: OwnerServer? = null
