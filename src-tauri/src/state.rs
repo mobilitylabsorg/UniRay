@@ -14,7 +14,10 @@ pub struct Data {
     pub servers: Vec<Server>,
     pub subscriptions: Vec<Subscription>,
     pub settings: Settings,
-    /// The corporate network next to the VPN, see `crate::corp`.
+    /// The corporate networks next to the VPN, see `crate::corp`.
+    pub corps: Vec<CorpNetwork>,
+    /// The one corporate network of 0.4.0 and before; moved to `corps` on load.
+    #[serde(skip_serializing)]
     pub corp: Option<CorpNetwork>,
     /// Random identifier standing in for the machine id where the OS gives none.
     pub device_seed: Option<String>,
@@ -38,7 +41,22 @@ impl Store {
             }),
             Err(_) => Data::default(),
         };
-        Self { path, data }
+        let mut store = Self { path, data };
+        store.adopt_corps();
+        store
+    }
+
+    /// Moves the corporate network of an older version into the list and
+    /// gives every network an id.
+    pub fn adopt_corps(&mut self) {
+        if let Some(corp) = self.data.corp.take() {
+            self.data.corps.insert(0, corp);
+        }
+        for index in 0..self.data.corps.len() {
+            if self.data.corps[index].id.is_empty() || self.data.corps[..index].iter().any(|other| other.id == self.data.corps[index].id) {
+                self.data.corps[index].id = uniray_core::model::new_id();
+            }
+        }
     }
 
     /// Writes the state atomically. The file holds server credentials, so it
@@ -78,4 +96,26 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         file.sync_all()?;
     }
     fs::rename(tmp, path)
+}
+
+#[cfg(test)]
+mod corp_tests {
+    use super::*;
+
+    #[test]
+    fn an_older_single_corporate_network_joins_the_list() {
+        let dir = std::env::temp_dir().join(format!("uniray-state-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        fs::write(&path, r#"{"corp":{"kind":"checkPoint","enabled":true,"name":"Work","gateway":"vpn.example"}}"#).unwrap();
+        let store = Store::load(path.clone());
+        assert_eq!(store.data.corps.len(), 1);
+        assert_eq!(store.data.corps[0].name, "Work");
+        assert!(!store.data.corps[0].id.is_empty());
+        store.save().unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(saved.get("corp").is_none());
+        assert_eq!(saved["corps"][0]["name"], "Work");
+        let _ = fs::remove_dir_all(dir);
+    }
 }

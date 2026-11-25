@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
 import AppIcon from "../components/AppIcon.vue";
-import CorpNetworkCard from "../components/CorpNetworkCard.vue";
+import CorpNetworks from "../components/CorpNetworks.vue";
 import ToggleSwitch from "../components/ToggleSwitch.vue";
 import type { Rule, RuleAction, RuleKind, RoutingPreset } from "../lib/api";
 import { useAppStore } from "../stores/app";
@@ -90,7 +90,7 @@ function move(index: number, by: number) {
       </section>
 
       <section v-if="store.snapshot?.corpAvailable" class="xl:col-start-2 xl:row-span-2 xl:row-start-1">
-        <CorpNetworkCard />
+        <CorpNetworks />
       </section>
 
       <section class="xl:col-start-1">

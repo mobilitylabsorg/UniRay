@@ -29,7 +29,7 @@ use uniray_core::config::{self, LogSink, Runtime, Tun};
 use uniray_core::engine::{EngineRun, Peers};
 use uniray_core::model::{Mode, Server, Settings};
 
-use super::{free_port, prepare_corp, prepare_engine, PROBE_TIMEOUT};
+use super::{free_port, prepare_corps, prepare_engine, PROBE_TIMEOUT};
 use crate::app::App;
 use crate::error::{CmdError, CmdResult};
 use crate::state::write_private;
@@ -94,8 +94,8 @@ impl Running {
         }
         let metrics_port = free_port()?;
         let engine_run = prepare_engine(app, server, settings).await?;
-        let corp_run = prepare_corp(app, server, settings).await?;
-        let engines: Vec<&EngineRun> = engine_run.iter().chain(corp_run.iter().map(|run| &run.engine)).collect();
+        let corp_runs = prepare_corps(app, server, settings).await?;
+        let engines: Vec<&EngineRun> = engine_run.iter().chain(corp_runs.iter().map(|run| &run.engine)).collect();
 
         let runtime = Runtime {
             tun: tun.then(|| Tun::Managed { name: interface_name(&settings.interface_name), ipv6: system_has_ipv6() }),
@@ -103,7 +103,7 @@ impl Running {
             metrics_port: Some(metrics_port), metrics_socket: None,
             log: LogSink::Stdout,
             engine: engine_run.as_ref().map(|run| run.runtime.clone()),
-            corp: corp_run.as_ref().map(|run| run.runtime.clone()),
+            corps: corp_runs.iter().map(|run| run.runtime.clone()).collect(),
         };
         let built = config::build(server, settings, &runtime)?;
         let config_path = state.paths.run_dir.join("config.json");
@@ -177,8 +177,12 @@ impl Running {
         let run_dir = &app.state::<App>().paths.run_dir;
         let _ = std::fs::remove_file(run_dir.join("config.json"));
         // An engine removes its config once read; not if it never started.
-        for index in 0..MAX_ENGINES {
-            let _ = std::fs::remove_file(run_dir.join(engine_config_name(index)));
+        for entry in std::fs::read_dir(run_dir).into_iter().flatten().flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("engine-") && name.ends_with(".json") {
+                let _ = std::fs::remove_file(entry.path());
+            }
         }
         None
     }
@@ -249,9 +253,6 @@ fn read_system_dns() -> Vec<String> {
     }
     servers
 }
-
-/// Engines of a run at most: the server's and the corporate network's.
-const MAX_ENGINES: usize = 2;
 
 /// An engine's config in the run directory, see `uniray_core::engine`.
 fn engine_config_name(index: usize) -> String {

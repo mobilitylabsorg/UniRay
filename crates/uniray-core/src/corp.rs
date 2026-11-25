@@ -39,6 +39,8 @@ pub enum CorpKind {
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CorpNetwork {
+    /// Stable within the list; the engine's reports carry it ([`report`]).
+    pub id: String,
     pub kind: CorpKind,
     pub enabled: bool,
     pub name: String,
@@ -92,11 +94,24 @@ pub struct Pushed {
     pub domains: Vec<String>,
 }
 
+/// An engine's report on a corporate tunnel in a log line (engine/ovpn.go):
+/// `engine: corp[<id>]: up {json}`, or `engine: corp: ...` from an engine
+/// run without an id. Gives the id (empty without one) and the report.
+pub fn report(line: &str) -> Option<(&str, &str)> {
+    let (_, rest) = line.split_once("engine: corp")?;
+    if let Some(report) = rest.strip_prefix(": ") {
+        return Some(("", report));
+    }
+    let (id, report) = rest.strip_prefix('[')?.split_once("]: ")?;
+    Some((id, report))
+}
+
 impl Pushed {
     /// The engine's `corp: up {json}` log line (engine/ovpn.go), when `line`
     /// is one.
     pub fn from_log(line: &str) -> Option<Self> {
-        let (_, json) = line.split_once("corp: up ")?;
+        let (_, report) = report(line)?;
+        let json = report.strip_prefix("up ")?;
         #[derive(Deserialize)]
         struct Settings {
             #[serde(default)]
@@ -337,6 +352,7 @@ pub fn prepare(corp: &CorpNetwork, port: u16, ipv6: bool, binary: &Path, way: Wa
         }
     };
     let mut engine = engine;
+    engine["corp"] = json!(corp.id);
     engine["user"] = json!(user);
     engine["pass"] = json!(pass);
     engine["port"] = json!(port);
@@ -504,6 +520,11 @@ mod tests {
         let empty = r#"[Info] engine: corp: up {"mtu":1500,"addresses":["10.8.0.2/24"],"routes":null,"dns":null,"domains":null}"#;
         assert_eq!(Pushed::from_log(empty), Some(Pushed::default()));
         assert_eq!(Pushed::from_log("[Error] engine: corp: down AUTH_FAILED"), None);
+        let labelled = r#"[Info] engine: corp[a1]: up {"routes":["10.1.0.0/16"],"dns":null,"domains":null}"#;
+        assert_eq!(Pushed::from_log(labelled).unwrap().routes, ["10.1.0.0/16"]);
+        assert_eq!(report("[Error] engine: corp[a1]: down AUTH_FAILED"), Some(("a1", "down AUTH_FAILED")));
+        assert_eq!(report("[Warning] engine: corp: reconnecting"), Some(("", "reconnecting")));
+        assert_eq!(report("[Info] engine: ready"), None);
     }
 
     #[test]

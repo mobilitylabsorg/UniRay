@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// The corporate network next to the VPN: an OpenVPN profile or a Check Point
+// One corporate network next to the VPN: an OpenVPN profile or a Check Point
 // gateway whose networks and domains go through its own tunnel, everything
-// else as before.
+// else as before. The list and adding networks are CorpNetworks.vue's.
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
@@ -13,10 +13,10 @@ import { useAppStore } from "../stores/app";
 const store = useAppStore();
 const { t } = useI18n();
 
-const corp = computed<CorpNetwork | null>(() => store.snapshot?.corp ?? null);
-const kinds = computed(() => store.snapshot?.corpKinds ?? []);
+const props = defineProps<{ corp: CorpNetwork }>();
+const corp = computed<CorpNetwork | null>(() => props.corp);
 const isCheckPoint = computed(() => corp.value?.kind === "checkPoint");
-const status = computed(() => store.connection?.corp ?? null);
+const status = computed(() => store.connection?.corps[props.corp.id] ?? null);
 /** Servers that can stand in front of the corporate one: those Xray runs. */
 const fronts = computed(() => store.servers.filter((server) => !["wireguard", "amneziawg", "naive"].includes(server.protocol)));
 
@@ -33,9 +33,7 @@ const dns = ref("");
 const via = ref("direct");
 const saving = ref(false);
 
-// Check Point: the form for a new gateway, and the same fields for the saved one.
-const setupOpen = ref(false);
-const cpName = ref("");
+// Check Point: the saved gateway's fields.
 const gateway = ref("");
 /** A certificate just picked: its file name and content in base64. */
 const cert = ref<[string, string] | null>(null);
@@ -57,25 +55,6 @@ async function pickCert(event: Event) {
   let binary = "";
   for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
   cert.value = [file.name, btoa(binary)];
-}
-
-async function addCheckPoint() {
-  saving.value = true;
-  const done = await store.run(() =>
-    api.corpCheckPoint({
-      name: cpName.value,
-      gateway: gateway.value,
-      cert: cert.value,
-      certPassword: certPassword.value === "" ? null : certPassword.value,
-      username: username.value,
-      password: password.value === "" ? null : password.value,
-    }),
-  );
-  saving.value = false;
-  if (done !== undefined) {
-    setupOpen.value = false;
-    store.toast(t("corp.added"));
-  }
 }
 
 function viaKey(value: CorpVia): string {
@@ -130,7 +109,7 @@ async function pick(event: Event) {
   if (files.length === 0) return;
   importing.value = true;
   const read = await Promise.all(files.map(async (file): Promise<[string, string]> => [file.name, await file.text()]));
-  const done = await store.run(() => api.corpImport(read));
+  const done = await store.run(() => api.corpImport(read, props.corp.id));
   importing.value = false;
   if (done !== undefined) store.toast(t("corp.imported"));
 }
@@ -140,6 +119,7 @@ async function save(enabled = corp.value?.enabled ?? true) {
   saving.value = true;
   await store.run(() =>
     api.corpSave({
+      id: props.corp.id,
       enabled,
       username: username.value,
       password: password.value === "" ? null : password.value,
@@ -157,7 +137,7 @@ async function save(enabled = corp.value?.enabled ?? true) {
 }
 
 async function remove() {
-  await store.run(() => api.corpDelete());
+  await store.run(() => api.corpDelete(props.corp.id));
 }
 
 const learned = computed(() => {
@@ -217,7 +197,6 @@ const viaLabel = computed(() => {
 </script>
 
 <template>
-  <div class="section-title">{{ t("corp.title") }}</div>
   <input
     ref="fileInput"
     type="file"
@@ -228,72 +207,7 @@ const viaLabel = computed(() => {
   />
   <input ref="certInput" type="file" accept=".p12,.pfx" class="hidden" @change="pickCert" />
 
-  <div v-if="!corp" class="card mb-7 p-4">
-    <p class="mb-3 text-sm text-muted">{{ t("corp.intro") }}</p>
-    <template v-if="!setupOpen">
-      <div class="flex flex-wrap gap-2">
-        <button v-if="kinds.includes('openVpn')" class="btn btn-quiet" :disabled="importing" @click="fileInput?.click()">
-          <AppIcon name="file" :size="18" />{{ t("corp.import") }}
-        </button>
-        <button v-if="kinds.includes('checkPoint')" class="btn btn-quiet" @click="setupOpen = true">
-          <AppIcon name="plus" :size="18" />{{ t("corp.checkPoint") }}
-        </button>
-      </div>
-      <p v-if="kinds.includes('openVpn')" class="mt-2 text-xs text-muted">{{ t("corp.importHint") }}</p>
-    </template>
-    <form v-else class="grid gap-2" @submit.prevent="addCheckPoint">
-      <p class="text-xs text-muted">{{ t("corp.checkPointHint") }}</p>
-      <input
-        v-model="gateway"
-        class="field"
-        placeholder="vpn.example.com"
-        :aria-label="t('corp.gateway')"
-        autocapitalize="off"
-        spellcheck="false"
-        required
-      />
-      <input v-model="cpName" class="field" :placeholder="t('corp.name')" :aria-label="t('corp.name')" />
-      <button type="button" class="btn btn-quiet min-w-0 justify-self-start" @click="certInput?.click()">
-        <AppIcon name="file" :size="18" /><span class="truncate">{{ certLabel }}</span>
-      </button>
-      <input
-        v-if="cert"
-        v-model="certPassword"
-        class="field"
-        type="password"
-        :placeholder="t('corp.certPassword')"
-        :aria-label="t('corp.certPassword')"
-        autocomplete="off"
-      />
-      <div class="grid gap-2 sm:grid-cols-2">
-        <input
-          v-model="username"
-          class="field"
-          :placeholder="t('corp.username')"
-          :aria-label="t('corp.username')"
-          autocomplete="username"
-          autocapitalize="off"
-          spellcheck="false"
-        />
-        <input
-          v-model="password"
-          class="field"
-          type="password"
-          :placeholder="t('corp.password')"
-          :aria-label="t('corp.password')"
-          autocomplete="current-password"
-        />
-      </div>
-      <div class="flex gap-2">
-        <button type="submit" class="btn btn-primary" :disabled="!gateway.trim() || saving">
-          <AppIcon name="check" :size="18" />{{ t("common.add") }}
-        </button>
-        <button type="button" class="btn btn-quiet" @click="setupOpen = false">{{ t("common.cancel") }}</button>
-      </div>
-    </form>
-  </div>
-
-  <div v-else class="card group-card overflow-hidden">
+  <div v-if="corp" class="card group-card overflow-hidden">
     <div class="row pr-2">
       <ToggleSwitch :model-value="corp.enabled" :label="corp.name" @update:model-value="(on: boolean) => save(on)" />
       <div class="min-w-0 flex-1">

@@ -134,6 +134,8 @@ const en: typeof ru = {
   },
   corp: {
     title: "Corporate network",
+    titleMany: "Corporate networks",
+    manyHint: "You can add several; the ones turned on work at the same time",
     intro: "A work VPN next to this one — OpenVPN or Check Point: the company's networks and domains go through it, everything else as usual. Profiles of OpenVPN Connect, Tunnelblick and Viscosity work.",
     import: "Import an OpenVPN profile",
     importHint: "A .ovpn or .conf file. If the profile names separate keys (ca.crt, ta.key), pick them together with it",
@@ -157,7 +159,7 @@ const en: typeof ru = {
     state: { connecting: "connecting", up: "connected", down: "failed" },
     authFailed: "The server did not accept the username or password",
     options: "Connection options",
-    checkPoint: "Set up Check Point",
+    checkPoint: "Add Check Point",
     checkPointHint: "Check Point Remote Access (IPsec): the gateway, your certificate and login",
     name: "Name",
     gateway: "Gateway",

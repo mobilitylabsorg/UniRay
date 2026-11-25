@@ -14,7 +14,7 @@ fn proxy_runtime() -> Runtime {
         metrics_port: Some(10809), metrics_socket: None,
         log: LogSink::Files { error: "/tmp/error.log".into(), access: "/tmp/access.log".into() },
         engine: None,
-        corp: None,
+        corps: Vec::new(),
     }
 }
 
@@ -551,7 +551,7 @@ fn metrics_can_live_on_a_unix_socket() {
         metrics_socket: Some("/data/user/0/app/files/run/m.sock".into()),
         log: LogSink::Stdout,
         engine: None,
-        corp: None,
+        corps: Vec::new(),
     };
     let config = build(&server, &Settings::default(), &runtime).unwrap().config;
     // No port anywhere: the metrics service is reached through the socket.
@@ -673,7 +673,7 @@ fn corp(front: Option<CorpFront>) -> Corp {
 #[test]
 fn corp_network_goes_ahead_of_the_preset() {
     let server = parse_link(VLESS_IP).unwrap();
-    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into(), ipv6: true }), corp: Some(corp(None)), ..proxy_runtime() };
+    let runtime = Runtime { tun: Some(Tun::Managed { name: "rmnet3".into(), ipv6: true }), corps: vec![corp(None)], ..proxy_runtime() };
     let config = build(&server, &Settings::default(), &runtime).unwrap().config;
     let outbound = config["outbounds"].as_array().unwrap().iter().find(|outbound| outbound["tag"] == "corp").unwrap();
     assert_eq!(outbound["settings"], json!({ "address": "127.0.0.1", "port": 40200, "user": "c", "pass": "cp" }));
@@ -695,11 +695,45 @@ fn corp_network_goes_ahead_of_the_preset() {
 }
 
 #[test]
+fn two_corp_networks_at_once() {
+    let server = parse_link(VLESS_IP).unwrap();
+    let second = Corp {
+        engine: Engine {
+            port: 40210,
+            user: "d".into(),
+            pass: "dp".into(),
+            bypass: vec![Bypass { addr: "203.0.113.9:443".parse().unwrap(), network: "tcp" }],
+            block_udp: false,
+            sniff_excluded: Vec::new(),
+        },
+        routes: vec!["10.11.0.0/16".into()],
+        domains: vec!["domain:other.test".into()],
+        dns: vec!["10.11.33.18".parse().unwrap()],
+        front: None,
+    };
+    let runtime = Runtime { corps: vec![corp(None), second], ..proxy_runtime() };
+    let config = build(&server, &Settings::default(), &runtime).unwrap().config;
+    let outbounds = config["outbounds"].as_array().unwrap();
+    let port_of = |tag: &str| outbounds.iter().find(|outbound| outbound["tag"] == tag).unwrap()["settings"]["port"].clone();
+    assert_eq!((port_of("corp"), port_of("corp-2")), (json!(40200), json!(40210)));
+    let rules = config["routing"]["rules"].as_array().unwrap();
+    // Both servers' ways out first, then each network's rules in turn.
+    assert_eq!(rules[0]["ip"], json!(["198.51.100.5/32"]));
+    assert_eq!(rules[1]["ip"], json!(["203.0.113.9/32"]));
+    let tags: Vec<&str> = rules[2..8].iter().map(|rule| rule["outboundTag"].as_str().unwrap()).collect();
+    assert_eq!(tags, ["corp", "corp", "corp", "corp-2", "corp-2", "corp-2"]);
+    assert_eq!(rules[6], json!({ "ip": ["10.11.0.0/16"], "outboundTag": "corp-2" }));
+    let servers = config["dns"]["servers"].as_array().unwrap();
+    assert_eq!(servers[0]["address"], "10.8.0.1");
+    assert_eq!(servers[1], json!({ "address": "10.11.33.18", "domains": ["domain:other.test"], "skipFallback": true }));
+}
+
+#[test]
 fn corp_front_forwards_through_a_server() {
     let server = parse_link(VLESS_IP).unwrap();
     let front = |outbound| CorpFront { port: 40300, host: "vpn.corp.example".into(), remote_port: 1195, network: "udp", outbound };
     // Through the main server.
-    let runtime = Runtime { corp: Some(corp(Some(front(None)))), ..proxy_runtime() };
+    let runtime = Runtime { corps: vec![corp(Some(front(None)))], ..proxy_runtime() };
     let config = build(&server, &Settings::default(), &runtime).unwrap().config;
     let inbound = config["inbounds"].as_array().unwrap().iter().find(|inbound| inbound["tag"] == "corp-front").unwrap().clone();
     assert_eq!(
@@ -714,7 +748,7 @@ fn corp_front_forwards_through_a_server() {
     let other = parse_link("trojan://pw@203.0.113.20:443?security=tls#O").unwrap();
     let settings = Settings { tls_fragment: true, ..Default::default() };
     let via = probe_outbound(&other, "x", &settings).unwrap();
-    let runtime = Runtime { corp: Some(corp(Some(front(Some(via))))), ..proxy_runtime() };
+    let runtime = Runtime { corps: vec![corp(Some(front(Some(via))))], ..proxy_runtime() };
     let config = build(&server, &settings, &runtime).unwrap().config;
     let outbounds = config["outbounds"].as_array().unwrap();
     let via = outbounds.iter().find(|outbound| outbound["tag"] == "corp-via").unwrap();
@@ -734,7 +768,7 @@ fn corp_network_joins_a_provider_config() {
         "outbounds": [provider_outbound, { "tag": "d", "protocol": "freedom" }],
         "routing": { "rules": [{ "ip": ["geoip:private"], "outboundTag": "d" }] },
     }));
-    let runtime = Runtime { corp: Some(corp(Some(CorpFront { port: 1, host: "h".into(), remote_port: 2, network: "tcp", outbound: None }))), ..proxy_runtime() };
+    let runtime = Runtime { corps: vec![corp(Some(CorpFront { port: 1, host: "h".into(), remote_port: 2, network: "tcp", outbound: None }))], ..proxy_runtime() };
     let config = build(&server, &Settings::default(), &runtime).unwrap().config;
     let rules = config["routing"]["rules"].as_array().unwrap();
     // No rule for the front: the provider's routing takes it to its server.

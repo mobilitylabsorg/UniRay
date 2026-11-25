@@ -22,7 +22,7 @@ use std::sync::atomic::Ordering;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
-use uniray_core::corp::{CorpRun, Via, Way};
+use uniray_core::corp::{CorpNetwork, CorpRun, Via, Way};
 use uniray_core::engine::{self, EngineRun};
 use uniray_core::model::{Mode, Server, Settings};
 
@@ -54,8 +54,8 @@ pub struct ConnectionInfo {
     pub mixed_port: Option<u16>,
     /// The last reachability check of this connection.
     pub check: Option<crate::monitor::CheckResult>,
-    /// The corporate network's tunnel, when the connection has it.
-    pub corp: Option<crate::corp::CorpStatus>,
+    /// The corporate networks' tunnels in this connection, by network id.
+    pub corps: std::collections::BTreeMap<String, crate::corp::CorpStatus>,
 }
 
 /// Delay tests fetch this through each server. Shared by every platform so that
@@ -162,54 +162,67 @@ use desktop::run_engine_probe;
 #[cfg(mobile)]
 use mobile::run_engine_probe;
 
-/// The corporate network's engine run (see `uniray_core::corp`), when it is
-/// on, next to `server`. Resolving its server's name blocks, so it happens off
-/// the async runtime.
+/// The engine runs of the corporate networks that are on (see
+/// `uniray_core::corp`), next to `server`, in the list's order. Resolving
+/// their servers' names blocks, so it happens off the async runtime.
 #[cfg_attr(mobile, allow(dead_code))] // Android: still to come
-pub(crate) async fn prepare_corp(app: &AppHandle, server: &Server, settings: &Settings) -> CmdResult<Option<CorpRun>> {
+pub(crate) async fn prepare_corps(app: &AppHandle, server: &Server, settings: &Settings) -> CmdResult<Vec<CorpRun>> {
     if !crate::corp::available(app) {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let state = app.state::<App>();
-    let (corp, front) = {
+    let corps: Vec<(CorpNetwork, Option<Option<Server>>)> = {
         let store = state.store.lock().unwrap();
-        let corp = store.data.corp.clone().filter(|corp| corp.enabled);
-        let front = match corp.as_ref().map(|corp| &corp.via) {
-            Some(Via::Server(id)) if *id != server.id => {
-                Some(store.data.servers.iter().find(|server| &server.id == id).cloned())
-            }
-            _ => None,
+        store
+            .data
+            .corps
+            .iter()
+            .filter(|corp| corp.enabled)
+            .map(|corp| {
+                let front = match &corp.via {
+                    Via::Server(id) if *id != server.id => {
+                        Some(store.data.servers.iter().find(|server| &server.id == id).cloned())
+                    }
+                    _ => None,
+                };
+                (corp.clone(), front)
+            })
+            .collect()
+    };
+    let mut runs = Vec::new();
+    for (corp, front) in corps {
+        let named = |message: String| CmdError::new("corpVia", format!("{}: {message}", corp.name));
+        let Some(binary) = crate::corp::binary(app, corp.kind) else {
+            return Err(named("this build cannot run this corporate network".into()));
         };
-        (corp, front)
-    };
-    let Some(corp) = corp else { return Ok(None) };
-    let Some(binary) = crate::corp::binary(app, corp.kind) else {
-        return Err(CmdError::new("corpVia", "this build cannot run this corporate network"));
-    };
-    let way = match (&corp.via, front) {
-        // Check Point goes straight only (see `uniray_core::corp::prepare`).
-        _ if corp.kind == uniray_core::corp::CorpKind::CheckPoint => Way::Direct,
-        (Via::Direct, _) => Way::Direct,
-        (_, None) => Way::Front { port: free_port()?, outbound: None },
-        (_, Some(None)) => {
-            return Err(CmdError::new("corpVia", "the server in front of the corporate network is no longer in the list"));
-        }
-        (_, Some(Some(front))) => {
-            if !front.source.is_xray() {
-                return Err(CmdError::new(
-                    "corpVia",
-                    format!("{} cannot stand in front of the corporate network: only servers Xray runs can (not WireGuard or Naive)", front.name),
-                ));
+        let way = match (&corp.via, front) {
+            // Check Point goes straight only (see `uniray_core::corp::prepare`).
+            _ if corp.kind == uniray_core::corp::CorpKind::CheckPoint => Way::Direct,
+            (Via::Direct, _) => Way::Direct,
+            (_, None) => Way::Front { port: free_port()?, outbound: None },
+            (_, Some(None)) => {
+                return Err(named("the server in front of the corporate network is no longer in the list".into()));
             }
-            let outbound = uniray_core::config::probe_outbound(&front, uniray_core::config::TAG_CORP_VIA, settings)?;
-            Way::Front { port: free_port()?, outbound: Some(outbound) }
-        }
-    };
-    let (ipv6, port) = (settings.ipv6, free_port()?);
-    let run = tauri::async_runtime::spawn_blocking(move || uniray_core::corp::prepare(&corp, port, ipv6, &binary, way))
-        .await
-        .map_err(|err| CmdError::core(err.to_string()))??;
-    Ok(Some(run))
+            (_, Some(Some(front))) => {
+                if !front.source.is_xray() {
+                    return Err(named(format!(
+                        "{} cannot stand in front of the corporate network: only servers Xray runs can (not WireGuard or Naive)",
+                        front.name
+                    )));
+                }
+                let outbound = uniray_core::config::probe_outbound(&front, uniray_core::config::TAG_CORP_VIA, settings)?;
+                Way::Front { port: free_port()?, outbound: Some(outbound) }
+            }
+        };
+        let (ipv6, port) = (settings.ipv6, free_port()?);
+        let name = corp.name.clone();
+        let run = tauri::async_runtime::spawn_blocking(move || uniray_core::corp::prepare(&corp, port, ipv6, &binary, way))
+            .await
+            .map_err(|err| CmdError::core(err.to_string()))?
+            .map_err(|err| CmdError::new("corpVia", format!("{name}: {err}")))?;
+        runs.push(run);
+    }
+    Ok(runs)
 }
 
 /// The engine run for `server`, if Xray cannot run it (see
@@ -251,10 +264,10 @@ pub async fn connect(app: &AppHandle) -> CmdResult<()> {
         }
     }
 
-    let (server, settings, corp) = {
+    let (server, settings, corps) = {
         let store = state.store.lock().unwrap();
-        let corp = store.data.corp.as_ref().is_some_and(|corp| corp.enabled);
-        (store.selected_server().cloned(), store.data.settings.clone(), corp)
+        let corps: Vec<String> = store.data.corps.iter().filter(|corp| corp.enabled).map(|corp| corp.id.clone()).collect();
+        (store.selected_server().cloned(), store.data.settings.clone(), corps)
     };
     let Some(server) = server else {
         let err = CmdError::new("noServer", "no server selected");
@@ -271,7 +284,11 @@ pub async fn connect(app: &AppHandle) -> CmdResult<()> {
             server_id: Some(server.id.clone()),
             mode: settings.mode,
             // Before the start: the engine may report the tunnel up during it.
-            corp: (corp && crate::corp::available(app)).then(Default::default),
+            corps: if crate::corp::available(app) {
+                corps.into_iter().map(|id| (id, Default::default())).collect()
+            } else {
+                Default::default()
+            },
             ..Default::default()
         }
     });

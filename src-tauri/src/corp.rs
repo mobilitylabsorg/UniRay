@@ -1,7 +1,8 @@
-//! The corporate network next to the VPN (see `uniray_core::corp`): the
-//! OpenVPN profile the user imported or the Check Point gateway they gave, its
-//! settings, and the state of its tunnel in a
-//! live connection, which the engine reports in its log.
+//! The corporate networks next to the VPN (see `uniray_core::corp`): the
+//! OpenVPN profiles the user imported and the Check Point gateways they gave,
+//! their settings, and the state of their tunnels in a live connection, which
+//! the engines report in the log. Any number of them can be on at once, each
+//! with an engine of its own.
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -17,6 +18,7 @@ use crate::logs;
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CorpView {
+    pub id: String,
     pub kind: CorpKind,
     pub enabled: bool,
     pub name: String,
@@ -39,6 +41,7 @@ pub struct CorpView {
 impl CorpView {
     pub fn of(corp: &CorpNetwork) -> Self {
         Self {
+            id: corp.id.clone(),
             kind: corp.kind,
             enabled: corp.enabled,
             name: corp.name.clone(),
@@ -108,22 +111,38 @@ pub fn binary(app: &AppHandle, kind: CorpKind) -> Option<std::path::PathBuf> {
     }
 }
 
+/// The network `id` in the list, or an error for the UI.
+fn find<'a>(corps: &'a mut [CorpNetwork], id: &str) -> CmdResult<&'a mut CorpNetwork> {
+    corps.iter_mut().find(|corp| corp.id == id).ok_or_else(|| CmdError::new("notFound", "no such corporate network"))
+}
+
 /// Imports an OpenVPN profile with the files it names (see
-/// `corp::assemble`), replacing the one there was; the credentials and the
-/// user's own routes stay when it is the same server again.
+/// `corp::assemble`): a new network, or in place of the profile of network
+/// `id`, whose credentials and own routes stay when it is the same server
+/// again.
 #[tauri::command]
-pub async fn corp_import(app: AppHandle, files: Vec<(String, String)>) -> CmdResult<()> {
+pub async fn corp_import(app: AppHandle, files: Vec<(String, String)>, id: Option<String>) -> CmdResult<()> {
     let (name, profile) = corp::assemble(&files)?;
     let state = app.state::<App>();
     state
-        .update(|store| {
-            let previous = store.data.corp.take().unwrap_or_default();
-            let same_server = corp::profile_info(&previous.profile).ok().map(|info| (info.host, info.port))
-                == corp::profile_info(&profile).ok().map(|info| (info.host, info.port));
-            let kept = if same_server { previous } else { CorpNetwork { use_pushed: true, ..Default::default() } };
-            store.data.corp = Some(CorpNetwork { name, profile, enabled: true, learned: Pushed::default(), ..kept });
+        .update(|store| -> CmdResult<()> {
+            let fresh = || CorpNetwork { id: uniray_core::model::new_id(), use_pushed: true, ..Default::default() };
+            let previous = match &id {
+                Some(id) => find(&mut store.data.corps, id)?.clone(),
+                None => fresh(),
+            };
+            let same_server = previous.kind == CorpKind::OpenVpn
+                && corp::profile_info(&previous.profile).ok().map(|info| (info.host, info.port))
+                    == corp::profile_info(&profile).ok().map(|info| (info.host, info.port));
+            let kept = if same_server { previous.clone() } else { CorpNetwork { id: previous.id.clone(), ..fresh() } };
+            let next = CorpNetwork { name, profile, enabled: true, learned: Pushed::default(), ..kept };
+            match &id {
+                Some(id) => *find(&mut store.data.corps, id)? = next,
+                None => store.data.corps.push(next),
+            }
+            Ok(())
         })
-        .map_err(CmdError::io)?;
+        .map_err(CmdError::io)??;
     emit_state(&app);
     core::reconnect_if_connected(&app).await
 }
@@ -134,6 +153,9 @@ pub async fn corp_import(app: AppHandle, files: Vec<(String, String)>) -> CmdRes
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckPointSetup {
+    /// The network to change; `None` adds one.
+    #[serde(default)]
+    pub id: Option<String>,
     pub name: String,
     pub gateway: String,
     pub cert: Option<(String, String)>,
@@ -156,9 +178,8 @@ fn check_cert(cert: &str) -> CmdResult<()> {
     Ok(())
 }
 
-/// Sets up a Check Point gateway as the corporate network, replacing an
-/// OpenVPN profile there was; the user's own routes stay when it is the same
-/// gateway again.
+/// Adds a Check Point gateway as a corporate network, or changes network
+/// `id`; the user's own routes stay when it is the same gateway again.
 #[tauri::command]
 pub async fn corp_checkpoint(app: AppHandle, setup: CheckPointSetup) -> CmdResult<()> {
     let info = corp::gateway_info(&setup.gateway)?;
@@ -167,15 +188,18 @@ pub async fn corp_checkpoint(app: AppHandle, setup: CheckPointSetup) -> CmdResul
     }
     let state = app.state::<App>();
     let changed = state
-        .update(|store| {
-            let previous = store.data.corp.take().unwrap_or_default();
+        .update(|store| -> CmdResult<bool> {
+            let previous = match &setup.id {
+                Some(id) => find(&mut store.data.corps, id)?.clone(),
+                None => CorpNetwork { id: uniray_core::model::new_id(), ..Default::default() },
+            };
             let same_gateway = previous.kind == CorpKind::CheckPoint
                 && corp::gateway_info(&previous.gateway).ok().map(|known| (known.host, known.port))
                     == Some((info.host.clone(), info.port));
             let mut next = if same_gateway {
                 previous.clone()
             } else {
-                CorpNetwork { kind: CorpKind::CheckPoint, use_pushed: true, ..Default::default() }
+                CorpNetwork { id: previous.id.clone(), kind: CorpKind::CheckPoint, use_pushed: true, ..Default::default() }
             };
             next.enabled = true;
             next.name = match setup.name.trim() {
@@ -195,10 +219,13 @@ pub async fn corp_checkpoint(app: AppHandle, setup: CheckPointSetup) -> CmdResul
                 next.password = password;
             }
             let changed = next != previous;
-            store.data.corp = Some(next);
-            changed
+            match &setup.id {
+                Some(id) => *find(&mut store.data.corps, id)? = next,
+                None => store.data.corps.push(next),
+            }
+            Ok(changed)
         })
-        .map_err(CmdError::io)?;
+        .map_err(CmdError::io)??;
     emit_state(&app);
     if changed {
         core::reconnect_if_connected(&app).await?;
@@ -210,6 +237,7 @@ pub async fn corp_checkpoint(app: AppHandle, setup: CheckPointSetup) -> CmdResul
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CorpUpdate {
+    pub id: String,
     pub enabled: bool,
     pub username: String,
     pub password: Option<String>,
@@ -256,7 +284,7 @@ pub async fn corp_save(app: AppHandle, update: CorpUpdate) -> CmdResult<()> {
     let changed = app
         .state::<App>()
         .update(|store| {
-            let Some(corp) = store.data.corp.as_mut() else { return Err(CmdError::new("notFound", "no corporate network")) };
+            let corp = find(&mut store.data.corps, &update.id)?;
             let before = corp.clone();
             corp.enabled = update.enabled;
             corp.username = update.username.trim().to_owned();
@@ -280,7 +308,7 @@ pub async fn corp_save(app: AppHandle, update: CorpUpdate) -> CmdResult<()> {
                     corp.cert_password = password;
                 }
             }
-            Ok(*corp != before)
+            Ok::<bool, CmdError>(*corp != before)
         })
         .map_err(CmdError::io)??;
     emit_state(&app);
@@ -291,8 +319,14 @@ pub async fn corp_save(app: AppHandle, update: CorpUpdate) -> CmdResult<()> {
 }
 
 #[tauri::command]
-pub async fn corp_delete(app: AppHandle) -> CmdResult<()> {
-    let had = app.state::<App>().update(|store| store.data.corp.take()).map_err(CmdError::io)?;
+pub async fn corp_delete(app: AppHandle, id: String) -> CmdResult<()> {
+    let had = app
+        .state::<App>()
+        .update(|store| {
+            let at = store.data.corps.iter().position(|corp| corp.id == id)?;
+            Some(store.data.corps.remove(at))
+        })
+        .map_err(CmdError::io)?;
     emit_state(&app);
     if had.is_some_and(|corp| corp.enabled) {
         core::reconnect_if_connected(&app).await?;
@@ -300,12 +334,13 @@ pub async fn corp_delete(app: AppHandle) -> CmdResult<()> {
     Ok(())
 }
 
-/// Follows the engine's reports on the tunnel (engine/ovpn.go):
-/// `corp: up {settings}`, `corp: down <reason>`, `corp: reconnecting`. When
-/// the server pushed other networks than the run was built with, they are
-/// kept and the connection is made again with them.
+/// Follows the engines' reports on the tunnels (engine/ovpn.go):
+/// `corp[<id>]: up {settings}`, `corp[<id>]: down <reason>`,
+/// `corp[<id>]: reconnecting`. When a server pushed other networks than the
+/// run was built with, they are kept and the connection is made again with
+/// them.
 pub fn on_log(app: &AppHandle, text: &str) {
-    let Some((_, report)) = text.split_once("engine: corp: ") else { return };
+    let Some((id, report)) = corp::report(text) else { return };
     let state = app.state::<App>();
     let status = if report.starts_with("up ") {
         let address = report
@@ -325,15 +360,14 @@ pub fn on_log(app: &AppHandle, text: &str) {
     };
     {
         let mut connection = state.connection.lock().unwrap();
-        if connection.corp.is_none() {
-            return;
-        }
-        connection.corp = Some(status);
+        // Only networks of this run (a late line of an earlier one is not).
+        let Some(known) = connection.corps.get_mut(id) else { return };
+        *known = status;
     }
     emit_state(app);
 
     let Some(pushed) = Pushed::from_log(text) else { return };
-    let relearned = state.update(|store| match store.data.corp.as_mut() {
+    let relearned = state.update(|store| match store.data.corps.iter_mut().find(|corp| corp.id == id) {
         Some(corp) if corp.learned != pushed => {
             corp.learned = pushed;
             corp.use_pushed

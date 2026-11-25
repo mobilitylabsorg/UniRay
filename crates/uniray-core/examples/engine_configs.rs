@@ -34,7 +34,7 @@ fn main() {
         metrics_socket: None,
         log: LogSink::Stdout,
         engine: Some(run.runtime.clone()),
-        corp: None,
+        corps: Vec::new(),
     };
     let built = build(&server, &settings, &runtime).expect("build the Xray config");
     let out = Path::new(out);

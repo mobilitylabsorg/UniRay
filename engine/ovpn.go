@@ -149,14 +149,14 @@ func (u *ovpnUpstream) run() {
 		}
 		var refused *ovpnRefused
 		if errors.As(err, &refused) {
-			logf("Error", "corp: down %s", refused.message)
+			logf("Error", "%s: down %s", corpLabel, refused.message)
 			u.update(func() { u.failure = errors.New(u.child.label + ": " + refused.message) })
 			return
 		}
 		if time.Since(started) > ovpnRetryMax {
 			retry = ovpnRetryMin
 		}
-		logf("Warning", "corp: down %v; again in %v", err, retry)
+		logf("Warning", "%s: down %v; again in %v", corpLabel, err, retry)
 		select {
 		case <-u.stop:
 			return
@@ -266,10 +266,10 @@ func (u *ovpnUpstream) follow(stdout io.Reader, packets ovpnPackets, quit func()
 			}
 		case "connected":
 			if err := u.up(pending, packets); err != nil {
-				logf("Error", "corp: down %v", err)
+				logf("Error", "%s: down %v", corpLabel, err)
 			}
 		case "reconnecting":
-			logf("Warning", "corp: reconnecting")
+			logf("Warning", "%s: reconnecting", corpLabel)
 		case "error":
 			refused = &ovpnRefused{message: value}
 			quit()
@@ -318,7 +318,7 @@ func (u *ovpnUpstream) up(settings OVPNSettings, packets ovpnPackets) error {
 		u.failure = nil
 	})
 	report, _ := json.Marshal(settings)
-	logf("Info", "corp: up %s", report)
+	logf("Info", "%s: up %s", corpLabel, report)
 	return nil
 }
 
@@ -354,7 +354,7 @@ func (u *ovpnUpstream) fromServer(packets ovpnPackets) {
 			continue
 		}
 		if _, err := stack.device.Write([][]byte{buf[:n]}, 0); err != nil && !u.closing.Load() {
-			logf("Warning", "corp: to the stack: %v", err)
+			logf("Warning", "%s: to the stack: %v", corpLabel, err)
 		}
 	}
 }

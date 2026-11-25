@@ -132,6 +132,8 @@ export default {
   },
   corp: {
     title: "Корпоративная сеть",
+    titleMany: "Корпоративные сети",
+    manyHint: "Сетей может быть несколько, включённые работают одновременно",
     intro: "Рабочий VPN рядом с этим — OpenVPN или Check Point: сети и домены компании идут через него, остальное — как обычно. Подходят профили OpenVPN Connect, Tunnelblick и Viscosity.",
     import: "Импортировать профиль OpenVPN",
     importHint: "Файл .ovpn или .conf. Если профиль ссылается на отдельные ключи (ca.crt, ta.key), выберите их вместе с ним",
@@ -155,7 +157,7 @@ export default {
     state: { connecting: "подключается", up: "подключена", down: "ошибка" },
     authFailed: "Сервер не принял логин или пароль",
     options: "Параметры подключения",
-    checkPoint: "Настроить Check Point",
+    checkPoint: "Добавить Check Point",
     checkPointHint: "Check Point Remote Access (IPsec): шлюз, ваш сертификат и логин",
     name: "Название",
     gateway: "Шлюз",

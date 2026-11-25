@@ -381,7 +381,7 @@ async fn start_vpn_service(
         metrics_socket: Some(metrics.to_owned()),
         log: log.clone(),
         engine: engine_run.as_ref().map(|run| run.runtime.clone()),
-        corp: None,
+        corps: Vec::new(),
     };
     let mut built = config::build(server, settings, &runtime)?;
     apply_mobile_optimizations(&mut built.config);
@@ -449,7 +449,7 @@ async fn start_stealth(
         metrics_socket: Some(metrics.to_owned()),
         log: log.clone(),
         engine: engine_run.as_ref().map(|run| run.runtime.clone()),
-        corp: None,
+        corps: Vec::new(),
     };
     let mut built = config::build(server, settings, &runtime)?;
     apply_mobile_optimizations(&mut built.config);

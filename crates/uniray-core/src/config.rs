@@ -101,14 +101,16 @@ pub struct Runtime {
     pub log: LogSink,
     /// The engine running the server when Xray cannot (WireGuard, AmneziaWG).
     pub engine: Option<Engine>,
-    /// The corporate network next to the VPN, see `crate::corp`.
-    pub corp: Option<Corp>,
+    /// The corporate networks next to the VPN, see `crate::corp`; the first
+    /// one's tags are [`TAG_CORP`] and the like, the others' carry their place
+    /// in the list ([`corp_tags`]).
+    pub corps: Vec<Corp>,
 }
 
 impl Runtime {
-    /// The engines Xray reaches: the server's and the corporate network's.
+    /// The engines Xray reaches: the server's and the corporate networks'.
     pub fn engines(&self) -> impl Iterator<Item = &Engine> {
-        self.engine.iter().chain(self.corp.iter().map(|corp| &corp.engine))
+        self.engine.iter().chain(self.corps.iter().map(|corp| &corp.engine))
     }
 }
 
@@ -349,9 +351,7 @@ fn from_outbound(outbound: &Value, settings: &Settings, runtime: &Runtime, engin
         "outbounds": outbounds,
         "routing": { "domainStrategy": "IPIfNonMatch", "rules": rules },
     });
-    if let Some(corp) = &runtime.corp {
-        apply_corp(&mut config, settings, corp, Some(TAG_PROXY));
-    }
+    apply_corps(&mut config, settings, &runtime.corps, Some(TAG_PROXY));
     apply_observability(&mut config, settings, runtime);
     Built {
         config,
@@ -474,9 +474,7 @@ fn from_config(source: &Value, settings: &Settings, runtime: &Runtime) -> Result
         object.remove("api");
     }
     // The provider's routing picks the main server for the front's traffic.
-    if let Some(corp) = &runtime.corp {
-        apply_corp(&mut config, settings, corp, None);
-    }
+    apply_corps(&mut config, settings, &runtime.corps, None);
     apply_observability(&mut config, settings, runtime);
     Ok(Built { config, proxy_tags })
 }
@@ -711,49 +709,76 @@ pub fn tunnel_routes<'a>(engines: impl IntoIterator<Item = &'a Engine>) -> Vec<S
     routes
 }
 
-/// Wires the corporate network in: its outbound, the front's inbound and
-/// outbound, the rules sending its networks, domains and DNS servers to it
-/// (after the TUN's DNS hijack, ahead of everything else), and its DNS
-/// servers for its domains. `main` is the main server's outbound for a front
-/// through it; `None` leaves that to the provider's routing.
-fn apply_corp(config: &mut Value, settings: &Settings, corp: &Corp, main: Option<&str>) {
-    let mut outbound = corp.engine.outbound();
-    outbound["tag"] = TAG_CORP.into();
-    let mut new_outbounds = vec![outbound];
-    let mut rules: Vec<Value> = corp.engine.bypass.iter().map(bypass_rule).collect();
-    if let Some(front) = &corp.front {
-        if let Some(inbounds) = config["inbounds"].as_array_mut() {
-            inbounds.push(json!({
-                "tag": TAG_CORP_FRONT,
-                "listen": "127.0.0.1",
-                "port": front.port,
-                "protocol": "tunnel",
-                "settings": { "address": front.host, "port": front.remote_port, "network": front.network },
-            }));
-        }
-        let via = match &front.outbound {
-            // Made by `probe_outbound`, with the user's DPI settings.
-            Some(via) => {
-                let mut via = via.clone();
-                via["tag"] = TAG_CORP_VIA.into();
-                new_outbounds.push(via);
-                Some(TAG_CORP_VIA)
+/// The tags of the `index`th corporate network: its outbound, the front's
+/// inbound and the outbound of the server in front.
+pub fn corp_tags(index: usize) -> (String, String, String) {
+    if index == 0 {
+        (TAG_CORP.into(), TAG_CORP_FRONT.into(), TAG_CORP_VIA.into())
+    } else {
+        let n = index + 1;
+        (format!("{TAG_CORP}-{n}"), format!("{TAG_CORP_FRONT}-{n}"), format!("{TAG_CORP_VIA}-{n}"))
+    }
+}
+
+/// Wires the corporate networks in: their outbounds, the fronts' inbounds and
+/// outbounds, the rules sending their networks, domains and DNS servers to
+/// them (after the TUN's DNS hijack, ahead of everything else), and their DNS
+/// servers for their domains. Every network's way to its own server comes
+/// first, so that one's server inside another's networks still goes past it;
+/// where networks overlap, the earlier one in the list wins. `main` is the
+/// main server's outbound for a front through it; `None` leaves that to the
+/// provider's routing.
+fn apply_corps(config: &mut Value, settings: &Settings, corps: &[Corp], main: Option<&str>) {
+    if corps.is_empty() {
+        return;
+    }
+    let mut new_outbounds = Vec::new();
+    let mut rules: Vec<Value> = corps.iter().flat_map(|corp| &corp.engine.bypass).map(bypass_rule).collect();
+    let mut dns_servers = Vec::new();
+    for (index, corp) in corps.iter().enumerate() {
+        let (tag, front_tag, via_tag) = corp_tags(index);
+        let mut outbound = corp.engine.outbound();
+        outbound["tag"] = tag.clone().into();
+        new_outbounds.push(outbound);
+        if let Some(front) = &corp.front {
+            if let Some(inbounds) = config["inbounds"].as_array_mut() {
+                inbounds.push(json!({
+                    "tag": front_tag,
+                    "listen": "127.0.0.1",
+                    "port": front.port,
+                    "protocol": "tunnel",
+                    "settings": { "address": front.host, "port": front.remote_port, "network": front.network },
+                }));
             }
-            None => main,
-        };
-        if let Some(via) = via {
-            rules.push(json!({ "inboundTag": [TAG_CORP_FRONT], "outboundTag": via }));
+            let via = match &front.outbound {
+                // Made by `probe_outbound`, with the user's DPI settings.
+                Some(via) => {
+                    let mut via = via.clone();
+                    via["tag"] = via_tag.clone().into();
+                    new_outbounds.push(via);
+                    Some(via_tag.as_str())
+                }
+                None => main,
+            };
+            if let Some(via) = via {
+                rules.push(json!({ "inboundTag": [front_tag], "outboundTag": via }));
+            }
         }
-    }
-    if !corp.dns.is_empty() {
-        let servers: Vec<String> = corp.dns.iter().map(|ip| format!("{ip}/{}", if ip.is_ipv4() { 32 } else { 128 })).collect();
-        rules.push(json!({ "inboundTag": [TAG_DNS], "ip": servers, "outboundTag": TAG_CORP }));
-    }
-    if !corp.routes.is_empty() {
-        rules.push(json!({ "ip": corp.routes, "outboundTag": TAG_CORP }));
-    }
-    if !corp.domains.is_empty() {
-        rules.push(json!({ "domain": corp.domains, "outboundTag": TAG_CORP }));
+        if !corp.dns.is_empty() {
+            let servers: Vec<String> = corp.dns.iter().map(|ip| format!("{ip}/{}", if ip.is_ipv4() { 32 } else { 128 })).collect();
+            rules.push(json!({ "inboundTag": [TAG_DNS], "ip": servers, "outboundTag": tag }));
+        }
+        if !corp.routes.is_empty() {
+            rules.push(json!({ "ip": corp.routes, "outboundTag": tag }));
+        }
+        if !corp.domains.is_empty() {
+            rules.push(json!({ "domain": corp.domains, "outboundTag": tag }));
+        }
+        if !corp.domains.is_empty() {
+            for ip in &corp.dns {
+                dns_servers.push(json!({ "address": ip.to_string(), "domains": corp.domains, "skipFallback": true }));
+            }
+        }
     }
 
     if let Some(outbounds) = config["outbounds"].as_array_mut() {
@@ -771,13 +796,11 @@ fn apply_corp(config: &mut Value, settings: &Settings, corp: &Corp, main: Option
         let at = existing.iter().take_while(|rule| hijack(rule)).count();
         existing.splice(at..at, rules);
     }
-    if !corp.dns.is_empty() && !corp.domains.is_empty() {
+    if !dns_servers.is_empty() {
         let dns = object_entry(config, "dns");
         let servers = dns.entry("servers").or_insert_with(|| json!([]));
         if let Some(servers) = servers.as_array_mut() {
-            for (index, ip) in corp.dns.iter().enumerate() {
-                servers.insert(index, json!({ "address": ip.to_string(), "domains": corp.domains, "skipFallback": true }));
-            }
+            servers.splice(0..0, dns_servers);
         }
     }
 }

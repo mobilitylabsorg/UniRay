@@ -341,7 +341,10 @@ pub struct BackupPayload {
     pub settings: Settings,
     pub servers: Vec<Server>,
     pub subscriptions: Vec<Subscription>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub corps: Vec<uniray_core::corp::CorpNetwork>,
+    /// A backup of 0.4.0 and before, with one corporate network.
+    #[serde(default, skip_serializing)]
     pub corp: Option<uniray_core::corp::CorpNetwork>,
 }
 
@@ -355,7 +358,8 @@ pub async fn export_backup(app: AppHandle) -> CmdResult<String> {
         settings: store.data.settings.clone(),
         servers: store.data.servers.clone(),
         subscriptions: store.data.subscriptions.clone(),
-        corp: store.data.corp.clone(),
+        corps: store.data.corps.clone(),
+        corp: None,
     };
     serde_json::to_string_pretty(&payload).map_err(|e| CmdError::new("io", e.to_string()))
 }
@@ -370,9 +374,19 @@ pub async fn import_backup(app: AppHandle, json: String, mode: String) -> CmdRes
         .update(|store| {
             let mut settings = payload.settings;
             crate::edition::restrict(&mut settings);
-            if payload.corp.is_some() || mode == "replace" {
-                store.data.corp = payload.corp;
+            let mut corps = payload.corps;
+            corps.extend(payload.corp);
+            if mode == "replace" {
+                store.data.corps = corps;
+            } else {
+                for corp in corps {
+                    match store.data.corps.iter_mut().find(|known| !corp.id.is_empty() && known.id == corp.id) {
+                        Some(known) => *known = corp,
+                        None => store.data.corps.push(corp),
+                    }
+                }
             }
+            store.adopt_corps();
             if mode == "replace" {
                 store.data.settings = settings;
                 store.data.servers = payload.servers;

@@ -140,8 +140,8 @@ export interface Connection {
   mixedPort: number | null;
   /** The last check of this connection; repeated every 5 minutes. */
   check: CheckResult | null;
-  /** The corporate network's tunnel, when the connection has it. */
-  corp: CorpStatus | null;
+  /** The corporate networks' tunnels in this connection, by network id. */
+  corps: Record<string, CorpStatus>;
 }
 
 /** The way to the corporate server: straight, through the main server, or
@@ -159,6 +159,7 @@ export type CorpKind = "openVpn" | "checkPoint";
 
 /** The corporate network next to the VPN (src-tauri/src/corp.rs). */
 export interface CorpNetwork {
+  id: string;
   kind: CorpKind;
   enabled: boolean;
   name: string;
@@ -180,6 +181,7 @@ export interface CorpNetwork {
 }
 
 export interface CorpUpdate {
+  id: string;
   enabled: boolean;
   username: string;
   /** null keeps the saved one. */
@@ -198,6 +200,8 @@ export interface CorpUpdate {
 
 /** A Check Point gateway as the user gives it; null keeps the saved one. */
 export interface CheckPointSetup {
+  /** The network to change; null adds one. */
+  id: string | null;
   name: string;
   gateway: string;
   cert: [string, string] | null;
@@ -226,8 +230,8 @@ export interface Snapshot {
   /** What this edition offers: the Google Play one has no stealth mode and
    * no ad blocking (src-tauri/src/edition.rs). */
   features: { stealth: boolean; adBlock: boolean; updates: boolean };
-  corp: CorpNetwork | null;
-  /** This build can run the corporate network (desktop for now). */
+  corps: CorpNetwork[];
+  /** This build can run corporate networks (desktop for now). */
   corpAvailable: boolean;
   /** What it can run it with. */
   corpKinds: CorpKind[];
@@ -343,11 +347,12 @@ export const api = {
   updateAllSubscriptions: () => invoke<ImportReport[]>("update_all_subscriptions"),
   deleteSubscription: (id: string) => invoke<void>("delete_subscription", { id }),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
-  /** An OpenVPN profile with the key files it names, as [name, text] pairs. */
-  corpImport: (files: [string, string][]) => invoke<void>("corp_import", { files }),
+  /** An OpenVPN profile with the key files it names, as [name, text] pairs:
+   * a new network, or the profile of network `id`. */
+  corpImport: (files: [string, string][], id: string | null) => invoke<void>("corp_import", { files, id }),
   corpCheckPoint: (setup: CheckPointSetup) => invoke<void>("corp_checkpoint", { setup }),
   corpSave: (update: CorpUpdate) => invoke<void>("corp_save", { update }),
-  corpDelete: () => invoke<void>("corp_delete"),
+  corpDelete: (id: string) => invoke<void>("corp_delete", { id }),
   connect: () => invoke<void>("connect"),
   disconnect: () => invoke<void>("disconnect"),
   testDelays: (ids?: string[]) => invoke<void>("test_delays", { ids: ids ?? null }),

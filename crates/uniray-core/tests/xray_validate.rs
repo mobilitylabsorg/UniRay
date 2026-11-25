@@ -125,17 +125,17 @@ fn runtimes(dir: &Path) -> Vec<Runtime> {
     let log = |name: &str| dir.join(name).to_string_lossy().into_owned();
     let files = LogSink::Files { error: log("error.log"), access: log("access.log") };
     vec![
-        Runtime { tun: None, mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout, engine: None, corp: None },
-        Runtime { tun: Some(Tun::Managed { name: "uniraytest0".into(), ipv6: true }), mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout, engine: None, corp: None },
-        Runtime { tun: Some(Tun::External { name: "rmnet3".into() }), mixed_port: None, metrics_port: None, metrics_socket: Some("@uniray-validate-metrics".into()), log: files, engine: None, corp: None },
-        Runtime { tun: Some(Tun::Transparent { port: 28082 }), mixed_port: None, metrics_port: None, metrics_socket: Some("@uniray-validate-tproxy".into()), log: LogSink::Stdout, engine: None, corp: None },
+        Runtime { tun: None, mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout, engine: None, corps: Vec::new() },
+        Runtime { tun: Some(Tun::Managed { name: "uniraytest0".into(), ipv6: true }), mixed_port: Some(28080), metrics_port: Some(28081), metrics_socket: None, log: LogSink::Stdout, engine: None, corps: Vec::new() },
+        Runtime { tun: Some(Tun::External { name: "rmnet3".into() }), mixed_port: None, metrics_port: None, metrics_socket: Some("@uniray-validate-metrics".into()), log: files, engine: None, corps: Vec::new() },
+        Runtime { tun: Some(Tun::Transparent { port: 28082 }), mixed_port: None, metrics_port: None, metrics_socket: Some("@uniray-validate-tproxy".into()), log: LogSink::Stdout, engine: None, corps: Vec::new() },
         Runtime {
             tun: Some(Tun::Gateway { name: "uniray0".into(), routes: vec!["8.0.0.0/7".into(), "11.0.0.0/8".into(), "12.0.0.0/6".into()] }),
             mixed_port: Some(28080),
             metrics_port: Some(28081), metrics_socket: None,
             log: LogSink::Stdout,
             engine: None,
-            corp: None,
+            corps: Vec::new(),
         },
     ]
 }
@@ -255,12 +255,36 @@ fn xray_accepts_generated_configs() {
         for (server_index, server) in [&servers[0], &wireguard].into_iter().enumerate() {
             for (runtime_index, runtime) in runtimes.iter().enumerate() {
                 let engine = (server_index == 1).then(|| config::Engine { port: 28094, ..corp_engine.clone() });
-                let runtime = Runtime { engine, corp: Some(corp.clone()), ..runtime.clone() };
+                let runtime = Runtime { engine, corps: vec![corp.clone()], ..runtime.clone() };
                 let built = build(server, &settings[1], &runtime).unwrap();
                 xray_accepts(&xray, &dir, &format!("corp (front #{front_index}, server #{server_index}, runtime #{runtime_index})"), &built.config);
                 checked += 1;
             }
         }
+    }
+
+    // Several corporate networks at once, two of them with fronts: every
+    // tag and port of theirs must be unique.
+    let several: Vec<config::Corp> = (0..3u16)
+        .map(|index| config::Corp {
+            engine: config::Engine { port: 28100 + index, bypass: if index == 0 { corp_engine.bypass.clone() } else { Vec::new() }, ..corp_engine.clone() },
+            routes: vec![format!("10.{index}.0.0/16")],
+            domains: vec![format!("domain:corp{index}.test")],
+            dns: vec![format!("10.{index}.0.53").parse().unwrap()],
+            front: (index > 0).then(|| config::CorpFront {
+                port: 28110 + index,
+                host: format!("vpn{index}.corp.example"),
+                remote_port: 1194,
+                network: "udp",
+                outbound: (index == 2).then(|| config::probe_outbound(&other, "x", &settings[1]).unwrap()),
+            }),
+        })
+        .collect();
+    for (runtime_index, runtime) in runtimes.iter().enumerate() {
+        let runtime = Runtime { corps: several.clone(), ..runtime.clone() };
+        let built = build(&servers[0], &settings[1], &runtime).unwrap();
+        xray_accepts(&xray, &dir, &format!("three corporate networks (runtime #{runtime_index})"), &built.config);
+        checked += 1;
     }
 
     let refs: Vec<&Server> = servers.iter().collect();

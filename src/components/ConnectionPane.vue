@@ -80,7 +80,16 @@ const arcOffset = computed(() => {
 /** The corporate network and the mode; under the switch on a phone, with
  * the check too in the wide pane. */
 const mode = computed(() => store.tunSupported && store.settings !== null);
-const corp = computed(() => (connected.value ? (store.connection?.corp ?? null) : null));
+/** The corporate networks' tunnels of this connection, with their names. */
+const corps = computed(() => {
+  if (!connected.value) return [];
+  const networks = store.snapshot?.corps ?? [];
+  return Object.entries(store.connection?.corps ?? {}).map(([id, status]) => ({
+    id,
+    ...status,
+    name: networks.find((network) => network.id === id)?.name ?? t("corp.title"),
+  }));
+});
 const CORP_DOT = { connecting: "bg-muted animate-pulse", up: "bg-accent", down: "bg-danger" } as const;
 
 const MODES: { value: Mode; label: string }[] = [
@@ -172,14 +181,14 @@ const MODES: { value: Mode; label: string }[] = [
 
         <!-- The check and the corporate network while connected, a hint
              otherwise; the mode either way. -->
-        <div v-if="!connected || !full || corp || mode" class="section" :class="{ lines: connected }">
+        <div v-if="!connected || !full || corps.length || mode" class="section" :class="{ lines: connected }">
           <template v-if="connected">
             <ConnectionCheck v-if="!full" />
 
-            <RouterLink v-if="corp" to="/routing" class="sline link">
+            <RouterLink v-for="corp in corps" :key="corp.id" to="/routing" class="sline link">
               <span class="size-2 shrink-0 rounded-full" :class="CORP_DOT[corp.state]" aria-hidden="true" />
               <div class="sline-body">
-                <div class="sline-title">{{ t("corp.title") }}</div>
+                <div class="sline-title">{{ corps.length > 1 ? corp.name : t("corp.title") }}</div>
                 <div class="sline-text">
                   {{ t(`corp.state.${corp.state}`) }}<template v-if="corp.address"> · {{ corp.address }}</template>
                 </div>

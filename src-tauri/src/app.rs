@@ -131,8 +131,8 @@ pub struct Snapshot {
     pub tv: bool,
     /// What this edition offers (the Google Play one has no stealth mode).
     pub features: crate::edition::Features,
-    pub corp: Option<crate::corp::CorpView>,
-    /// This build can run the corporate network.
+    pub corps: Vec<crate::corp::CorpView>,
+    /// This build can run corporate networks.
     pub corp_available: bool,
     /// What it can run it with.
     pub corp_kinds: Vec<uniray_core::corp::CorpKind>,
@@ -159,7 +159,7 @@ pub fn snapshot(app: &AppHandle) -> Snapshot {
         testing: state.testing.load(Ordering::Relaxed),
         tv: state.tv.load(Ordering::Relaxed),
         features: crate::edition::FEATURES,
-        corp: store.data.corp.as_ref().map(crate::corp::CorpView::of),
+        corps: store.data.corps.iter().map(crate::corp::CorpView::of).collect(),
         corp_available: crate::corp::available(app),
         corp_kinds: crate::corp::kinds(app),
     }

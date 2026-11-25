@@ -59,6 +59,9 @@ type Config struct {
 	OwnerSocket string `json:"ownerSocket"`
 	// Keep running when stdin closes.
 	Detached bool `json:"detached"`
+	// The corporate network this run is, when the app runs several: its
+	// reports read "corp[<id>]: up ..." instead of "corp: up ...".
+	Corp string `json:"corp"`
 
 	AWG   *AWGConfig   `json:"awg"`
 	Naive *NaiveConfig `json:"naive"`
@@ -86,6 +89,9 @@ func main() {
 	}
 	if config.User == "" || config.Pass == "" {
 		fatalf("the config has no SOCKS credentials")
+	}
+	if config.Corp != "" {
+		corpLabel = "corp[" + config.Corp + "]"
 	}
 
 	verifier, err := newVerifier(config)
@@ -182,6 +188,9 @@ func readCommands(verifier Verifier) {
 }
 
 // Logs in the shape of Xray's own lines, so the app files them by level.
+// How the corporate tunnel's reports begin, see Config.Corp.
+var corpLabel = "corp"
+
 func logf(level, format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "[%s] engine: %s\n", level, fmt.Sprintf(format, args...))
 }
